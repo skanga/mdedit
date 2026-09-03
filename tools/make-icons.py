@@ -108,3 +108,4 @@ if __name__ == "__main__":
     for size in (192, 512):
         write_png(OUT / f"icon-{size}.png", size, render(size))
     write_png(OUT / "icon-maskable-512.png", 512, render(512, maskable=True))
+    write_png(OUT / "icon-1024.png", 1024, render(1024))   # Tauri icon source

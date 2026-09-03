@@ -1,0 +1,13 @@
+{
+  "name": "free-md-viewer",
+  "private": true,
+  "scripts": {
+    "build:web": "./build.sh",
+    "build:desktop": "./tools/build-desktop.sh",
+    "tauri": "tauri",
+    "test": "node --test tools/test-native-bridge.js"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4"
+  }
+}
