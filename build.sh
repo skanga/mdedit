@@ -37,6 +37,7 @@ LIBS = {
     "/*__HLJS__*/":    "vendor/highlight.min.js",
     "/*__KATEX__*/":   "vendor/katex.min.js",
     "/*__MERMAID__*/": "vendor/mermaid.min.js",
+    "/*__NATIVE_BRIDGE__*/": "src/native-bridge.js",
 }
 HEAVY = {"/*__KATEX__*/", "/*__MERMAID__*/"}
 
