@@ -78,6 +78,23 @@ depend on Chromium-desktop-only APIs and degrade gracefully elsewhere:
 | Save back to the original file | File System Access | falls back to a download |
 | Double-click a `.md` to open it here | `file_handlers` + `launchQueue` | not offered |
 
+## Desktop app
+
+The same single-file app ships as a native desktop app via [Tauri](https://tauri.app)
+(`src-tauri/`), with native open/save dialogs and write-back on Windows, macOS and
+Linux. The web build is unchanged — in a plain browser `window.nativeApp` is null and
+all the original code paths run.
+
+```bash
+npm install            # one-time (adds @tauri-apps/cli)
+npm run build:desktop  # builds the web app and stages dist-desktop/
+npm run tauri dev      # run it
+npm run tauri build    # installers: NSIS on Windows, dmg on macOS, AppImage/deb on Linux
+```
+
+Double-clicking a `.md` file (or `free-md-viewer some.md`) opens it in the app, since the
+bundles register a Markdown file association.
+
 ## Building
 
 No package manager, no toolchain — just Python 3 and bash:
