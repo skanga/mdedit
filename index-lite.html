@@ -2910,6 +2910,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (file) await openFromFile(file, null);
   });
 
+  // The desktop shell forwards files handed to it by the OS (association / CLI arg).
+  if (nativeApp && window.__TAURI__.event) {
+    window.__TAURI__.event.listen("file-opened", (e) => openFromNativePath(e.payload));
+  }
+
   /* ── Editor behaviour ───────────────────────── */
   editor.addEventListener("input", () => {
     setDirty(true);
