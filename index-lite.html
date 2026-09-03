@@ -2675,6 +2675,16 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   async function save() {
+    if (nativePath) {
+      try {
+        await nativeApp.writeFile(nativePath, editor.value);
+        setDirty(false);
+        setStatus("Saved to " + filenameEl.value);
+        return;
+      } catch (e) {
+        setStatus("Couldn't write to the original file — choose where to save it");
+      }
+    }
     if (fileHandle) {
       try {
         if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
@@ -2692,6 +2702,20 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   async function saveAs() {
+    if (nativeApp) {
+      try {
+        const path = await nativeApp.saveAs({ suggestedName: filenameEl.value || "untitled.md", data: editor.value });
+        if (!path) return;    // user cancelled
+        fileHandle = null;
+        nativePath = path;    // subsequent Ctrl+S writes back here
+        filenameEl.value = path.split(/[/\\]/).pop();
+        setDirty(false);
+        setStatus("Saved to " + filenameEl.value);
+      } catch (e) {
+        setStatus("Couldn't save: " + e.message);
+      }
+      return;
+    }
     if (window.showSaveFilePicker) {
       try {
         const handle = await window.showSaveFilePicker({
