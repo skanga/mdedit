@@ -5552,7 +5552,16 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     }
   }
 
-  function saveBlob(blob, name) {
+  async function saveBlob(blob, name) {
+    if (nativeApp) {
+      try {
+        const path = await nativeApp.saveAs({ suggestedName: name, data: new Uint8Array(await blob.arrayBuffer()) });
+        if (path) setStatus("Saved " + name);
+      } catch (e) {
+        setStatus("Couldn't save: " + e.message);
+      }
+      return;
+    }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = name;
@@ -5564,11 +5573,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   const baseName = () => (filenameEl.value || "untitled.md").replace(/\.[^.]+$/, "") || "untitled";
 
-  function download() {
+  async function download() {
     const name = filenameEl.value || "untitled.md";
-    saveBlob(new Blob([editor.value], { type: "text/markdown;charset=utf-8" }), name);
+    await saveBlob(new Blob([editor.value], { type: "text/markdown;charset=utf-8" }), name);
+    if (!nativeApp) setStatus("Downloaded " + name);   // the native path reports "Saved …" itself
     setDirty(false);
-    setStatus("Downloaded " + name);
   }
 
   /* ── Exports ────────────────────────────────── */
