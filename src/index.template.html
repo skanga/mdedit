@@ -897,6 +897,7 @@
   $("save-kbd").textContent = isMac ? "⌘S" : "Ctrl+S";
 
   let fileHandle = null;     // FileSystemFileHandle when opened via picker/drop (Chromium)
+  let nativePath = null;     // absolute path when opened via the desktop bridge
   let dirty = false;
   let statusTimer = null;
 
@@ -1323,17 +1324,18 @@
   }
 
   /* ── File loading ───────────────────────────── */
-  function loadContent(text, name, handle) {
+  function loadContent(text, name, handle, path) {
     editor.value = text.replace(/\r\n/g, "\n");
     filenameEl.value = name || "untitled.md";
     fileHandle = handle || null;
+    nativePath = path || null;
     setDirty(false);
     render();
     saveDraft();
     editor.setSelectionRange(0, 0);
     editor.scrollTop = 0;
     previewPane.scrollTop = 0;
-    setStatus("Opened " + filenameEl.value + (fileHandle ? " — Save writes back to the original file" : ""));
+    setStatus("Opened " + filenameEl.value + ((fileHandle || nativePath) ? " — Save writes back to the original file" : ""));
   }
 
   async function openFromFile(file, handle) {
@@ -1341,7 +1343,21 @@
     loadContent(text, file.name, handle);
   }
 
+  async function openFromNativePath(path) {
+    try {
+      const text = await nativeApp.readFile(path);
+      loadContent(text, path.split(/[/\\]/).pop(), null, path);
+    } catch (e) {
+      setStatus("Couldn't read " + (path || "file"));
+    }
+  }
+
   async function openPicker() {
+    if (nativeApp) {
+      const path = await nativeApp.pickFile();   // null on cancel
+      if (path) await openFromNativePath(path);
+      return;
+    }
     if (window.showOpenFilePicker) {
       try {
         const [handle] = await window.showOpenFilePicker({
