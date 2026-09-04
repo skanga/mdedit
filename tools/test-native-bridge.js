@@ -48,6 +48,21 @@ test("saveAs writes text to the chosen path and returns it", async () => {
   assert.deepEqual(calls.writeFile, [["text", "C:\\notes\\out.md", "x"]]);
 });
 
+test("saveAs anchors the dialog in defaultDir when given", async () => {
+  const { tauri, calls } = fakeTauri();
+  const app = makeNativeApp(tauri);
+  await app.saveAs({ defaultDir: "C:\\notes", suggestedName: "c.md", data: "x" });
+  assert.equal(calls.save.defaultPath, "C:\\notes/c.md");
+  await app.saveAs({ defaultDir: "/home/u/docs/", suggestedName: "c.md", data: "x" });
+  assert.equal(calls.save.defaultPath, "/home/u/docs/c.md");
+});
+
+test("saveAs falls back to the bare name without a defaultDir", async () => {
+  const { tauri, calls } = fakeTauri();
+  await makeNativeApp(tauri).saveAs({ suggestedName: "c.md", data: "x" });
+  assert.equal(calls.save.defaultPath, "c.md");
+});
+
 test("saveAs writes raw bytes with writeFile when data is not a string", async () => {
   const { tauri, calls } = fakeTauri();
   const bytes = new Uint8Array([1, 2, 3]);

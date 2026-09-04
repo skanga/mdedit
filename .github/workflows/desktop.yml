@@ -23,6 +23,9 @@ jobs:
         with:
           node-version: 20
           cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Install deps
         run: npm install
       - name: Linux system deps
@@ -30,10 +33,11 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Build
-        run: |
-          npm run build:desktop
-          npx tauri build ${{ matrix.args }}
+      - name: Build frontend
+        shell: bash
+        run: bash ./tools/build-desktop.sh
+      - name: Build desktop bundles
+        run: npx tauri build ${{ matrix.args }}
       - uses: actions/upload-artifact@v4
         with:
           name: desktop-${{ matrix.os }}

@@ -1410,10 +1410,14 @@
     await saveAs();
   }
 
+  // Directory of the document as the shell knows it ("" when unknown):
+  // Save-As and exports anchor their dialogs there instead of the app's cwd.
+  const nativeDir = () => (nativePath ? nativePath.replace(/[^/\\]*$/, "") : "");
+
   async function saveAs() {
     if (nativeApp) {
       try {
-        const path = await nativeApp.saveAs({ suggestedName: filenameEl.value || "untitled.md", data: editor.value });
+        const path = await nativeApp.saveAs({ defaultDir: nativeDir(), suggestedName: filenameEl.value || "untitled.md", data: editor.value });
         if (!path) return;    // user cancelled
         fileHandle = null;
         nativePath = path;    // subsequent Ctrl+S writes back here
@@ -1445,7 +1449,7 @@
   async function saveBlob(blob, name) {
     if (nativeApp) {
       try {
-        const path = await nativeApp.saveAs({ suggestedName: name, data: new Uint8Array(await blob.arrayBuffer()) });
+        const path = await nativeApp.saveAs({ defaultDir: nativeDir(), suggestedName: name, data: new Uint8Array(await blob.arrayBuffer()) });
         if (path) setStatus("Saved " + name);
       } catch (e) {
         setStatus("Couldn't save: " + e.message);
@@ -1622,6 +1626,10 @@
   // The desktop shell forwards files handed to it by the OS (association / CLI arg).
   if (nativeApp && window.__TAURI__.event) {
     window.__TAURI__.event.listen("file-opened", (e) => openFromNativePath(e.payload));
+    // Files passed at startup are queued in Rust until we can pull them.
+    window.__TAURI__.core.invoke("take_pending_files").then((paths) => {
+      for (const p of paths) openFromNativePath(p);
+    }).catch(() => {});
   }
 
   /* ── Editor behaviour ───────────────────────── */

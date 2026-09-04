@@ -5,10 +5,14 @@
  * app.withGlobalTauri exposes window.__TAURI__ with the dialog and fs plugin
  * APIs, and this file wraps them in the tiny surface the app needs:
  *
- *   nativeApp.pickFile()                      -> path string, null on cancel
- *   nativeApp.readFile(path)                  -> file text (utf-8)
- *   nativeApp.saveAs({ suggestedName, data }) -> chosen path, null on cancel
- *   nativeApp.writeFile(path, data)           -> write to a known path (write-back)
+ *   nativeApp.pickFile()                            -> path string, null on cancel
+ *   nativeApp.readFile(path)                        -> file text (utf-8)
+ *   nativeApp.saveAs({ defaultDir, suggestedName, data })
+ *                                                -> chosen path, null on cancel
+ *   nativeApp.writeFile(path, data)                 -> write to a known path (write-back)
+ *
+ * defaultDir (optional) anchors the save dialog next to the document being
+ * edited; without it the OS picks its own default location.
  *
  * data is a string (written as utf-8) or a Uint8Array (raw bytes, for PNG exports).
  */
@@ -26,9 +30,9 @@ function makeNativeApp(tauri) {
     async readFile(path) {
       return tauri.fs.readTextFile(path);
     },
-    async saveAs({ suggestedName, data }) {
+    async saveAs({ defaultDir = "", suggestedName, data }) {
       const p = await tauri.dialog.save({
-        defaultPath: suggestedName || "untitled.md",
+        defaultPath: (defaultDir ? defaultDir.replace(/[/\\]$/, "") + "/" : "") + (suggestedName || "untitled.md"),
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
       if (!p) return null;

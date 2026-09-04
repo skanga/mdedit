@@ -28,6 +28,9 @@ def katex_css():
 
 def js(path):
     src = Path(path).read_text()
+    # The self-contained builds ship no .map files, so a leftover source-map
+    # hint just makes devtools fetch the page for it and log a parse error.
+    src = re.sub(r"^\s*//# sourceMappingURL=[^\n]*\n?", "", src, flags=re.M)
     # '</script' would end the inline tag early; escaping the slash is a no-op in JS
     return src.replace("</script", "<\\/script").replace("</SCRIPT", "<\\/SCRIPT")
 
