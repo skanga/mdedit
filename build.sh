@@ -14,11 +14,11 @@ python3 - <<'PY'
 import base64, re
 from pathlib import Path
 
-template = Path("src/index.template.html").read_text()
+template = Path("src/index.template.html").read_text(encoding="utf-8")
 
 def katex_css():
     """KaTeX's stylesheet with its .woff2 fonts embedded as data: URIs."""
-    css = Path("vendor/katex.min.css").read_text()
+    css = Path("vendor/katex.min.css").read_text(encoding="utf-8")
     def inline_font(m):
         data = base64.b64encode(Path(f"vendor/katex-fonts/{m.group(1)}.woff2").read_bytes()).decode()
         return f'src:url(data:font/woff2;base64,{data}) format("woff2")'
@@ -27,7 +27,7 @@ def katex_css():
     return css
 
 def js(path):
-    src = Path(path).read_text()
+    src = Path(path).read_text(encoding="utf-8")
     # The self-contained builds ship no .map files, so a leftover source-map
     # hint just makes devtools fetch the page for it and log a parse error.
     src = re.sub(r"^\s*//# sourceMappingURL=[^\n]*\n?", "", src, flags=re.M)
@@ -76,7 +76,7 @@ def build(out, include_heavy):
               '  }\n')
         assert sw in doc, "service worker registration block not found"
         doc = doc.replace(sw, "  // no service worker in the lite build: it ships as a single standalone file\n")
-    Path(out).write_text(doc)
+    Path(out).write_text(doc, encoding="utf-8")
     print(f"built {out} ({len(doc):,} bytes)")
 
 build("index.html", True)
