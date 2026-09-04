@@ -1,5 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
+const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 
@@ -13,6 +14,24 @@ function readText(relativePath) {
   return fs.readFileSync(path.join(root, relativePath), "utf8");
 }
 
+function readCargoMetadata() {
+  const output = execFileSync(
+    "cargo",
+    [
+      "metadata",
+      "--locked",
+      "--no-deps",
+      "--format-version",
+      "1",
+      "--manifest-path",
+      "src-tauri/Cargo.toml",
+    ],
+    { cwd: root, encoding: "utf8" },
+  );
+
+  return JSON.parse(output);
+}
+
 test("npm metadata identifies the package as mdedit", () => {
   const packageJson = readJson("package.json");
   const packageLock = readJson("package-lock.json");
@@ -22,23 +41,35 @@ test("npm metadata identifies the package as mdedit", () => {
   assert.equal(packageLock.packages[""].name, "mdedit");
 });
 
-test("Cargo metadata identifies the package and library as mdedit", () => {
-  const cargoToml = readText("src-tauri/Cargo.toml");
+test("Cargo metadata identifies the mdedit package and targets", () => {
+  const metadata = readCargoMetadata();
+  const [workspacePackage] = metadata.packages;
 
-  assert.match(cargoToml, /\[package\][\s\S]*?\nname = "mdedit"/);
-  assert.match(cargoToml, /\[lib\][\s\S]*?\nname = "mdedit_lib"/);
-});
-
-test("Cargo lockfile records mdedit as the root package", () => {
-  const cargoLock = readText("src-tauri/Cargo.lock");
-  const packages = cargoLock.split("[[package]]").slice(1);
-  const rootPackage = packages.find((pkg) => /^name = "mdedit"$/m.test(pkg));
-
-  assert.ok(rootPackage, "Cargo.lock should contain the mdedit root package");
+  assert.equal(metadata.workspace_members.length, 1);
+  assert.equal(metadata.packages.length, 1);
+  assert.equal(workspacePackage.id, metadata.workspace_members[0]);
+  assert.equal(workspacePackage.name, "mdedit");
+  assert.ok(
+    workspacePackage.targets.some(
+      (target) => target.name === "mdedit" && target.kind.includes("bin"),
+    ),
+  );
+  assert.ok(
+    workspacePackage.targets.some(
+      (target) => target.name === "mdedit_lib" && target.kind.includes("rlib"),
+    ),
+  );
 });
 
 test("the binary starts the mdedit library", () => {
-  assert.match(readText("src-tauri/src/main.rs"), /mdedit_lib::run\(\)/);
+  const mainRs = readText("src-tauri/src/main.rs").replaceAll("\r\n", "\n");
+
+  assert.equal(
+    mainRs,
+    "// Prevents an extra console window from opening on Windows in release builds.\n"
+      + "#![cfg_attr(not(debug_assertions), windows_subsystem = \"windows\")]\n\n"
+      + "fn main() {\n    mdedit_lib::run()\n}\n",
+  );
 });
 
 test("Tauri configuration identifies the MDedit application", () => {
