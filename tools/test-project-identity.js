@@ -153,9 +153,35 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
   assert.match(releaseJob, /needs: build/);
   assert.match(releaseJob, /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/);
   assert.match(releaseJob, /permissions:\s*\n\s*contents: write/);
-  assert.match(releaseJob, /uses: actions\/download-artifact@v4/);
+  assert.match(
+    releaseJob,
+    /uses: actions\/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093\s+# v4/,
+  );
   assert.match(releaseJob, /pattern: mdedit-\*/);
-  assert.match(releaseJob, /test "\$\{#assets\[@\]\}" -eq 5/);
+  assert.match(releaseJob, /tag must match vMAJOR\.MINOR\.PATCH/);
+  assert.match(
+    releaseJob,
+    /if \[\[ ! "\$GITHUB_REF_NAME" =~ \^v\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+\$ \]\]; then/,
+  );
+  assert.match(releaseJob, /version=\$\{GITHUB_REF_NAME#v\}/);
+  for (const asset of [
+    "MDedit-portable-x64.exe",
+    "MDedit_${version}_x64-setup.exe",
+    "MDedit_${version}_x64_en-US.msi",
+    "MDedit_${version}_aarch64.dmg",
+    "MDedit_${version}_amd64.deb",
+  ]) {
+    assert.match(releaseJob, new RegExp(`"${asset.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}"`));
+  }
+  assert.match(releaseJob, /find release-inputs -type f -name "\$expected_asset" -print \| sort/);
+  assert.match(releaseJob, /test "\$\{#matches\[@\]\}" -eq 1/);
+  assert.match(releaseJob, /test -s "\$\{matches\[0\]\}"/);
+  assert.match(releaseJob, /test "\$\{#staged_assets\[@\]\}" -eq 5/);
+  assert.match(releaseJob, /test -s "\$staged_asset"/);
+  assert.match(releaseJob, /gh api --include "repos\/\$GH_REPO\/releases\/tags\/\$GITHUB_REF_NAME"/);
+  assert.match(releaseJob, /HTTP\/\[0-9\.\]\+ 404/);
+  assert.match(releaseJob, /cat "\$release_lookup" >&2/);
+  assert.match(releaseJob, /exit 1/);
   assert.match(releaseJob, /gh release create "\$GITHUB_REF_NAME"/);
   assert.match(releaseJob, /gh release upload "\$GITHUB_REF_NAME"/);
   assert.match(releaseJob, /--generate-notes/);
