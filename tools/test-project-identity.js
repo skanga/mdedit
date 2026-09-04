@@ -102,7 +102,12 @@ test("the desktop UI identity is consistent across template and generated builds
   for (const file of ["src/index.template.html", "index.html", "index-lite.html"]) {
     const html = readText(file);
     const joinedHtmlStrings = html.replaceAll(/"\s*\+\s*"/g, "");
-    const helpSource = html.slice(html.indexOf("function buildHelp()"), html.indexOf('  $("btn-help")'));
+    const helpStart = html.indexOf("function buildHelp()");
+    const helpEnd = html.indexOf('$("btn-help").addEventListener', helpStart);
+    assert.notEqual(helpStart, -1);
+    assert.notEqual(helpEnd, -1);
+    assert.ok(helpEnd > helpStart);
+    const helpSource = html.slice(helpStart, helpEnd);
 
     assert.match(html, /MDedit/);
     assert.match(html, /github\.com\/skanga\/mdedit/);
