@@ -98,20 +98,23 @@ test("README and CI describe the MDedit desktop product", () => {
 });
 
 test("the desktop UI identity is consistent across template and generated builds", () => {
-  const formerProductName = "Free MD Viewer";
+  const formerProductName = ["Free", "MD", "Viewer"].join(" ");
+  const legacyRepoSlug = ["markdown", "editor"].join("-");
+  const legacyEditorPrefix = ["md", "editor"].join("-");
+  const legacyViewerPrefix = ["md", "viewer"].join("-");
   const formerGitHubUrls = [
-    "github.com/hattray/markdown-editor",
-    "github.com/skanga/markdown-editor",
+    `github.com/hattray/${legacyRepoSlug}`,
+    `github.com/skanga/${legacyRepoSlug}`,
   ];
   const legacyStorageKeys = [
-    "md-editor-draft-v1",
-    "md-editor-theme",
-    "md-editor-toc",
-    "md-editor-reader",
-    "md-viewer-draft-v1",
-    "md-viewer-theme",
-    "md-viewer-toc",
-    "md-viewer-reader",
+    `${legacyEditorPrefix}-draft-v1`,
+    `${legacyEditorPrefix}-theme`,
+    `${legacyEditorPrefix}-toc`,
+    `${legacyEditorPrefix}-reader`,
+    `${legacyViewerPrefix}-draft-v1`,
+    `${legacyViewerPrefix}-theme`,
+    `${legacyViewerPrefix}-toc`,
+    `${legacyViewerPrefix}-reader`,
   ];
   const fullDescription = "A fast, private desktop Markdown editor with live preview, Mermaid diagrams, KaTeX math, native file handling, and offline exports.";
   const liteDescription = "A fast, private Markdown editor with live preview, local file handling, and offline exports.";

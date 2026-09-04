@@ -54,10 +54,7 @@ pub fn run() {
             for url in urls {
                 if let Ok(path) = url.to_file_path() {
                     if path.is_file() {
-                        let _ = _app_handle.emit(
-                            "file-opened",
-                            path.to_string_lossy().to_string(),
-                        );
+                        let _ = _app_handle.emit("file-opened", path.to_string_lossy().to_string());
                     }
                 }
             }
