@@ -84,6 +84,7 @@ test("the desktop UI identity is consistent across template and generated builds
   const formerProductName = "Free MD Viewer";
   const formerGitHubUrls = [
     "github.com/hattray/markdown-editor",
+    "github.com/skanga/markdown-editor",
   ];
   const legacyStorageKeys = [
     "md-editor-draft-v1",
