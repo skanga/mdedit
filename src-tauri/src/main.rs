@@ -2,5 +2,5 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 fn main() {
-    free_md_viewer_lib::run()
+    mdedit_lib::run()
 }

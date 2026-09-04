@@ -1,15 +1,15 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "Free MD Viewer",
+  "productName": "MDedit",
   "version": "0.1.0",
-  "identifier": "com.kingsbridge.freedmdviewer",
+  "identifier": "com.skanga.mdedit",
   "build": {
     "frontendDist": "../dist-desktop"
   },
   "app": {
     "windows": [
       {
-        "title": "Free MD Viewer",
+        "title": "MDedit",
         "width": 1280,
         "height": 840,
         "minWidth": 700,
