@@ -291,10 +291,11 @@ Expected: the first two checks confirm absence, and `gh release create` returns 
 
 ```bash
 gh release view v0.1.0 -R skanga/mdedit \
-  --json url,tagName,isDraft,isPrerelease,isLatest,targetCommitish,assets
+  --json url,tagName,isDraft,isPrerelease,targetCommitish,assets
+gh api repos/skanga/mdedit/releases/latest --jq '.tag_name'
 ```
 
-Expected: `tagName` is `v0.1.0`; the release is latest, not draft, and not prerelease; `targetCommitish` resolves to commit `2f21a06a019bc5d066b9fad4aeaf34bbb8bf8cfc`; all five expected assets appear with nonzero sizes.
+Expected: `tagName` is `v0.1.0`; the release is not draft or prerelease; `targetCommitish` resolves to commit `2f21a06a019bc5d066b9fad4aeaf34bbb8bf8cfc`; all five expected assets appear with nonzero sizes; the latest-release API returns `v0.1.0`.
 
 - [ ] **Step 5: Verify the README destination**
 
