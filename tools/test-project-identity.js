@@ -96,15 +96,26 @@ test("the desktop UI identity is consistent across template and generated builds
     "md-viewer-toc",
     "md-viewer-reader",
   ];
+  const fullDescription = "A fast, private desktop Markdown editor with live preview, Mermaid diagrams, KaTeX math, native file handling, and offline exports.";
+  const liteDescription = "A fast, private Markdown editor with live preview, local file handling, and offline exports.";
 
   for (const file of ["src/index.template.html", "index.html", "index-lite.html"]) {
     const html = readText(file);
     const joinedHtmlStrings = html.replaceAll(/"\s*\+\s*"/g, "");
+    const helpSource = html.slice(html.indexOf("function buildHelp()"), html.indexOf('  $("btn-help")'));
 
     assert.match(html, /MDedit/);
     assert.match(html, /github\.com\/skanga\/mdedit/);
-    assert.match(html, /<title>MDedit — Markdown editor<\/title>/);
-    assert.match(html, /<meta name="description" content="A fast, private desktop Markdown editor with live preview, Mermaid diagrams, KaTeX math, native file handling, and offline exports\.">/);
+    assert.equal(
+      html.includes(file === "index-lite.html"
+        ? "<title>MDedit (lite) — Markdown editor</title>"
+        : "<title>MDedit — Markdown editor</title>"),
+      true,
+    );
+    assert.equal(
+      html.includes(`<meta name="description" content="${file === "index-lite.html" ? liteDescription : fullDescription}">`),
+      true,
+    );
     assert.match(html, /\.md, \.markdown or any text file — it stays on your device/);
     assert.match(html, /setStatus\("Draft restored"\);/);
     assert.match(joinedHtmlStrings, /Drop a <code>\.md<\/code> file anywhere in the window, or use Open\. Save writes directly to the current file; Save as creates a new copy\./);
@@ -114,21 +125,23 @@ test("the desktop UI identity is consistent across template and generated builds
     assert.match(html, /Type on the left and see the rendered document on the right/);
     assert.match(html, /\*\*Save\*\* writes back to the current file; \*\*Save as\*\* creates a new copy/);
     assert.match(html, /Your work is restored automatically if the app closes unexpectedly/);
-    assert.doesNotMatch(html, new RegExp(formerProductName));
-    for (const url of formerGitHubUrls) assert.doesNotMatch(html, new RegExp(url.replaceAll("/", "\\/")));
+    assert.equal(html.includes(formerProductName), false);
+    for (const url of formerGitHubUrls) assert.equal(html.includes(url), false);
     assert.doesNotMatch(html, /class="brand"/);
     assert.doesNotMatch(html, /id="lite-tag"/);
-    assert.doesNotMatch(html, /Hover a table or diagram to download it on its own/);
-    for (const key of legacyStorageKeys) assert.doesNotMatch(html, new RegExp(key));
+    assert.equal(helpSource.includes("Hover a table or a diagram"), false);
+    assert.equal(helpSource.includes("Install it in Chrome or Edge"), false);
+    assert.equal(helpSource.includes("Need something custom?"), false);
+    assert.equal(helpSource.includes("support@kingsbridge-consultancy.com"), false);
+    assert.equal(helpSource.includes("custom build enquiry"), false);
+    for (const key of legacyStorageKeys) assert.equal(html.includes(key), false);
   }
 });
 
-test("the lite build receives the MDedit lite title", () => {
-  const buildScript = readText("build.sh");
-
-  assert.match(
-    buildScript,
-    /doc\.replace\("MDedit —", "MDedit \(lite\) —", 1\)/,
+test("the lite build marks its attribution banner", () => {
+  assert.equal(
+    readText("build.sh").includes('doc.replace("MDedit —", "MDedit (lite) —", 1)'),
+    true,
   );
 });
 

@@ -62,6 +62,14 @@ def build(out, include_heavy):
             "This file bundles the following libraries, each of which carries its own\n"
             "  license banner inside its minified code below.")
         doc = doc.replace("MDedit —", "MDedit (lite) —", 1)
+        doc = doc.replace(
+            "<title>MDedit — Markdown editor</title>",
+            "<title>MDedit (lite) — Markdown editor</title>",
+            1)
+        doc = doc.replace(
+            '<meta name="description" content="A fast, private desktop Markdown editor with live preview, Mermaid diagrams, KaTeX math, native file handling, and offline exports.">',
+            '<meta name="description" content="A fast, private Markdown editor with live preview, local file handling, and offline exports.">',
+            1)
         # lite is a standalone file, so drop the PWA sidecars: its manifest and
         # service worker would point installs and the offline cache at the FULL
         # build sitting next to it.
