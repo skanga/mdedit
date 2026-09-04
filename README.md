@@ -14,16 +14,17 @@ MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It c
 
 ## Download
 
-Download development builds from the [MDedit Desktop Actions workflow](https://github.com/skanga/mdedit/actions/workflows/desktop.yml).
+Download the [latest stable build from GitHub Releases](https://github.com/skanga/mdedit/releases/latest).
 
-| Artifact | Platform | Contents |
+| Download | Platform | Description |
 | --- | --- | --- |
-| `mdedit-windows-latest` | Windows x64 | NSIS `.exe` and MSI `.msi` installers |
-| `mdedit-windows-portable` | Windows x64 | Single portable `.exe` |
-| `mdedit-macos-latest` | macOS | Tauri macOS bundles |
-| `mdedit-ubuntu-latest` | Ubuntu Linux | Debian `.deb` package |
+| `MDedit_<version>_x64-setup.exe` | Windows x64 | Recommended NSIS installer |
+| `MDedit_<version>_x64_en-US.msi` | Windows x64 | Managed/administrator MSI installer |
+| `MDedit-portable-x64.exe` | Windows x64 | Portable executable; no installation required |
+| `MDedit_<version>_aarch64.dmg` | macOS Apple silicon | Disk image |
+| `MDedit_<version>_amd64.deb` | Ubuntu/Debian x64 | Debian package |
 
-These are unsigned development builds, so your operating system may show a warning. GitHub may require you to sign in before downloading workflow artifacts.
+These are unsigned builds, so your operating system may show a warning.
 
 ## Windows installers
 
@@ -60,7 +61,7 @@ npm run tauri -- build --bundles nsis
 | `vendor/` | Vendored frontend dependencies and KaTeX fonts |
 | `build.sh` | Generates the frontend HTML assets |
 | `tools/build-desktop.sh` | Builds and stages the frontend for Tauri |
-| `.github/workflows/desktop.yml` | Desktop CI build and artifact workflow |
+| `.github/workflows/desktop.yml` | Desktop build and GitHub Release workflow |
 
 `index.html` and `index-lite.html` are generated internals used as Tauri assets. Modify `src/index.template.html` and run `bash ./build.sh`; do not hand-edit generated files.
 
