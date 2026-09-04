@@ -2,6 +2,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const root = path.resolve(__dirname, "..");
@@ -11,8 +12,20 @@ function readJson(relativePath) {
 }
 
 function readText(relativePath) {
-  return fs.readFileSync(path.join(root, relativePath), "utf8");
+  const filePath = path.isAbsolute(relativePath) ? relativePath : path.join(root, relativePath);
+  return fs.readFileSync(filePath, "utf8").replaceAll("\r\n", "\n");
 }
+
+test("readText normalizes Windows newlines", () => {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mdedit-newline-"));
+  const fixture = path.join(tempDir, "fixture.txt");
+  fs.writeFileSync(fixture, "first\r\nsecond\r\n", "utf8");
+  try {
+    assert.equal(readText(fixture), "first\nsecond\n");
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
+  }
+});
 
 function readCargoMetadata() {
   const output = execFileSync(
@@ -62,7 +75,7 @@ test("Cargo metadata identifies the mdedit package and targets", () => {
 });
 
 test("the binary starts the mdedit library", () => {
-  const mainRs = readText("src-tauri/src/main.rs").replaceAll("\r\n", "\n");
+  const mainRs = readText("src-tauri/src/main.rs");
 
   assert.equal(
     mainRs,
