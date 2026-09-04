@@ -41,7 +41,20 @@ jobs:
         run: bash ./tools/build-desktop.sh
       - name: Build desktop bundles
         run: npx tauri build ${{ matrix.args }}
+      - name: Stage portable Windows executable
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path portable | Out-Null
+          Copy-Item src-tauri/target/release/mdedit.exe portable/MDedit-portable-x64.exe
       - uses: actions/upload-artifact@v4
         with:
           name: mdedit-${{ matrix.os }}
           path: src-tauri/target/release/bundle/**
+      - name: Upload portable Windows executable
+        if: runner.os == 'Windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: mdedit-windows-portable
+          path: portable/MDedit-portable-x64.exe
+          if-no-files-found: error

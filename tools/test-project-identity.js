@@ -95,6 +95,14 @@ test("README and CI describe the MDedit desktop product", () => {
   assert.match(workflow, /run: npm ci/);
   assert.match(workflow, /run: npm test/);
   assert.match(workflow, /name: mdedit-\$\{\{ matrix\.os \}\}/);
+  assert.match(readme, /`mdedit-windows-portable`/);
+  assert.match(readme, /`MDedit-portable-x64\.exe`/);
+  assert.match(readme, /Microsoft Edge WebView2/);
+  assert.match(workflow, /if: runner\.os == 'Windows'/);
+  assert.match(workflow, /src-tauri\/target\/release\/mdedit\.exe/);
+  assert.match(workflow, /portable\/MDedit-portable-x64\.exe/);
+  assert.match(workflow, /name: mdedit-windows-portable/);
+  assert.match(workflow, /if-no-files-found: error/);
 });
 
 test("the desktop UI identity is consistent across template and generated builds", () => {

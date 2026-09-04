@@ -19,6 +19,7 @@ Download development builds from the [MDedit Desktop Actions workflow](https://g
 | Artifact | Platform | Contents |
 | --- | --- | --- |
 | `mdedit-windows-latest` | Windows x64 | NSIS `.exe` and MSI `.msi` installers |
+| `mdedit-windows-portable` | Windows x64 | Single portable `.exe` |
 | `mdedit-macos-latest` | macOS | Tauri macOS bundles |
 | `mdedit-ubuntu-latest` | Ubuntu Linux | Debian `.deb` package |
 
@@ -27,6 +28,8 @@ These are unsigned development builds, so your operating system may show a warni
 ## Windows installers
 
 For most Windows users, choose the NSIS installer: `MDedit_0.1.0_x64-setup.exe`. For managed or administrator-led deployment, use the MSI installer: `MDedit_0.1.0_x64_en-US.msi`. Either installer registers Markdown file associations.
+
+For a portable option, download and run `MDedit-portable-x64.exe` directly. It requires no installation, shortcuts, or file associations, but it does require the system Microsoft Edge WebView2 runtime. If WebView2 is missing or needs repair, use the NSIS installer to install or repair it. Portable preferences and restored drafts may still use the normal Windows app-data location. The NSIS installer is still recommended for most Windows users.
 
 ## Development
 
