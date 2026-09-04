@@ -16,6 +16,13 @@ function readText(relativePath) {
   return fs.readFileSync(filePath, "utf8").replaceAll("\r\n", "\n");
 }
 
+function readMarkdownSection(markdown, heading) {
+  const start = markdown.indexOf(`${heading}\n`);
+  assert.notEqual(start, -1);
+  const end = markdown.indexOf("\n## ", start + heading.length);
+  return markdown.slice(start, end === -1 ? markdown.length : end);
+}
+
 test("readText normalizes Windows newlines", () => {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "mdedit-newline-"));
   const fixture = path.join(tempDir, "fixture.txt");
@@ -93,29 +100,66 @@ test("Tauri configuration identifies the MDedit application", () => {
   assert.equal(tauriConfig.app.windows[0].title, "MDedit");
 });
 
-test("README and CI describe the MDedit desktop product", () => {
+test("README describes the MDedit desktop product and GitHub Releases downloads", () => {
   const readme = readText("README.md");
-  const workflow = readText(".github/workflows/desktop.yml");
+  const download = readMarkdownSection(readme, "## Download");
 
   assert.ok(readme.startsWith("# MDedit\n"));
   for (const heading of ["## Download", "## Windows installers", "## Development"]) {
     assert.match(readme, new RegExp(`^${heading}$`, "m"));
   }
-  assert.match(readme, /github\.com\/skanga\/mdedit\/actions\/workflows\/desktop\.yml/);
+  assert.match(download, /github\.com\/skanga\/mdedit\/releases\/latest/);
+  for (const assetPattern of [
+    /MDedit_<version>_x64-setup\.exe/,
+    /MDedit_<version>_x64_en-US\.msi/,
+    /MDedit-portable-x64\.exe/,
+    /MDedit_<version>_aarch64\.dmg/,
+    /MDedit_<version>_amd64\.deb/,
+  ]) {
+    assert.match(download, assetPattern);
+  }
+  assert.doesNotMatch(readme, /github\.com\/skanga\/mdedit\/actions\//);
+  assert.doesNotMatch(readme, /Actions artifacts/i);
+  assert.doesNotMatch(readme, /workflow artifacts/i);
+  assert.doesNotMatch(readme, /sign in before downloading/i);
   assert.doesNotMatch(readme, /^## (Browser support|The lite build|Self-hosting)$/m);
   assert.doesNotMatch(readme, /runs entirely in your browser/);
+
+  assert.match(readme, /`MDedit-portable-x64\.exe`/);
+  assert.match(readme, /Microsoft Edge WebView2/);
+  assert.match(readme, /MDedit_0\.1\.0_x64-setup\.exe/);
+  assert.match(readme, /MDedit_0\.1\.0_x64_en-US\.msi/);
+});
+
+test("CI publishes tagged desktop builds as a GitHub Release", () => {
+  const workflow = readText(".github/workflows/desktop.yml");
+  const releaseStart = workflow.indexOf("\n  release:\n");
+  assert.notEqual(releaseStart, -1);
+  const nextJob = workflow.slice(releaseStart + "\n  release:\n".length)
+    .search(/\n  [A-Za-z0-9_-]+:\n/);
+  const releaseEnd = nextJob === -1 ? workflow.length : releaseStart + "\n  release:\n".length + nextJob;
+  const releaseJob = workflow.slice(releaseStart + 1, releaseEnd);
 
   assert.match(workflow, /run: npm ci/);
   assert.match(workflow, /run: npm test/);
   assert.match(workflow, /name: mdedit-\$\{\{ matrix\.os \}\}/);
-  assert.match(readme, /`mdedit-windows-portable`/);
-  assert.match(readme, /`MDedit-portable-x64\.exe`/);
-  assert.match(readme, /Microsoft Edge WebView2/);
+  assert.match(workflow, /^permissions:\n  contents: read/m);
   assert.match(workflow, /if: runner\.os == 'Windows'/);
   assert.match(workflow, /src-tauri\/target\/release\/mdedit\.exe/);
   assert.match(workflow, /portable\/MDedit-portable-x64\.exe/);
   assert.match(workflow, /name: mdedit-windows-portable/);
   assert.match(workflow, /if-no-files-found: error/);
+  assert.match(releaseJob, /^  release:\s*$/m);
+  assert.match(releaseJob, /needs: build/);
+  assert.match(releaseJob, /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.match(releaseJob, /permissions:\s*\n\s*contents: write/);
+  assert.match(releaseJob, /uses: actions\/download-artifact@v4/);
+  assert.match(releaseJob, /pattern: mdedit-\*/);
+  assert.match(releaseJob, /test "\$\{#assets\[@\]\}" -eq 5/);
+  assert.match(releaseJob, /gh release create "\$GITHUB_REF_NAME"/);
+  assert.match(releaseJob, /gh release upload "\$GITHUB_REF_NAME"/);
+  assert.match(releaseJob, /--generate-notes/);
+  assert.match(releaseJob, /--clobber/);
 });
 
 test("the desktop UI identity is consistent across template and generated builds", () => {
