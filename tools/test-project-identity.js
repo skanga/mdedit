@@ -79,3 +79,70 @@ test("Tauri configuration identifies the MDedit application", () => {
   assert.equal(tauriConfig.identifier, "com.skanga.mdedit");
   assert.equal(tauriConfig.app.windows[0].title, "MDedit");
 });
+
+test("the desktop UI identity is consistent across template and generated builds", () => {
+  const formerProductName = "Free MD Viewer";
+  const formerGitHubUrls = [
+    "github.com/hattray/markdown-editor",
+  ];
+  const legacyStorageKeys = [
+    "md-editor-draft-v1",
+    "md-editor-theme",
+    "md-editor-toc",
+    "md-editor-reader",
+    "md-viewer-draft-v1",
+    "md-viewer-theme",
+    "md-viewer-toc",
+    "md-viewer-reader",
+  ];
+
+  for (const file of ["src/index.template.html", "index.html", "index-lite.html"]) {
+    const html = readText(file);
+    const joinedHtmlStrings = html.replaceAll(/"\s*\+\s*"/g, "");
+
+    assert.match(html, /MDedit/);
+    assert.match(html, /github\.com\/skanga\/mdedit/);
+    assert.match(html, /<title>MDedit — Markdown editor<\/title>/);
+    assert.match(html, /<meta name="description" content="A fast, private desktop Markdown editor with live preview, Mermaid diagrams, KaTeX math, native file handling, and offline exports\.">/);
+    assert.match(html, /\.md, \.markdown or any text file — it stays on your device/);
+    assert.match(html, /setStatus\("Draft restored"\);/);
+    assert.match(joinedHtmlStrings, /Drop a <code>\.md<\/code> file anywhere in the window, or use Open\. Save writes directly to the current file; Save as creates a new copy\./);
+    assert.match(html, /# Welcome to MDedit/);
+    assert.match(html, /A fast, private desktop Markdown editor — \*\*your documents stay on your device\*\*\./);
+    assert.match(html, /Drop\*\* a Markdown file anywhere in the window, or use \*\*Open\*\*/);
+    assert.match(html, /Type on the left and see the rendered document on the right/);
+    assert.match(html, /\*\*Save\*\* writes back to the current file; \*\*Save as\*\* creates a new copy/);
+    assert.match(html, /Your work is restored automatically if the app closes unexpectedly/);
+    assert.doesNotMatch(html, new RegExp(formerProductName));
+    for (const url of formerGitHubUrls) assert.doesNotMatch(html, new RegExp(url.replaceAll("/", "\\/")));
+    assert.doesNotMatch(html, /class="brand"/);
+    assert.doesNotMatch(html, /id="lite-tag"/);
+    assert.doesNotMatch(html, /Hover a table or diagram to download it on its own/);
+    for (const key of legacyStorageKeys) assert.doesNotMatch(html, new RegExp(key));
+  }
+});
+
+test("the lite build receives the MDedit lite title", () => {
+  const buildScript = readText("build.sh");
+
+  assert.match(
+    buildScript,
+    /doc\.replace\("MDedit —", "MDedit \(lite\) —", 1\)/,
+  );
+});
+
+test("PWA metadata identifies MDedit", () => {
+  for (const file of ["pwa/manifest.json", "manifest.json"]) {
+    const manifest = readJson(file);
+
+    assert.equal(manifest.name, "MDedit");
+    assert.equal(manifest.short_name, "MDedit");
+  }
+
+  for (const file of ["pwa/sw.js", "sw.js"]) {
+    const worker = readText(file);
+
+    assert.match(worker, /Service worker for MDedit\./);
+    assert.match(worker, /const CACHE = "mdedit-shell-v1";/);
+  }
+});

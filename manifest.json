@@ -1,7 +1,7 @@
 {
-  "name": "Free MD Viewer",
-  "short_name": "MD Viewer",
-  "description": "Open, read and edit markdown files in your browser. Your files never leave your device.",
+  "name": "MDedit",
+  "short_name": "MDedit",
+  "description": "Open, edit, and preview Markdown locally with MDedit.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

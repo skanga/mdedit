@@ -61,7 +61,7 @@ def build(out, include_heavy):
             "  their banners inside their own minified code below.",
             "This file bundles the following libraries, each of which carries its own\n"
             "  license banner inside its minified code below.")
-        doc = doc.replace("Free MD Viewer —", "Free MD Viewer (lite) —", 1)
+        doc = doc.replace("MDedit —", "MDedit (lite) —", 1)
         # lite is a standalone file, so drop the PWA sidecars: its manifest and
         # service worker would point installs and the offline cache at the FULL
         # build sitting next to it.

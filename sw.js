@@ -1,11 +1,11 @@
-/* Service worker for Free MD Viewer.
+/* Service worker for MDedit.
  *
  * Network-first: the app is a single large HTML file that changes on every
  * deploy, so we always prefer the network and keep the cache purely as an
  * offline fallback. That way an installed copy updates itself without any
  * cache-busting version dance, but still opens with no connection.
  */
-const CACHE = "md-viewer";
+const CACHE = "mdedit-shell-v1";
 const SHELL = ["./", "./index.html", "./manifest.json"];
 
 self.addEventListener("install", (event) => {
