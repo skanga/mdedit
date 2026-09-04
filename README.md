@@ -1,166 +1,83 @@
-# Free MD Viewer
+# MDedit
 
-A markdown viewer and editor that runs entirely in your browser. **Your files stay on
-your machine** — there is no upload endpoint, no account, and no server-side rendering.
-
-**Live at [kingsbridge-consultancy.com/md-viewer](https://kingsbridge-consultancy.com/md-viewer/)**
-
-Drop a `.md` file on the page (or click **Open**), read it properly rendered, edit it with a
-live preview, and save it straight back to disk. The whole app is one self-contained
-`index.html` (~3.6 MB, ~1 MB over the wire) with every library and font embedded, so you can
-also save the page and run it offline from `file://`.
-
-## Why
-
-Markdown files are everywhere now — every AI tool hands you one — but double-clicking a `.md`
-file still gets you a wall of raw text, and most online viewers upload your document to a
-server to render it. For work documents and private notes, that's a real cost of a "free"
-tool. This renders locally instead.
-
-The claim is checkable rather than promised: everything is inlined, so open devtools and watch
-the network tab, or read the source with view-source. Only the vendor libraries are minified —
-the app's own code ships readable.
+MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It combines a focused source editor and live preview with native file handling, Mermaid diagrams, KaTeX math, and offline exports. Your documents stay local.
 
 ## Features
 
-- **Drag & drop** or file-picker open; accepts `.md`, `.markdown`, `.txt`
-- **Live split preview** (Edit / Split / Preview modes) with scroll sync; phones open in Preview
-- **Save writes back to the original file** via the File System Access API (Chrome/Edge — works
-  for both picked and dropped files); Save-As and a plain download fallback everywhere else
-- **GitHub-flavored markdown**: tables, task lists, strikethrough, fenced code blocks
-- **Syntax highlighting** in code fences (highlight.js, GitHub-style palette for both themes)
-- **Mermaid diagrams** from ` ```mermaid ` fences, theme-aware (re-rendered on dark/light toggle)
-- **LaTeX math** via KaTeX: `$inline$`, `$$display$$`, `\(...\)`, `\[...\]` — math is extracted
-  *before* markdown parsing so underscores/asterisks in TeX survive, and `$` inside code spans
-  and fences is left alone
-- **Footnotes**: `[^1]` references with `[^1]: …` definitions, numbered by order of first
-  reference, collected into a footnote section with back-links. A reference with no definition
-  stays literal text, as on GitHub
-- **Find & replace** in the editor (`⌘F`/`Ctrl+F`) — match count, next/previous, replace one or
-  all. Replace All is a single undo step. In Preview the browser's own find is left alone
-- **Insert-equation palette** — a grid of LaTeX structures, Greek letters and operators, each
-  rendered with KaTeX so you pick the shape instead of recalling the syntax
-- **GitHub callouts**: `> [!NOTE]`, `[!TIP]`, `[!IMPORTANT]`, `[!WARNING]`, `[!CAUTION]`
-- **Export** (all generated in-page, nothing uploaded, no watermarks or limits):
-  - `.html` — the rendered document as one self-contained file, styles and KaTeX fonts embedded
-  - `.png` — the preview rasterized via an SVG `<foreignObject>` painted onto a canvas, at up to
-    2× device scale. Remote images can't load inside an SVG-as-image, so they come out blank;
-    `data:` URIs are fine
-  - PDF — the browser's own print-to-PDF, so the text stays selectable. Printing forces the light
-    palette (and temporarily switches the app to light first, since Mermaid bakes theme colors
-    into its SVG)
-- **Copy code blocks** — hover a fenced code block for a `Copy` button (falls back to a
-  legacy copy when the async clipboard is unavailable, e.g. from `file://`)
-- **Help & support** — a `?` panel with the shortcuts, plus a route to request custom builds
-  (lite, SSO, sync, on-premise) at support@kingsbridge-consultancy.com
-- **Per-block downloads** — hover a Mermaid diagram for an `SVG` button (real dimensions taken
-  from its viewBox, not mermaid's `width="100%"`), or a table for a `CSV` button (RFC-style
-  quoting, UTF-8 BOM so Excel reads accents correctly)
-- **Installable (Chrome/Edge desktop)** — a service worker plus a manifest declaring
-  `file_handlers`, so once installed, double-clicking a `.md` file opens it here. The launch
-  handle is a real `FileSystemFileHandle`, so Save writes straight back to the file you opened.
-  Works offline
-- **Table of contents** — toggleable panel built from headings; a slide-over drawer on phones
-- **Reader controls** — text size and line width (Aa button), persisted
-- **Sanitized rendering** — untrusted markdown can't inject script (DOMPurify, including over
-  KaTeX output)
-- **Draft auto-restore** — content persists in `localStorage`, so a refresh or crash loses nothing
-- **Dark / light theme** (follows system, manual toggle remembered)
-- Inline rename, word/char/line counts, `⌘S` / `⌘⇧S` / `⌘O` shortcuts
+- Native **Open**, **Save**, and **Save As** for Markdown documents.
+- Synchronized **Edit**, **Split**, and **Preview** modes.
+- GitHub-flavored Markdown, task lists, tables, footnotes, and callouts.
+- Syntax highlighting, Mermaid diagrams, and KaTeX math.
+- Find and replace, table of contents, reader controls, and light/dark themes.
+- HTML, PNG, PDF, CSV, and SVG exports.
+- Draft restoration and Markdown file associations.
 
-## Browser support
+## Download
 
-Rendering, editing, exports and per-block downloads work in any current browser. Two features
-depend on Chromium-desktop-only APIs and degrade gracefully elsewhere:
+Download development builds from the [MDedit Desktop Actions workflow](https://github.com/skanga/mdedit/actions/workflows/desktop.yml).
 
-| Feature | API | Elsewhere |
-| ------- | --- | --------- |
-| Save back to the original file | File System Access | falls back to a download |
-| Double-click a `.md` to open it here | `file_handlers` + `launchQueue` | not offered |
+| Artifact | Platform | Contents |
+| --- | --- | --- |
+| `mdedit-windows-latest` | Windows x64 | NSIS `.exe` and MSI `.msi` installers |
+| `mdedit-macos-latest` | macOS | Tauri macOS bundles |
+| `mdedit-ubuntu-latest` | Ubuntu Linux | Debian `.deb` package |
 
-## Desktop app
+These are unsigned development builds, so your operating system may show a warning. GitHub may require you to sign in before downloading workflow artifacts.
 
-The same single-file app ships as a native desktop app via [Tauri](https://tauri.app)
-(`src-tauri/`), with native open/save dialogs and write-back on Windows, macOS and
-Linux. The web build is unchanged — in a plain browser `window.nativeApp` is null and
-all the original code paths run.
+## Windows installers
+
+For most Windows users, choose the NSIS installer: `MDedit_0.1.0_x64-setup.exe`. For managed or administrator-led deployment, use the MSI installer: `MDedit_0.1.0_x64_en-US.msi`. Either installer registers Markdown file associations.
+
+## Development
+
+Install Node.js LTS, Python 3, Rust/Cargo, and the [official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/). On Windows, also install Bash through Git Bash.
 
 ```bash
-npm install            # one-time (adds @tauri-apps/cli)
-npm run build:desktop  # builds the web app and stages dist-desktop/
-npm run tauri dev      # run it
-npm run tauri build    # installers: NSIS on Windows, dmg on macOS, AppImage/deb on Linux
+npm ci
+npm test
+
+# Build the desktop frontend and run MDedit in development.
+npm run build:desktop
+npm run tauri -- dev
+
+# Create desktop bundles.
+npm run tauri -- build
+
+# Create a Windows NSIS installer.
+npm run tauri -- build --bundles nsis
 ```
 
-Double-clicking a `.md` file (or `free-md-viewer some.md`) opens it in the app, since the
-bundles register a Markdown file association.
+## Project structure
 
-## Building
+| Path | Purpose |
+| --- | --- |
+| `src/index.template.html` | Source template for the desktop frontend |
+| `src/native-bridge.js` | Native Tauri bridge used by the frontend |
+| `src-tauri/` | Tauri application, Rust code, and bundle configuration |
+| `vendor/` | Vendored frontend dependencies and KaTeX fonts |
+| `build.sh` | Generates the frontend HTML assets |
+| `tools/build-desktop.sh` | Builds and stages the frontend for Tauri |
+| `.github/workflows/desktop.yml` | Desktop CI build and artifact workflow |
 
-No package manager, no toolchain — just Python 3 and bash:
+`index.html` and `index-lite.html` are generated internals used as Tauri assets. Modify `src/index.template.html` and run `bash ./build.sh`; do not hand-edit generated files.
 
-```bash
-./build.sh
-```
+## Privacy
 
-That inlines the vendored libraries and the KaTeX fonts into `src/index.template.html` and
-writes **two** builds, then copies the PWA sidecars to the repo root. Edit
-`src/index.template.html`, never the built files.
-
-| build | size | contains |
-| ----- | ---- | -------- |
-| `index.html` | ~3.7 MB | everything |
-| `index-lite.html` | ~270 KB | no Mermaid, no KaTeX |
-
-```
-src/index.template.html   the app (HTML/CSS/JS), with markers where libraries get inlined
-vendor/                   the bundled libraries + KaTeX .woff2 fonts
-pwa/                      manifest.json, sw.js and the icons
-tools/make-icons.py       regenerates the icons (hand-rolled PNG encoder, no dependencies)
-build.sh                  the build
-index.html                the built, self-contained app (committed)
-index-lite.html           the same app without diagrams and math (committed)
-licenses/                 full license texts for everything bundled
-```
-
-## The lite build
-
-Mermaid is 2.75 MB and KaTeX with its fonts about 0.74 MB, so **diagrams and math are ~96% of
-the full download**. If you never write either, `index-lite.html` is the same app roughly 13×
-smaller.
-
-It is the same source: the app feature-detects both libraries at runtime, so the two builds
-cannot drift apart. Without them, `$x^2$` stays literal text and a ```` ```mermaid ```` fence
-renders as an ordinary code block; the equation palette hides itself and a small **lite** badge
-appears next to the name. Everything else — GFM, syntax highlighting, footnotes, callouts,
-find & replace, the table of contents, exports, per-block downloads — is unchanged.
-
-`index-lite.html` deliberately ships no manifest or service worker: it is meant to be used as
-one standalone file, and those would point an install at the full build sitting beside it. It
-is not deployed anywhere; download it from this repo, or self-host it yourself.
-
-## Self-hosting
-
-`index.html` is the entire product. Copy it anywhere a static file can be served, or open it
-from disk. It needs no CORS, no CSP beyond allowing its own inline scripts, and no backend.
-
-The `manifest.json`, `sw.js` and `icon-*.png` files beside it are only needed for the
-installable-app behavior; serving `index.html` alone works fine without them. Installability
-additionally requires HTTPS (or localhost).
-
-## License
-
-[MIT](LICENSE) for this project's own code.
-
-The built `index.html` bundles marked, DOMPurify, highlight.js, KaTeX and Mermaid, so their
-licenses travel with any copy you distribute — see [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md)
-and [`licenses/`](licenses/). A summary is also embedded as a comment at the top of the built file.
+MDedit has no account, telemetry, document upload, or server-side rendering. Documents remain local. Remote transmission of documents is out of scope.
 
 ## Contributing
 
-Issues and pull requests are welcome. Two things to keep in mind:
+Issues and pull requests are welcome at [github.com/skanga/mdedit](https://github.com/skanga/mdedit). Before opening a change, run:
 
-1. Edit `src/index.template.html` and run `./build.sh`; don't hand-edit `index.html`.
-2. Anything that would send a user's document off their machine — telemetry, cloud rendering,
-   AI features backed by an API, share links that upload — is out of scope by design. Features
-   that need a server belong in a fork, not here.
+```bash
+npm test
+npm run build:desktop
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+cargo test --manifest-path src-tauri/Cargo.toml
+```
+
+When changing frontend source, commit the generated artifacts as well.
+
+## License
+
+MDedit is licensed under [MIT](LICENSE). See [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md) and [`licenses/`](licenses/) for third-party notices and licenses.

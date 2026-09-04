@@ -80,6 +80,23 @@ test("Tauri configuration identifies the MDedit application", () => {
   assert.equal(tauriConfig.app.windows[0].title, "MDedit");
 });
 
+test("README and CI describe the MDedit desktop product", () => {
+  const readme = readText("README.md");
+  const workflow = readText(".github/workflows/desktop.yml");
+
+  assert.ok(readme.startsWith("# MDedit\n"));
+  for (const heading of ["## Download", "## Windows installers", "## Development"]) {
+    assert.match(readme, new RegExp(`^${heading}$`, "m"));
+  }
+  assert.match(readme, /github\.com\/skanga\/mdedit\/actions\/workflows\/desktop\.yml/);
+  assert.doesNotMatch(readme, /^## (Browser support|The lite build|Self-hosting)$/m);
+  assert.doesNotMatch(readme, /runs entirely in your browser/);
+
+  assert.match(workflow, /run: npm ci/);
+  assert.match(workflow, /run: npm test/);
+  assert.match(workflow, /name: mdedit-\$\{\{ matrix\.os \}\}/);
+});
+
 test("the desktop UI identity is consistent across template and generated builds", () => {
   const formerProductName = "Free MD Viewer";
   const formerGitHubUrls = [
