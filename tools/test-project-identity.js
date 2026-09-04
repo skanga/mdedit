@@ -103,6 +103,7 @@ test("Tauri configuration identifies the MDedit application", () => {
 test("README describes the MDedit desktop product and GitHub Releases downloads", () => {
   const readme = readText("README.md");
   const download = readMarkdownSection(readme, "## Download");
+  const windowsInstallers = readMarkdownSection(readme, "## Windows installers");
 
   assert.ok(readme.startsWith("# MDedit\n"));
   for (const heading of ["## Download", "## Windows installers", "## Development"]) {
@@ -127,8 +128,9 @@ test("README describes the MDedit desktop product and GitHub Releases downloads"
 
   assert.match(readme, /`MDedit-portable-x64\.exe`/);
   assert.match(readme, /Microsoft Edge WebView2/);
-  assert.match(readme, /MDedit_0\.1\.0_x64-setup\.exe/);
-  assert.match(readme, /MDedit_0\.1\.0_x64_en-US\.msi/);
+  assert.match(windowsInstallers, /`MDedit_<version>_x64-setup\.exe`/);
+  assert.match(windowsInstallers, /`MDedit_<version>_x64_en-US\.msi`/);
+  assert.doesNotMatch(windowsInstallers, /MDedit_0\.1\.0/);
 });
 
 test("CI publishes tagged desktop builds as a GitHub Release", () => {
@@ -152,6 +154,7 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
   assert.match(releaseJob, /^  release:\s*$/m);
   assert.match(releaseJob, /needs: build/);
   assert.match(releaseJob, /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.match(releaseJob, /github\.event_name == 'push'/);
   assert.match(releaseJob, /permissions:\s*\n\s*contents: write/);
   assert.match(
     releaseJob,
