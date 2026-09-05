@@ -236,6 +236,18 @@ pub fn save_document_path(
     content: &str,
     expected_sha256: Option<&str>,
 ) -> Result<SaveDocumentResult, String> {
+    save_document_path_with_installer(path, content, expected_sha256, replace_existing)
+}
+
+fn save_document_path_with_installer<I>(
+    path: &Path,
+    content: &str,
+    expected_sha256: Option<&str>,
+    install: I,
+) -> Result<SaveDocumentResult, String>
+where
+    I: FnOnce(&Path, &Path) -> io::Result<()>,
+{
     // Validate/canonicalize the destination before creating any temporary data.
     canonical_comparison_path(path)?;
     let destination = match fs::symlink_metadata(path) {
@@ -302,7 +314,7 @@ pub fn save_document_path(
                 ));
             }
             drop(temporary_file);
-            if let Err(error) = replace_existing(&temporary, &destination) {
+            if let Err(error) = install(&temporary, &destination) {
                 remove_temporary(&temporary, directory);
                 return Err(format!(
                     "failed to replace document {}: {error}",
@@ -311,27 +323,38 @@ pub fn save_document_path(
             }
         }
         (None, None) => {
-            drop(temporary_file);
-            if let Err(error) = fs::hard_link(&temporary, &destination) {
-                let conflict = if error.kind() == io::ErrorKind::AlreadyExists {
-                    fingerprint(&destination).ok()
-                } else {
-                    None
-                };
-                remove_temporary(&temporary, directory);
-                if let Some(actual) = conflict {
+            // Recheck at the last possible moment so an intervening creator is
+            // reported as a conflict. Standard cross-platform rename APIs do
+            // not provide a single compare-and-rename operation, so a writer
+            // can still appear in the narrow interval after this check.
+            match fingerprint(&destination) {
+                Ok(actual) => {
+                    drop(temporary_file);
+                    remove_temporary(&temporary, directory);
                     return Ok(SaveDocumentResult::Conflict {
                         actual_sha256: actual.sha256,
                         size: actual.size,
                         modified_ms: actual.modified_ms,
                     });
                 }
+                Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    drop(temporary_file);
+                    remove_temporary(&temporary, directory);
+                    return Err(format!(
+                        "failed to fingerprint document {}: {error}",
+                        path.display()
+                    ));
+                }
+            }
+            drop(temporary_file);
+            if let Err(error) = install(&temporary, &destination) {
+                remove_temporary(&temporary, directory);
                 return Err(format!(
                     "failed to create document {}: {error}",
                     path.display()
                 ));
             }
-            remove_temporary(&temporary, directory);
         }
     }
 
@@ -374,6 +397,7 @@ pub(crate) fn canonicalize_document_path(path: String) -> Result<String, String>
 mod tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use std::cell::Cell;
     use std::fs;
     use tempfile::tempdir;
 
@@ -496,6 +520,23 @@ mod tests {
             } if actual == &canonical_path
         ));
         assert_eq!(fs::read_to_string(path).unwrap(), "café 📝");
+    }
+
+    #[test]
+    fn new_file_publication_uses_the_atomic_rename_installer() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("new.md");
+        let installer_called = Cell::new(false);
+
+        let result = save_document_path_with_installer(&path, "editor", None, |source, target| {
+            installer_called.set(true);
+            fs::rename(source, target)
+        })
+        .unwrap();
+
+        assert!(installer_called.get());
+        assert!(matches!(result, SaveDocumentResult::Saved { .. }));
+        assert_eq!(fs::read_to_string(path).unwrap(), "editor");
     }
 
     #[test]
