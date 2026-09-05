@@ -459,10 +459,35 @@ fn path_matches_identity(path: &Path, expected: &DocumentIdentity) -> bool {
 }
 
 #[cfg(any(windows, test))]
-fn cleanup_for_editor_destination(temporary: &Path, backup: &Path, directory: &Path) {
+fn cleanup_for_editor_destination(
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    directory: &Path,
+    original: &DocumentIdentity,
+) -> Result<(), String> {
+    let backup_identity = fingerprint(backup);
     remove_file_best_effort(temporary);
-    remove_file_best_effort(backup);
+
+    let result = match backup_identity {
+        Ok(actual) if actual.sha256 == original.sha256 && actual.size == original.size => {
+            remove_file_best_effort(backup);
+            Ok(())
+        }
+        Ok(_) => Err(format!(
+            "editor document committed at {}, but third-party backup retained at {}",
+            destination.display(),
+            backup.display()
+        )),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(format!(
+            "editor document committed at {}, but unreadable backup retained at {}: {error}",
+            destination.display(),
+            backup.display()
+        )),
+    };
     sync_directory(directory);
+    result
 }
 
 #[cfg(any(windows, test))]
@@ -514,7 +539,13 @@ fn finish_successful_replacement(
     let (original, editor) = identities;
     match classify_destination(destination, original, editor) {
         DestinationIdentity::Editor => {
-            cleanup_for_editor_destination(temporary, backup, directory);
+            cleanup_for_editor_destination(
+                temporary,
+                destination,
+                backup,
+                directory,
+                original,
+            )?;
             Ok(())
         }
         DestinationIdentity::Original => {
@@ -558,7 +589,7 @@ where
     let (original, editor) = identities;
     match classify_destination(destination, original, editor) {
         DestinationIdentity::Editor => {
-            cleanup_for_editor_destination(temporary, backup, directory);
+            cleanup_for_editor_destination(temporary, destination, backup, directory, original)?;
             return Ok(ReplacementRecovery::DestinationPreserved);
         }
         DestinationIdentity::Original => {
@@ -593,7 +624,13 @@ where
         match publish(candidate, destination) {
             Ok(()) => match classify_destination(destination, original, editor) {
                 DestinationIdentity::Editor => {
-                    cleanup_for_editor_destination(temporary, backup, directory);
+                    cleanup_for_editor_destination(
+                        temporary,
+                        destination,
+                        backup,
+                        directory,
+                        original,
+                    )?;
                     return Ok(recovered);
                 }
                 DestinationIdentity::Original => {
@@ -619,7 +656,13 @@ where
             },
             Err(error) => match classify_destination(destination, original, editor) {
                 DestinationIdentity::Editor => {
-                    cleanup_for_editor_destination(temporary, backup, directory);
+                    cleanup_for_editor_destination(
+                        temporary,
+                        destination,
+                        backup,
+                        directory,
+                        original,
+                    )?;
                     return Ok(ReplacementRecovery::DestinationPreserved);
                 }
                 DestinationIdentity::Original => {
@@ -1550,6 +1593,101 @@ mod tests {
         assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
         assert!(!temporary.exists());
         assert!(!backup.exists());
+    }
+
+    #[test]
+    fn editor_destination_retains_and_reports_third_party_backup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "editor").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "third party").unwrap();
+
+        let error = complete_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("editor document committed"));
+        assert!(error.to_string().contains("third-party backup"));
+        assert!(error
+            .to_string()
+            .contains(&backup.to_string_lossy().into_owned()));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "third party");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn failed_replacement_with_editor_destination_retains_third_party_backup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "editor").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "third party").unwrap();
+
+        let error = complete_replacement(
+            Err(io::Error::other("ReplaceFileW failed")),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("ReplaceFileW failed"));
+        assert!(error.to_string().contains("editor document committed"));
+        assert!(error.to_string().contains("third-party backup"));
+        assert!(error
+            .to_string()
+            .contains(&backup.to_string_lossy().into_owned()));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "third party");
+        assert!(!temporary.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn editor_destination_retains_and_reports_unreadable_backup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "editor").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        fs::create_dir(&backup).unwrap();
+
+        let error = complete_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("editor document committed"));
+        assert!(error.to_string().contains("unreadable backup"));
+        assert!(error
+            .to_string()
+            .contains(&backup.to_string_lossy().into_owned()));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
+        assert!(backup.is_dir());
+        assert!(!temporary.exists());
     }
 
     #[test]
