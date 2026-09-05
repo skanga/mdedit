@@ -48,6 +48,13 @@
     return integer;
   }
 
+  function requirePersistedRevision(value) {
+    if (value === undefined) return -1;
+    const integer = requireInteger(value, "persisted revision");
+    if (integer < -1) throw new RangeError("persisted revision must be -1 or non-negative");
+    return integer;
+  }
+
   function normalizeScrollTop(value) {
     return Number.isFinite(value) && value >= 0 ? value : 0;
   }
@@ -106,9 +113,13 @@
       this.path = optionalString(input.path, "path");
       this.canonicalPath = optionalString(input.canonicalPath, "canonical path");
       this.content = typeof input.content === "string" ? input.content : "";
-      this.editRevision = Number.isInteger(input.editRevision) ? input.editRevision : 0;
-      this.persistedRevision = Number.isInteger(input.persistedRevision) ? input.persistedRevision : -1;
-      this.snapshotRevision = Number.isInteger(input.snapshotRevision) ? input.snapshotRevision : 0;
+      this.editRevision = input.editRevision === undefined
+        ? 0
+        : requireNonNegativeInteger(input.editRevision, "edit revision");
+      this.persistedRevision = requirePersistedRevision(input.persistedRevision);
+      this.snapshotRevision = input.snapshotRevision === undefined
+        ? 0
+        : requireNonNegativeInteger(input.snapshotRevision, "snapshot revision");
       this.savedContentSha256 = requireString(input.savedContentSha256, "saved content sha256");
       this.expectedDiskSha256 = optionalString(input.expectedDiskSha256, "expected disk sha256");
       this.fileStatus = FILE_STATUSES.has(input.fileStatus) ? input.fileStatus : "normal";
@@ -144,9 +155,7 @@
       const editRevision = requireNonNegativeInteger(result.editRevision, "edit revision");
       this.savedContentSha256 = requireString(result.contentSha256, "content sha256");
       this.expectedDiskSha256 = requireString(result.diskSha256, "disk sha256");
-      this.persistedRevision = editRevision;
       this.fileStatus = "normal";
-      this.recoveryStatus = "clean";
       this.dirty = this.editRevision !== editRevision;
     }
 

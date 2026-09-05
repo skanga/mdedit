@@ -59,6 +59,39 @@ test("blank untitled documents start clean with the empty-content hash", () => {
   assert.deepEqual(doc.workspace, emptyWorkspace());
 });
 
+test("constructor rejects negative revisions except the persisted sentinel", () => {
+  assert.throws(
+    () => new DocumentModel({
+      id: "doc-1",
+      displayName: "a.md",
+      content: "",
+      savedContentSha256: EMPTY_SHA,
+      editRevision: -1,
+    }),
+    /edit revision/i,
+  );
+  assert.throws(
+    () => new DocumentModel({
+      id: "doc-1",
+      displayName: "a.md",
+      content: "",
+      savedContentSha256: EMPTY_SHA,
+      snapshotRevision: -1,
+    }),
+    /snapshot revision/i,
+  );
+  assert.throws(
+    () => new DocumentModel({
+      id: "doc-1",
+      displayName: "a.md",
+      content: "",
+      savedContentSha256: EMPTY_SHA,
+      persistedRevision: -2,
+    }),
+    /persisted revision/i,
+  );
+});
+
 test("applyContent increments the edit revision and marks recovery pending", () => {
   const doc = new DocumentModel({
     id: "doc-1",
@@ -72,6 +105,31 @@ test("applyContent increments the edit revision and marks recovery pending", () 
   assert.equal(doc.editRevision, 1);
   assert.equal(doc.dirty, true);
   assert.equal(doc.recoveryStatus, "pending");
+});
+
+test("applyContent returns false for identical content and leaves state unchanged", () => {
+  const doc = new DocumentModel({
+    id: "doc-1",
+    displayName: "a.md",
+    content: "a",
+    savedContentSha256: "sha-a",
+    dirty: true,
+    recoveryStatus: "pending",
+  });
+  const before = {
+    content: doc.content,
+    editRevision: doc.editRevision,
+    dirty: doc.dirty,
+    recoveryStatus: doc.recoveryStatus,
+  };
+
+  assert.equal(doc.applyContent("a"), false);
+  assert.deepEqual({
+    content: doc.content,
+    editRevision: doc.editRevision,
+    dirty: doc.dirty,
+    recoveryStatus: doc.recoveryStatus,
+  }, before);
 });
 
 test("reconcileDirty ignores stale revisions and clears matching content", () => {
@@ -112,6 +170,8 @@ test("recordSave updates the save baseline without clearing dirty after a newer 
   assert.equal(doc.expectedDiskSha256, "disk-first");
   assert.equal(doc.fileStatus, "normal");
   assert.equal(doc.dirty, true);
+  assert.equal(doc.persistedRevision, -1);
+  assert.equal(doc.recoveryStatus, "pending");
 });
 
 test("fromSnapshot restores state and clamps selection and scroll positions", () => {
@@ -127,6 +187,23 @@ test("fromSnapshot restores state and clamps selection and scroll positions", ()
   assert.equal(doc.workspace.editorScrollTop, 0);
   assert.equal(doc.workspace.previewScrollTop, 0);
   assert.equal(doc.workspace.viewMode, "split");
+});
+
+test("fromSnapshot normalizes negative and non-finite selection and scroll values", () => {
+  const doc = DocumentModel.fromSnapshot(baseSnapshot({
+    workspace: {
+      ...emptyWorkspace(),
+      selectionStart: -9,
+      selectionEnd: Number.POSITIVE_INFINITY,
+      editorScrollTop: -12,
+      previewScrollTop: Number.NaN,
+    },
+  }));
+
+  assert.equal(doc.workspace.selectionStart, 0);
+  assert.equal(doc.workspace.selectionEnd, 0);
+  assert.equal(doc.workspace.editorScrollTop, 0);
+  assert.equal(doc.workspace.previewScrollTop, 0);
 });
 
 test("fromSnapshot rejects unsupported schema versions", () => {
@@ -152,4 +229,30 @@ test("fromSnapshot rejects invalid file status, view mode, and revisions", () =>
     () => DocumentModel.fromSnapshot(baseSnapshot({ editRevision: "4" })),
     /revision/i,
   );
+});
+
+test("toSnapshot includes the serializable document fields and excludes derived render state", () => {
+  const doc = DocumentModel.fromSnapshot(baseSnapshot());
+  const snapshot = doc.toSnapshot();
+
+  assert.deepEqual(Object.keys(snapshot).sort(), [
+    "canonicalPath",
+    "content",
+    "displayName",
+    "documentId",
+    "editRevision",
+    "expectedDiskSha256",
+    "fileStatus",
+    "path",
+    "savedContentSha256",
+    "schemaVersion",
+    "snapshotRevision",
+    "workspace",
+  ]);
+  assert.ok(!("renderedHtml" in snapshot));
+  assert.ok(!("previewDom" in snapshot));
+  assert.ok(!("undoHistory" in snapshot));
+  assert.ok(!("dirty" in snapshot));
+  assert.ok(!("recoveryStatus" in snapshot));
+  assert.ok(!("persistedRevision" in snapshot));
 });
