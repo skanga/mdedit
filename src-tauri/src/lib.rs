@@ -3,7 +3,7 @@ pub mod recovery;
 
 use document_io::{canonicalize_document_path, read_document, save_document};
 use recovery::{
-    delete_recovery_document, load_recovery_document, load_recovery_manifest,
+    delete_recovery_document, load_recovery_document, load_recovery_manifest, recovery_directory,
     write_recovery_document, write_recovery_manifest, RecoveryStore,
 };
 use std::path::Path;
@@ -52,7 +52,8 @@ pub fn run() {
             write_recovery_manifest,
             load_recovery_document,
             write_recovery_document,
-            delete_recovery_document
+            delete_recovery_document,
+            recovery_directory
         ])
         .setup(|app| {
             let recovery_root = app.path().app_data_dir()?.join("session-v1");

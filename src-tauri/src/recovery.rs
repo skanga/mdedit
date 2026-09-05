@@ -663,9 +663,9 @@ pub(crate) fn write_recovery_manifest(
 pub(crate) fn load_recovery_document(
     store: tauri::State<'_, RecoveryStore>,
     document_id: String,
-    revision: u64,
+    snapshot_revision: u64,
 ) -> Result<String, String> {
-    String::from_utf8(store.load_document(&document_id, revision)?)
+    String::from_utf8(store.load_document(&document_id, snapshot_revision)?)
         .map_err(|error| format!("recovery document is not UTF-8: {error}"))
 }
 
@@ -685,6 +685,19 @@ pub(crate) fn delete_recovery_document(
     document_id: String,
 ) -> Result<(), String> {
     store.delete_document(&document_id)
+}
+
+fn recovery_directory_path(store: &RecoveryStore) -> Result<String, String> {
+    store
+        .root()
+        .to_str()
+        .map(|path| path.to_owned())
+        .ok_or_else(|| "recovery directory path is not valid UTF-8".to_string())
+}
+
+#[tauri::command]
+pub(crate) fn recovery_directory(store: tauri::State<'_, RecoveryStore>) -> Result<String, String> {
+    recovery_directory_path(&store)
 }
 
 #[cfg(test)]
@@ -749,6 +762,28 @@ mod tests {
             r#"{{"schemaVersion":1,"documentId":"{document_id}","snapshotRevision":{revision},"editRevision":{revision},"displayName":"Document","path":null,"canonicalPath":null,"content":"revision {revision}","savedContentSha256":"","expectedDiskSha256":null,"fileStatus":"normal","workspace":{{"selectionStart":0,"selectionEnd":0,"editorScrollTop":0,"previewScrollTop":0,"viewMode":"split","tocOpen":false,"find":{{"open":false,"query":"","replacement":"","matchIndex":-1}}}}}}"#
         )
         .into_bytes()
+    }
+
+    #[test]
+    fn recovery_directory_returns_utf8_root() {
+        let store = RecoveryStore::new(tempdir().unwrap().path().join("session-v1"));
+        assert_eq!(
+            recovery_directory_path(&store).unwrap(),
+            store.root().to_str().unwrap()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn recovery_directory_rejects_non_utf8_root() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt;
+
+        let store = RecoveryStore::new(PathBuf::from(OsString::from_vec(vec![0xff, b's', b'e'])));
+        assert_eq!(
+            recovery_directory_path(&store).unwrap_err(),
+            "recovery directory path is not valid UTF-8"
+        );
     }
 
     #[test]

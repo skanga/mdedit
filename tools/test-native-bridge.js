@@ -132,7 +132,10 @@ test("document bridge methods invoke the expected Tauri commands and forward res
   const app = makeNativeApp(tauri);
 
   assert.equal(await app.readDocument("C:\\notes\\doc.md"), "read-document-result");
-  assert.deepEqual(await app.saveDocument({ path: "C:\\notes\\doc.md", data: "x" }), { saved: true });
+  assert.deepEqual(
+    await app.saveDocument({ path: "C:\\notes\\doc.md", content: "x", expectedSha256: "abc123" }),
+    { saved: true }
+  );
   assert.equal(await app.canonicalizeDocumentPath("C:\\notes\\doc.md"), "C:\\notes\\doc.md");
   assert.equal(await app.loadRecoveryManifest(), null);
   assert.equal(await app.loadRecoveryDocument("doc-1", 4), "recovery-document-result");
@@ -143,7 +146,7 @@ test("document bridge methods invoke the expected Tauri commands and forward res
 
   assert.deepEqual(calls.invoke, [
     ["read_document", { path: "C:\\notes\\doc.md" }],
-    ["save_document", { path: "C:\\notes\\doc.md", data: "x" }],
+    ["save_document", { path: "C:\\notes\\doc.md", content: "x", expectedSha256: "abc123" }],
     ["canonicalize_document_path", { path: "C:\\notes\\doc.md" }],
     ["load_recovery_manifest", undefined],
     ["load_recovery_document", { documentId: "doc-1", snapshotRevision: 4 }],
@@ -170,7 +173,10 @@ test("document bridge methods propagate invoke rejections unchanged", async () =
   const app = makeNativeApp(tauri);
 
   await assert.rejects(app.readDocument("C:\\notes\\doc.md"), error);
-  await assert.rejects(app.saveDocument({ path: "C:\\notes\\doc.md", data: "x" }), error);
+  await assert.rejects(
+    app.saveDocument({ path: "C:\\notes\\doc.md", content: "x", expectedSha256: "abc123" }),
+    error
+  );
   await assert.rejects(app.canonicalizeDocumentPath("C:\\notes\\doc.md"), error);
   await assert.rejects(app.loadRecoveryManifest(), error);
   await assert.rejects(app.loadRecoveryDocument("doc-1", 4), error);
