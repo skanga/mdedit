@@ -1,92 +1,174 @@
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, MutexGuard};
 use uuid::Uuid;
 
 const MANIFEST_FILE: &str = "manifest.json";
 const MANIFEST_PREVIOUS_FILE: &str = "manifest.previous.json";
 const DOCUMENTS_DIRECTORY: &str = "documents";
+const RECOVERY_SCHEMA_VERSION: u64 = 1;
+const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ManifestMetadata {
+    schema_version: u64,
     generation: u64,
+    active_document_id: String,
+    next_untitled_number: u64,
+    tabs: Vec<ManifestTab>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ManifestTab {
+    document_id: String,
+    display_name: String,
+    snapshot_revision: u64,
+    #[serde(default)]
+    canonical_path: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct DocumentMetadata {
+    schema_version: u64,
+    document_id: String,
     snapshot_revision: u64,
+    edit_revision: u64,
+    display_name: String,
+    path: NullableString,
+    canonical_path: NullableString,
+    content: String,
+    saved_content_sha256: String,
+    expected_disk_sha256: NullableString,
+    file_status: FileStatus,
+    workspace: Workspace,
+    #[serde(default)]
+    recovery_status: Option<RecoveryStatus>,
+}
+
+#[derive(Debug, Deserialize)]
+struct NullableString(Option<String>);
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum FileStatus {
+    Normal,
+    ExternallyChanged,
+    Missing,
+    ReadError,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum RecoveryStatus {
+    Clean,
+    Pending,
+    Writing,
+    Failed,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct Workspace {
+    selection_start: u64,
+    selection_end: u64,
+    editor_scroll_top: f64,
+    preview_scroll_top: f64,
+    view_mode: ViewMode,
+    toc_open: bool,
+    find: FindState,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum ViewMode {
+    Split,
+    Edit,
+    Preview,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct FindState {
+    open: bool,
+    query: String,
+    replacement: String,
+    match_index: i64,
 }
 
 pub struct RecoveryStore {
     root: PathBuf,
+    operation_lock: Mutex<()>,
 }
 
 impl RecoveryStore {
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            operation_lock: Mutex::new(()),
+        }
     }
 
     pub fn load_manifest(&self) -> Result<Vec<u8>, String> {
-        load_first_valid(
-            [self.manifest_path(), self.manifest_previous_path()],
-            |bytes| {
-                serde_json::from_slice::<ManifestMetadata>(bytes)
-                    .map(|metadata| metadata.generation)
-                    .map_err(|error| format!("invalid recovery manifest: {error}"))
-            },
-        )
+        self.load_manifest_optional()?
+            .ok_or_else(|| "no recovery manifest found".to_string())
+    }
+
+    fn load_manifest_optional(&self) -> Result<Option<Vec<u8>>, String> {
+        let _guard = self.lock()?;
+        let current = self.manifest_path();
+        let previous = self.manifest_previous_path();
+        cleanup_stale_temps(&current)?;
+        if !path_exists(&current)? && !path_exists(&previous)? {
+            return Ok(None);
+        }
+        load_first_valid([current, previous], |bytes| {
+            validate_manifest(bytes, None).map(|metadata| metadata.generation)
+        })
+        .map(Some)
     }
 
     pub fn write_manifest(&self, generation: u64, bytes: &[u8]) -> Result<(), String> {
-        let metadata: ManifestMetadata = serde_json::from_slice(bytes)
-            .map_err(|error| format!("invalid recovery manifest: {error}"))?;
-        if metadata.generation != generation {
-            return Err(format!(
-                "manifest generation mismatch: expected {generation}, found {}",
-                metadata.generation
-            ));
-        }
+        let _guard = self.lock()?;
+        validate_manifest(bytes, Some(generation))?;
 
-        atomic_rotate_write(&self.manifest_path(), &self.manifest_previous_path(), bytes)
-    }
-
-    pub fn load_document(&self, id: &str, revision: u64) -> Result<Vec<u8>, String> {
-        load_first_valid(
-            [self.document_path(id)?, self.document_previous_path(id)?],
-            |bytes| {
-                let metadata: DocumentMetadata = serde_json::from_slice(bytes)
-                    .map_err(|error| format!("invalid recovery document: {error}"))?;
-                if metadata.snapshot_revision != revision {
-                    return Err(format!(
-                        "snapshot revision mismatch: expected {revision}, found {}",
-                        metadata.snapshot_revision
-                    ));
-                }
-                Ok(metadata.snapshot_revision)
-            },
+        atomic_rotate_write(
+            &self.manifest_path(),
+            &self.manifest_previous_path(),
+            bytes,
+            |current| validate_manifest(current, None).map(|_| ()),
         )
     }
 
+    pub fn load_document(&self, id: &str, revision: u64) -> Result<Vec<u8>, String> {
+        let _guard = self.lock()?;
+        let current = self.document_path(id)?;
+        let previous = self.document_previous_path(id)?;
+        cleanup_stale_temps(&current)?;
+        load_first_valid([current, previous], |bytes| {
+            validate_document(bytes, id, Some(revision)).map(|_| ())
+        })
+    }
+
     pub fn write_document(&self, id: &str, revision: u64, bytes: &[u8]) -> Result<(), String> {
-        let metadata: DocumentMetadata = serde_json::from_slice(bytes)
-            .map_err(|error| format!("invalid recovery document: {error}"))?;
-        if metadata.snapshot_revision != revision {
-            return Err(format!(
-                "snapshot revision mismatch: expected {revision}, found {}",
-                metadata.snapshot_revision
-            ));
-        }
+        let _guard = self.lock()?;
+        validate_document(bytes, id, Some(revision))?;
 
         atomic_rotate_write(
             &self.document_path(id)?,
             &self.document_previous_path(id)?,
             bytes,
+            |current| validate_document(current, id, None).map(|_| ()),
         )
     }
 
     pub fn delete_document(&self, id: &str) -> Result<(), String> {
+        let _guard = self.lock()?;
         let current = self.document_path(id)?;
         let previous = self.document_previous_path(id)?;
         remove_if_exists(&current)?;
@@ -97,6 +179,12 @@ impl RecoveryStore {
 
     pub fn root(&self) -> &Path {
         &self.root
+    }
+
+    fn lock(&self) -> Result<MutexGuard<'_, ()>, String> {
+        self.operation_lock
+            .lock()
+            .map_err(|_| "recovery store lock is poisoned".to_string())
     }
 
     fn manifest_path(&self) -> PathBuf {
@@ -122,6 +210,122 @@ impl RecoveryStore {
             .join(DOCUMENTS_DIRECTORY)
             .join(format!("{id}.previous.json")))
     }
+}
+
+fn validate_manifest(
+    bytes: &[u8],
+    expected_generation: Option<u64>,
+) -> Result<ManifestMetadata, String> {
+    let metadata: ManifestMetadata = serde_json::from_slice(bytes)
+        .map_err(|error| format!("invalid recovery manifest: {error}"))?;
+    if metadata.schema_version != RECOVERY_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported recovery manifest schema version: {}",
+            metadata.schema_version
+        ));
+    }
+    if metadata.generation > MAX_SAFE_INTEGER {
+        return Err("manifest generation is not a JavaScript safe integer".to_string());
+    }
+    if let Some(expected) = expected_generation {
+        if metadata.generation != expected {
+            return Err(format!(
+                "manifest generation mismatch: expected {expected}, found {}",
+                metadata.generation
+            ));
+        }
+    }
+    if metadata.next_untitled_number == 0 || metadata.next_untitled_number > MAX_SAFE_INTEGER {
+        return Err("next untitled number must be a positive JavaScript safe integer".to_string());
+    }
+    if metadata.tabs.is_empty() {
+        return Err("recovery manifest tabs must not be empty".to_string());
+    }
+
+    let mut document_ids = HashSet::with_capacity(metadata.tabs.len());
+    for tab in &metadata.tabs {
+        validate_document_id(&tab.document_id)?;
+        if tab.display_name.is_empty() {
+            return Err("recovery manifest tab display name must not be empty".to_string());
+        }
+        if tab.snapshot_revision > MAX_SAFE_INTEGER {
+            return Err("tab snapshot revision is not a JavaScript safe integer".to_string());
+        }
+        if matches!(&tab.canonical_path, Some(path) if path.is_empty()) {
+            return Err("recovery manifest canonical path must not be empty".to_string());
+        }
+        if !document_ids.insert(tab.document_id.as_str()) {
+            return Err("recovery manifest contains duplicate document ids".to_string());
+        }
+    }
+    validate_document_id(&metadata.active_document_id)?;
+    if !document_ids.contains(metadata.active_document_id.as_str()) {
+        return Err("recovery manifest active document is not present in tabs".to_string());
+    }
+
+    Ok(metadata)
+}
+
+fn validate_document(
+    bytes: &[u8],
+    expected_id: &str,
+    expected_revision: Option<u64>,
+) -> Result<DocumentMetadata, String> {
+    validate_document_id(expected_id)?;
+    let metadata: DocumentMetadata = serde_json::from_slice(bytes)
+        .map_err(|error| format!("invalid recovery document: {error}"))?;
+    if metadata.schema_version != RECOVERY_SCHEMA_VERSION {
+        return Err(format!(
+            "unsupported recovery document schema version: {}",
+            metadata.schema_version
+        ));
+    }
+    validate_document_id(&metadata.document_id)?;
+    if metadata.document_id != expected_id {
+        return Err(format!(
+            "document id mismatch: expected {expected_id}, found {}",
+            metadata.document_id
+        ));
+    }
+    if let Some(expected) = expected_revision {
+        if metadata.snapshot_revision != expected {
+            return Err(format!(
+                "snapshot revision mismatch: expected {expected}, found {}",
+                metadata.snapshot_revision
+            ));
+        }
+    }
+    if !metadata.workspace.editor_scroll_top.is_finite()
+        || metadata.workspace.editor_scroll_top < 0.0
+        || !metadata.workspace.preview_scroll_top.is_finite()
+        || metadata.workspace.preview_scroll_top < 0.0
+    {
+        return Err("document scroll positions must be non-negative finite numbers".to_string());
+    }
+
+    // Reading these fields makes the contract explicit: deserialization above
+    // establishes the same required primitive types as DocumentModel.fromSnapshot.
+    let _ = (
+        metadata.edit_revision,
+        &metadata.display_name,
+        &metadata.path.0,
+        &metadata.canonical_path.0,
+        &metadata.content,
+        &metadata.saved_content_sha256,
+        &metadata.expected_disk_sha256.0,
+        &metadata.file_status,
+        metadata.workspace.selection_start,
+        metadata.workspace.selection_end,
+        &metadata.workspace.view_mode,
+        metadata.workspace.toc_open,
+        metadata.workspace.find.open,
+        &metadata.workspace.find.query,
+        &metadata.workspace.find.replacement,
+        metadata.workspace.find.match_index,
+        &metadata.recovery_status,
+    );
+
+    Ok(metadata)
 }
 
 pub(crate) fn validate_document_id(id: &str) -> Result<(), String> {
@@ -153,7 +357,35 @@ where
     ))
 }
 
-fn atomic_rotate_write(current: &Path, previous: &Path, bytes: &[u8]) -> Result<(), String> {
+fn atomic_rotate_write<V>(
+    current: &Path,
+    previous: &Path,
+    bytes: &[u8],
+    validate_current: V,
+) -> Result<(), String>
+where
+    V: Fn(&[u8]) -> Result<(), String>,
+{
+    atomic_rotate_write_with_installer(
+        current,
+        previous,
+        bytes,
+        validate_current,
+        |source, target| fs::rename(source, target),
+    )
+}
+
+fn atomic_rotate_write_with_installer<V, I>(
+    current: &Path,
+    previous: &Path,
+    bytes: &[u8],
+    validate_current: V,
+    install: I,
+) -> Result<(), String>
+where
+    V: Fn(&[u8]) -> Result<(), String>,
+    I: FnOnce(&Path, &Path) -> io::Result<()>,
+{
     let directory = current
         .parent()
         .ok_or_else(|| "recovery path has no parent directory".to_string())?;
@@ -186,22 +418,38 @@ fn atomic_rotate_write(current: &Path, previous: &Path, bytes: &[u8]) -> Result<
         ));
     }
 
-    if current.exists() {
-        if let Err(error) = remove_if_exists(previous) {
-            let _ = fs::remove_file(&temporary);
-            return Err(error);
+    match fs::read(current) {
+        Ok(current_bytes) if validate_current(&current_bytes).is_ok() => {
+            if let Err(error) = remove_if_exists(previous) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+            if let Err(error) = fs::rename(current, previous) {
+                let _ = fs::remove_file(&temporary);
+                return Err(format!(
+                    "failed to rotate recovery file {} to {}: {error}",
+                    current.display(),
+                    previous.display()
+                ));
+            }
         }
-        if let Err(error) = fs::rename(current, previous) {
+        Ok(_) => {
+            if let Err(error) = remove_if_exists(current) {
+                let _ = fs::remove_file(&temporary);
+                return Err(error);
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
             let _ = fs::remove_file(&temporary);
             return Err(format!(
-                "failed to rotate recovery file {} to {}: {error}",
-                current.display(),
-                previous.display()
+                "failed to inspect recovery file {}: {error}",
+                current.display()
             ));
         }
     }
 
-    if let Err(error) = fs::rename(&temporary, current) {
+    if let Err(error) = install(&temporary, current) {
         let _ = fs::remove_file(&temporary);
         return Err(format!(
             "failed to install recovery file {}: {error}",
@@ -209,7 +457,67 @@ fn atomic_rotate_write(current: &Path, previous: &Path, bytes: &[u8]) -> Result<
         ));
     }
 
+    cleanup_stale_temps(current)?;
     sync_directory(Some(directory));
+    Ok(())
+}
+
+fn cleanup_stale_temps(target: &Path) -> Result<(), String> {
+    let directory = target
+        .parent()
+        .ok_or_else(|| "recovery path has no parent directory".to_string())?;
+    let target_name = target
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "recovery path has no valid file name".to_string())?;
+    let prefix = format!(".{target_name}.");
+
+    let entries = match fs::read_dir(directory) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(format!(
+                "failed to inspect recovery directory {}: {error}",
+                directory.display()
+            ))
+        }
+    };
+
+    for entry in entries {
+        let entry = entry.map_err(|error| {
+            format!(
+                "failed to inspect recovery directory {}: {error}",
+                directory.display()
+            )
+        })?;
+        let file_type = entry.file_type().map_err(|error| {
+            format!(
+                "failed to inspect recovery temp {}: {error}",
+                entry.path().display()
+            )
+        })?;
+        if !file_type.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name();
+        let Some(file_name) = file_name.to_str() else {
+            continue;
+        };
+        let Some(uuid) = file_name
+            .strip_prefix(&prefix)
+            .and_then(|name| name.strip_suffix(".tmp"))
+        else {
+            continue;
+        };
+        let Ok(parsed) = Uuid::parse_str(uuid) else {
+            continue;
+        };
+        if parsed.hyphenated().to_string() != uuid {
+            continue;
+        }
+        remove_if_exists(&entry.path())?;
+    }
+
     Ok(())
 }
 
@@ -222,6 +530,15 @@ fn remove_if_exists(path: &Path) -> Result<(), String> {
             path.display()
         )),
     }
+}
+
+fn path_exists(path: &Path) -> Result<bool, String> {
+    path.try_exists().map_err(|error| {
+        format!(
+            "failed to inspect recovery file {}: {error}",
+            path.display()
+        )
+    })
 }
 
 fn sync_directory(directory: Option<&Path>) {
@@ -237,9 +554,14 @@ fn sync_directory(directory: Option<&Path>) {
 #[tauri::command]
 pub(crate) fn load_recovery_manifest(
     store: tauri::State<'_, RecoveryStore>,
-) -> Result<String, String> {
-    String::from_utf8(store.load_manifest()?)
-        .map_err(|error| format!("recovery manifest is not UTF-8: {error}"))
+) -> Result<Option<String>, String> {
+    store
+        .load_manifest_optional()?
+        .map(|bytes| {
+            String::from_utf8(bytes)
+                .map_err(|error| format!("recovery manifest is not UTF-8: {error}"))
+        })
+        .transpose()
 }
 
 #[tauri::command]
@@ -286,14 +608,22 @@ mod tests {
     use tempfile::tempdir;
 
     const DOCUMENT_ID: &str = "11111111-1111-4111-8111-111111111111";
+    const OTHER_DOCUMENT_ID: &str = "22222222-2222-4222-8222-222222222222";
 
     fn manifest(generation: u64) -> Vec<u8> {
-        format!(r#"{{"generation":{generation},"tabs":[]}}"#).into_bytes()
+        format!(
+            r#"{{"schemaVersion":1,"generation":{generation},"activeDocumentId":"{DOCUMENT_ID}","nextUntitledNumber":1,"tabs":[{{"documentId":"{DOCUMENT_ID}","displayName":"Document","snapshotRevision":1}}]}}"#
+        )
+        .into_bytes()
     }
 
     fn document(revision: u64) -> Vec<u8> {
+        document_for(DOCUMENT_ID, revision)
+    }
+
+    fn document_for(document_id: &str, revision: u64) -> Vec<u8> {
         format!(
-            r#"{{"documentId":"{DOCUMENT_ID}","snapshotRevision":{revision},"content":"revision {revision}"}}"#
+            r#"{{"schemaVersion":1,"documentId":"{document_id}","snapshotRevision":{revision},"editRevision":{revision},"displayName":"Document","path":null,"canonicalPath":null,"content":"revision {revision}","savedContentSha256":"","expectedDiskSha256":null,"fileStatus":"normal","workspace":{{"selectionStart":0,"selectionEnd":0,"editorScrollTop":0,"previewScrollTop":0,"viewMode":"split","tocOpen":false,"find":{{"open":false,"query":"","replacement":"","matchIndex":-1}}}}}}"#
         )
         .into_bytes()
     }
@@ -372,6 +702,143 @@ mod tests {
         fs::write(store.manifest_path(), b"not json").unwrap();
 
         assert_eq!(store.load_manifest().unwrap(), manifest(1));
+    }
+
+    #[test]
+    fn unsupported_current_manifest_falls_back_to_complete_previous_manifest() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+
+        store.write_manifest(1, &manifest(1)).unwrap();
+        store.write_manifest(2, &manifest(2)).unwrap();
+        fs::write(
+            store.manifest_path(),
+            br#"{"schemaVersion":999,"generation":2}"#,
+        )
+        .unwrap();
+
+        assert_eq!(store.load_manifest().unwrap(), manifest(1));
+    }
+
+    #[test]
+    fn incomplete_current_document_falls_back_to_complete_previous_document() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+
+        store.write_document(DOCUMENT_ID, 1, &document(1)).unwrap();
+        store.write_document(DOCUMENT_ID, 2, &document(2)).unwrap();
+        fs::write(
+            store.document_path(DOCUMENT_ID).unwrap(),
+            format!(r#"{{"schemaVersion":1,"documentId":"{DOCUMENT_ID}","snapshotRevision":1}}"#),
+        )
+        .unwrap();
+
+        assert_eq!(store.load_document(DOCUMENT_ID, 1).unwrap(), document(1));
+    }
+
+    #[test]
+    fn document_id_mismatch_is_rejected_on_write() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+
+        assert!(store
+            .write_document(DOCUMENT_ID, 1, &document_for(OTHER_DOCUMENT_ID, 1))
+            .is_err());
+        assert!(!store.root().exists());
+    }
+
+    #[test]
+    fn mismatched_current_document_id_falls_back_to_expected_document() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+
+        store.write_document(DOCUMENT_ID, 1, &document(1)).unwrap();
+        store.write_document(DOCUMENT_ID, 2, &document(2)).unwrap();
+        fs::write(
+            store.document_path(DOCUMENT_ID).unwrap(),
+            document_for(OTHER_DOCUMENT_ID, 1),
+        )
+        .unwrap();
+
+        assert_eq!(store.load_document(DOCUMENT_ID, 1).unwrap(), document(1));
+    }
+
+    #[test]
+    fn corrupt_current_is_not_promoted_over_a_valid_previous_copy() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+
+        store.write_document(DOCUMENT_ID, 1, &document(1)).unwrap();
+        store.write_document(DOCUMENT_ID, 2, &document(2)).unwrap();
+        fs::write(store.document_path(DOCUMENT_ID).unwrap(), b"not json").unwrap();
+        store.write_document(DOCUMENT_ID, 3, &document(3)).unwrap();
+
+        assert_eq!(store.load_document(DOCUMENT_ID, 1).unwrap(), document(1));
+    }
+
+    #[test]
+    fn failed_install_after_corrupt_current_preserves_valid_previous_copy() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+        let current = store.document_path(DOCUMENT_ID).unwrap();
+        let previous = store.document_previous_path(DOCUMENT_ID).unwrap();
+        fs::create_dir_all(current.parent().unwrap()).unwrap();
+        fs::write(&current, b"not json").unwrap();
+        fs::write(&previous, document(1)).unwrap();
+
+        let result = atomic_rotate_write_with_installer(
+            &current,
+            &previous,
+            &document(2),
+            |bytes| {
+                serde_json::from_slice::<DocumentMetadata>(bytes)
+                    .map(|_| ())
+                    .map_err(|error| error.to_string())
+            },
+            |_, _| Err(io::Error::new(io::ErrorKind::PermissionDenied, "injected")),
+        );
+
+        assert!(result.is_err());
+        assert_eq!(store.load_document(DOCUMENT_ID, 1).unwrap(), document(1));
+    }
+
+    #[test]
+    fn loading_removes_only_same_target_uuid_temp_files() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+        store.write_document(DOCUMENT_ID, 1, &document(1)).unwrap();
+        let documents = store.document_path(DOCUMENT_ID).unwrap();
+        let documents = documents.parent().unwrap();
+        let stale = documents.join(format!(
+            ".{DOCUMENT_ID}.json.{}.tmp",
+            "33333333-3333-4333-8333-333333333333"
+        ));
+        let unrelated = documents.join(format!(
+            ".other.json.{}.tmp",
+            "44444444-4444-4444-8444-444444444444"
+        ));
+        let malformed = documents.join(format!(".{DOCUMENT_ID}.json.not-a-uuid.tmp"));
+        fs::write(&stale, b"stale").unwrap();
+        fs::write(&unrelated, b"unrelated").unwrap();
+        fs::write(&malformed, b"malformed").unwrap();
+
+        store.load_document(DOCUMENT_ID, 1).unwrap();
+
+        assert!(!stale.exists());
+        assert!(unrelated.exists());
+        assert!(malformed.exists());
+    }
+
+    #[test]
+    fn startup_manifest_load_distinguishes_absent_from_corrupt_storage() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+
+        assert_eq!(store.load_manifest_optional().unwrap(), None);
+
+        fs::create_dir_all(store.root()).unwrap();
+        fs::write(store.manifest_path(), b"not json").unwrap();
+        assert!(store.load_manifest_optional().is_err());
     }
 
     #[test]
