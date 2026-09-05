@@ -85,24 +85,10 @@
     return value;
   }
 
-  function requireSnapshotString(snapshot, key) {
-    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
-    const value = snapshot[key];
-    if (typeof value !== "string") throw new TypeError("invalid document snapshot");
-    return value;
-  }
-
   function requireSnapshotNonNegativeInteger(snapshot, key, label) {
     if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
     const value = snapshot[key];
     if (!Number.isInteger(value) || value < 0) throw new TypeError(label);
-    return value;
-  }
-
-  function requireSnapshotNonNegativeNumber(snapshot, key, label) {
-    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
-    const value = snapshot[key];
-    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new TypeError(label);
     return value;
   }
 
@@ -161,7 +147,7 @@
     return workspace;
   }
 
-  function validateSnapshotWorkspace(workspace, contentLength) {
+  function validateSnapshotWorkspace(workspace) {
     if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) throw new TypeError("invalid document snapshot");
     if (!hasOwn(workspace, "selectionStart") || !hasOwn(workspace, "selectionEnd") || !hasOwn(workspace, "editorScrollTop")
       || !hasOwn(workspace, "previewScrollTop") || !hasOwn(workspace, "viewMode") || !hasOwn(workspace, "tocOpen")
@@ -312,7 +298,7 @@
         throw error;
       }
 
-      const normalizedWorkspace = validateSnapshotWorkspace(workspace, content.length);
+      const normalizedWorkspace = validateSnapshotWorkspace(workspace);
       const clampedSelectionStart = Math.min(content.length, normalizedWorkspace.selectionStart);
       const clampedSelectionEnd = Math.min(content.length, Math.max(clampedSelectionStart, normalizedWorkspace.selectionEnd));
 

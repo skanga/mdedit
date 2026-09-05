@@ -221,11 +221,11 @@ test("recordSave rejects invalid results without mutating the model", () => {
 
   assert.throws(
     () => doc.recordSave({
-      editRevision: -1,
-      contentSha256: "",
+      editRevision: doc.editRevision,
+      contentSha256: "sha-next",
       diskSha256: "",
     }),
-    /edit revision/i,
+    /disk sha256/i,
   );
   assert.deepEqual(modelState(doc), before);
 });
