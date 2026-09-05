@@ -64,16 +64,8 @@
     return integer;
   }
 
-  function requireSafeIncrementableNonNegativeInteger(value, name) {
-    const integer = requireSafeNonNegativeInteger(value, name);
-    if (integer >= Number.MAX_SAFE_INTEGER) {
-      throw new RangeError(`${name} must be less than ${Number.MAX_SAFE_INTEGER}`);
-    }
-    return integer;
-  }
-
-  function requireSafeIncrementablePositiveInteger(value, name) {
-    const integer = requireSafePositiveInteger(value, name);
+  function requireSafeIncrementableInteger(value, name) {
+    const integer = requireSafeInteger(value, name);
     if (integer >= Number.MAX_SAFE_INTEGER) {
       throw new RangeError(`${name} must be less than ${Number.MAX_SAFE_INTEGER}`);
     }
@@ -162,6 +154,9 @@
     if (!Number.isSafeInteger(number) || number < 1) {
       throw new RangeError("untitled label must be a safe integer");
     }
+    if (number >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("untitled label exceeds safe integer range");
+    }
     return number;
   }
 
@@ -192,14 +187,21 @@
       const untitledNumber = parseGeneratedUntitledNumber(entry.displayName);
       if (untitledNumber !== null) {
         for (const existing of this.documents.values()) {
-          if (existing.displayName === entry.displayName) {
+          const existingUntitledNumber = parseGeneratedUntitledNumber(existing.displayName);
+          if (existingUntitledNumber === untitledNumber) {
             throw new Error("duplicate untitled label");
           }
         }
+      }
+
+      if (this.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("generation must be less than 9007199254740991");
+      }
+      if (untitledNumber !== null && untitledNumber + 1 > Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("untitled label exceeds safe integer range");
+      }
+      if (untitledNumber !== null) {
         const nextUntitledNumber = untitledNumber + 1;
-        if (!Number.isSafeInteger(nextUntitledNumber)) {
-          throw new RangeError("untitled label exceeds safe integer range");
-        }
         this.nextUntitledNumber = Math.max(this.nextUntitledNumber, nextUntitledNumber);
       }
 
@@ -211,6 +213,12 @@
     }
 
     createUntitled() {
+      if (this.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("generation must be less than 9007199254740991");
+      }
+      if (this.nextUntitledNumber >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("next untitled number must be less than 9007199254740991");
+      }
       const id = this._idFactory();
       requireNonEmptyString(id, "document id");
       const document = new DocumentModel({
@@ -231,6 +239,9 @@
       requireNonEmptyString(id, "document id");
       if (!this.documents.has(id)) throw new Error("unknown document id");
       if (this.activeDocumentId !== id) {
+        if (this.generation >= Number.MAX_SAFE_INTEGER) {
+          throw new RangeError("generation must be less than 9007199254740991");
+        }
         this.activeDocumentId = id;
         this.generation += 1;
       }
@@ -244,6 +255,10 @@
       const index = this.tabOrder.indexOf(id);
       const removed = this.documents.get(id);
       const wasActive = this.activeDocumentId === id;
+
+      if (this.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("generation must be less than 9007199254740991");
+      }
 
       this.documents.delete(id);
       this.tabOrder.splice(index, 1);
@@ -272,6 +287,9 @@
       const from = this.tabOrder.indexOf(id);
       const to = clamp(from + delta, 0, this.tabOrder.length - 1);
       if (from !== to) {
+        if (this.generation >= Number.MAX_SAFE_INTEGER) {
+          throw new RangeError("generation must be less than 9007199254740991");
+        }
         this.tabOrder.splice(from, 1);
         this.tabOrder.splice(to, 0, id);
         this.generation += 1;
@@ -313,8 +331,8 @@
         throw new Error("unsupported session schema version");
       }
 
-      const generation = requireSafeIncrementableNonNegativeInteger(value.generation, "generation");
-      const nextUntitledNumber = requireSafeIncrementablePositiveInteger(value.nextUntitledNumber, "next untitled number");
+      const generation = requireSafeNonNegativeInteger(value.generation, "generation");
+      const nextUntitledNumber = requireSafePositiveInteger(value.nextUntitledNumber, "next untitled number");
 
       if (!Array.isArray(value.tabs) || value.tabs.length === 0) {
         throw new TypeError("tabs must not be empty");

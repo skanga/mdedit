@@ -11,6 +11,7 @@ const {
 } = require("../src/session-model.js");
 
 const EMPTY_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+const MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER;
 
 function makeDocument(overrides = {}) {
   return new DocumentModel({
@@ -84,6 +85,27 @@ test("createUntitled rejects an empty id from the idFactory", () => {
   assert.throws(() => session.createUntitled(), /document id must be a non-empty string/i);
 });
 
+test("createUntitled rejects when the untitled counter cannot advance", () => {
+  const session = new SessionModel({ idFactory: () => "doc-1" });
+  session.nextUntitledNumber = MAX_SAFE_INTEGER;
+  const before = {
+    generation: session.generation,
+    nextUntitledNumber: session.nextUntitledNumber,
+    tabOrder: [...session.tabOrder],
+    activeDocumentId: session.activeDocumentId,
+    documentsSize: session.documents.size,
+  };
+
+  assert.throws(() => session.createUntitled(), /next untitled number/i);
+  assert.deepEqual({
+    generation: session.generation,
+    nextUntitledNumber: session.nextUntitledNumber,
+    tabOrder: [...session.tabOrder],
+    activeDocumentId: session.activeDocumentId,
+    documentsSize: session.documents.size,
+  }, before);
+});
+
 test("add returns the added document, appends it, activates it, and increments generation once", () => {
   const session = new SessionModel({ idFactory: () => "generated-id" });
   const doc = makeDocument({ id: "doc-1" });
@@ -148,6 +170,13 @@ test("add and fromManifest keep exact untitled labels unique and monotonic", () 
     /untitled label/i,
   );
 
+  const terminalLabelSession = new SessionModel({ idFactory: () => "generated-id" });
+  terminalLabelSession.nextUntitledNumber = MAX_SAFE_INTEGER;
+  assert.throws(
+    () => terminalLabelSession.add(makeDocument({ id: "doc-terminal", displayName: `Untitled ${MAX_SAFE_INTEGER}` })),
+    /untitled label/i,
+  );
+
   assert.throws(
     () => SessionModel.fromManifest({
       schemaVersion: SESSION_SCHEMA_VERSION,
@@ -166,18 +195,6 @@ test("add and fromManifest keep exact untitled labels unique and monotonic", () 
       schemaVersion: SESSION_SCHEMA_VERSION,
       generation: 0,
       activeDocumentId: "doc-1",
-      nextUntitledNumber: 1,
-      tabs: [
-        { documentId: "doc-1", displayName: "Untitled 9007199254740992", snapshotRevision: 1 },
-      ],
-    }),
-    /untitled label/i,
-  );
-  assert.throws(
-    () => SessionModel.fromManifest({
-      schemaVersion: SESSION_SCHEMA_VERSION,
-      generation: 0,
-      activeDocumentId: "doc-1",
       nextUntitledNumber: 4,
       tabs: [
         { documentId: "doc-1", displayName: "Untitled 1", snapshotRevision: 1 },
@@ -186,6 +203,35 @@ test("add and fromManifest keep exact untitled labels unique and monotonic", () 
     }),
     /untitled label/i,
   );
+
+  const boundaryManifest = {
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    generation: MAX_SAFE_INTEGER - 1,
+    activeDocumentId: "doc-1",
+    nextUntitledNumber: MAX_SAFE_INTEGER - 1,
+    tabs: [
+      { documentId: "doc-1", displayName: `Untitled ${MAX_SAFE_INTEGER - 2}`, snapshotRevision: 1 },
+    ],
+  };
+  const boundarySession = SessionModel.fromManifest(boundaryManifest, { idFactory: () => "generated-id" });
+  const created = boundarySession.createUntitled();
+  assert.equal(created.displayName, `Untitled ${MAX_SAFE_INTEGER - 1}`);
+  assert.equal(boundarySession.generation, MAX_SAFE_INTEGER);
+  assert.equal(boundarySession.nextUntitledNumber, MAX_SAFE_INTEGER);
+  assert.deepEqual(boundarySession.toManifest(), {
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    generation: MAX_SAFE_INTEGER,
+    activeDocumentId: "generated-id",
+    nextUntitledNumber: MAX_SAFE_INTEGER,
+    tabs: [
+      { documentId: "doc-1", displayName: `Untitled ${MAX_SAFE_INTEGER - 2}`, snapshotRevision: 1 },
+      { documentId: "generated-id", displayName: `Untitled ${MAX_SAFE_INTEGER - 1}`, snapshotRevision: 0 },
+    ],
+  });
+
+  const roundTripped = SessionModel.fromManifest(boundarySession.toManifest(), { idFactory: () => "generated-id" });
+  assert.equal(roundTripped.generation, MAX_SAFE_INTEGER);
+  assert.equal(roundTripped.nextUntitledNumber, MAX_SAFE_INTEGER);
 });
 
 test("activate changes the active tab only when the id changes", () => {
@@ -263,6 +309,32 @@ test("move clamps within bounds, preserves the active id, and rejects invalid in
   assert.throws(() => session.move("a", 9007199254740992), /delta must be a safe integer/i);
 });
 
+test("terminal generation rejects mutations without changing session state", () => {
+  const left = makeDocument({ id: "left" });
+  const right = makeDocument({ id: "right" });
+  const session = createSessionWithDocuments([left, right]);
+  session.generation = MAX_SAFE_INTEGER;
+  const before = {
+    generation: session.generation,
+    nextUntitledNumber: session.nextUntitledNumber,
+    tabOrder: [...session.tabOrder],
+    activeDocumentId: session.activeDocumentId,
+    documents: [...session.documents.keys()],
+  };
+
+  assert.throws(() => session.add(makeDocument({ id: "extra" })), /generation/i);
+  assert.throws(() => session.remove("left"), /generation/i);
+  assert.throws(() => session.move("left", 1), /generation/i);
+  assert.throws(() => session.activate("left"), /generation/i);
+  assert.deepEqual({
+    generation: session.generation,
+    nextUntitledNumber: session.nextUntitledNumber,
+    tabOrder: [...session.tabOrder],
+    activeDocumentId: session.activeDocumentId,
+    documents: [...session.documents.keys()],
+  }, before);
+});
+
 test("toManifest emits the session schema and ordered tab metadata", () => {
   const first = makeDocument({ id: "a", displayName: "A.md", snapshotRevision: 2 });
   const second = makeDocument({ id: "b", displayName: "B.md", snapshotRevision: 5 });
@@ -323,8 +395,6 @@ test("fromManifest rejects invalid session manifests", () => {
   assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 1.5 }), /next untitled number/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, generation: 9007199254740992 }), /generation/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 9007199254740992 }), /next untitled number/i);
-  assert.throws(() => SessionModel.fromManifest({ ...base, generation: Number.MAX_SAFE_INTEGER }), /generation/i);
-  assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: Number.MAX_SAFE_INTEGER }), /next untitled number/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     tabs: [
@@ -341,11 +411,11 @@ test("fromManifest rejects invalid session manifests", () => {
   }), /duplicate canonical path/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
-    nextUntitledNumber: 9007199254740991,
+    nextUntitledNumber: MAX_SAFE_INTEGER - 1,
     tabs: [
-      { documentId: "doc-1", displayName: "Untitled 9007199254740991", snapshotRevision: 1 },
+      { documentId: "doc-1", displayName: `Untitled ${MAX_SAFE_INTEGER - 1}`, snapshotRevision: 1 },
     ],
-  }), /next untitled number/i);
+  }), /untitled label state is inconsistent/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     tabs: [
@@ -404,6 +474,24 @@ test("fromManifest preserves supplied canonical paths", () => {
 
   assert.equal(session.documents.get("doc-1").canonicalPath, "/documents/first.md");
   assert.equal(session.documents.get("doc-2").canonicalPath, "/documents/second.md");
+});
+
+test("fromManifest round-trips terminal generation and untitled counters", () => {
+  const manifest = {
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    generation: MAX_SAFE_INTEGER,
+    activeDocumentId: "doc-1",
+    nextUntitledNumber: MAX_SAFE_INTEGER,
+    tabs: [
+      { documentId: "doc-1", displayName: `Untitled ${MAX_SAFE_INTEGER - 1}`, snapshotRevision: 1 },
+    ],
+  };
+
+  const session = SessionModel.fromManifest(manifest, { idFactory: () => "generated-id" });
+
+  assert.equal(session.generation, MAX_SAFE_INTEGER);
+  assert.equal(session.nextUntitledNumber, MAX_SAFE_INTEGER);
+  assert.deepEqual(session.toManifest(), manifest);
 });
 
 test("fromManifest rejects fractional snapshot revisions", () => {
