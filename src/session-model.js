@@ -64,6 +64,22 @@
     return integer;
   }
 
+  function requireSafeIncrementableNonNegativeInteger(value, name) {
+    const integer = requireSafeNonNegativeInteger(value, name);
+    if (integer >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError(`${name} must be less than ${Number.MAX_SAFE_INTEGER}`);
+    }
+    return integer;
+  }
+
+  function requireSafeIncrementablePositiveInteger(value, name) {
+    const integer = requireSafePositiveInteger(value, name);
+    if (integer >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError(`${name} must be less than ${Number.MAX_SAFE_INTEGER}`);
+    }
+    return integer;
+  }
+
   function normalizeSessionDocument(document) {
     if (!document || typeof document !== "object" || Array.isArray(document)) {
       throw new TypeError("document is required");
@@ -140,10 +156,13 @@
 
   function parseGeneratedUntitledNumber(displayName) {
     if (typeof displayName !== "string") return null;
-    const match = /^Untitled ([1-9]\d*)$/.exec(displayName);
+    const match = /^Untitled (\d+)$/.exec(displayName);
     if (!match) return null;
     const number = Number(match[1]);
-    return Number.isSafeInteger(number) ? number : null;
+    if (!Number.isSafeInteger(number) || number < 1) {
+      throw new RangeError("untitled label must be a safe integer");
+    }
+    return number;
   }
 
   class SessionModel {
@@ -294,8 +313,8 @@
         throw new Error("unsupported session schema version");
       }
 
-      const generation = requireSafeNonNegativeInteger(value.generation, "generation");
-      const nextUntitledNumber = requireSafePositiveInteger(value.nextUntitledNumber, "next untitled number");
+      const generation = requireSafeIncrementableNonNegativeInteger(value.generation, "generation");
+      const nextUntitledNumber = requireSafeIncrementablePositiveInteger(value.nextUntitledNumber, "next untitled number");
 
       if (!Array.isArray(value.tabs) || value.tabs.length === 0) {
         throw new TypeError("tabs must not be empty");

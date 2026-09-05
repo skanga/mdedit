@@ -143,6 +143,10 @@ test("add and fromManifest keep exact untitled labels unique and monotonic", () 
     () => session.add(makeDocument({ id: "doc-2", displayName: "Untitled 3" })),
     /duplicate untitled label/i,
   );
+  assert.throws(
+    () => session.add(makeDocument({ id: "doc-4", displayName: "Untitled 9007199254740992" })),
+    /untitled label/i,
+  );
 
   assert.throws(
     () => SessionModel.fromManifest({
@@ -153,6 +157,18 @@ test("add and fromManifest keep exact untitled labels unique and monotonic", () 
       tabs: [
         { documentId: "doc-1", displayName: "Untitled 1", snapshotRevision: 1 },
         { documentId: "doc-2", displayName: "Untitled 3", snapshotRevision: 2 },
+      ],
+    }),
+    /untitled label/i,
+  );
+  assert.throws(
+    () => SessionModel.fromManifest({
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      generation: 0,
+      activeDocumentId: "doc-1",
+      nextUntitledNumber: 1,
+      tabs: [
+        { documentId: "doc-1", displayName: "Untitled 9007199254740992", snapshotRevision: 1 },
       ],
     }),
     /untitled label/i,
@@ -307,6 +323,8 @@ test("fromManifest rejects invalid session manifests", () => {
   assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 1.5 }), /next untitled number/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, generation: 9007199254740992 }), /generation/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 9007199254740992 }), /next untitled number/i);
+  assert.throws(() => SessionModel.fromManifest({ ...base, generation: Number.MAX_SAFE_INTEGER }), /generation/i);
+  assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: Number.MAX_SAFE_INTEGER }), /next untitled number/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     tabs: [
@@ -326,6 +344,12 @@ test("fromManifest rejects invalid session manifests", () => {
     nextUntitledNumber: 9007199254740991,
     tabs: [
       { documentId: "doc-1", displayName: "Untitled 9007199254740991", snapshotRevision: 1 },
+    ],
+  }), /next untitled number/i);
+  assert.throws(() => SessionModel.fromManifest({
+    ...base,
+    tabs: [
+      { documentId: "doc-1", displayName: "Untitled 9007199254740992", snapshotRevision: 1 },
     ],
   }), /untitled label/i);
   assert.throws(() => SessionModel.fromManifest({
