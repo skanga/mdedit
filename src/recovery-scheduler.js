@@ -65,7 +65,7 @@
       if (revision <= entry.latestRevision) return false;
 
       entry.latestRevision = revision;
-      entry.failed = null;
+      if (entry.failed) return true;
       this._setStatus(entry, "pending");
       this._schedule(entry);
       return true;
@@ -86,8 +86,7 @@
 
       if (revision !== undefined && revision > entry.latestRevision) {
         entry.latestRevision = revision;
-        entry.failed = null;
-        this._setStatus(entry, "pending");
+        if (!entry.failed) this._setStatus(entry, "pending");
       }
 
       const targetRevision = entry.latestRevision;
@@ -135,16 +134,9 @@
     retry(id) {
       requireDocumentId(id);
       const entry = this._entries.get(id);
-      if (!entry) return Promise.resolve();
-      if (entry.forgotten) {
-        return Promise.reject(new Error(`recovery was forgotten for document ${id}`));
-      }
+      if (!entry || entry.forgotten || !entry.failed) return false;
 
       entry.failed = null;
-      if (entry.latestRevision <= entry.persistedRevision) {
-        this._setStatus(entry, "clean");
-        return Promise.resolve();
-      }
       this._setStatus(entry, "pending");
       return this._requestFlush(entry, entry.latestRevision);
     }
@@ -187,17 +179,17 @@
     _timerFlush(entry) {
       if (!this._isActive(entry)) return;
       if (entry.failed) {
-        entry.failed = null;
-        this._setStatus(entry, "pending");
+        this._clearTimers(entry);
+        return;
       }
       this._clearTimers(entry);
       if (entry.latestRevision > entry.persistedRevision) this._start(entry);
     }
 
     _requestFlush(entry, targetRevision) {
+      if (entry.failed) return Promise.reject(entry.failed);
       this._clearTimers(entry);
       if (targetRevision <= entry.persistedRevision) return Promise.resolve();
-      if (entry.failed) return Promise.reject(entry.failed);
 
       const promise = new Promise((resolve, reject) => {
         entry.waiters.add({ revision: targetRevision, resolve, reject });
@@ -234,28 +226,27 @@
         } catch (reason) {
           if (!this._isActive(entry)) return;
           const error = normalizeError(reason);
+          this._clearTimers(entry);
           entry.failed = error;
           this._rejectWaiters(entry, error);
           this._setStatus(entry, "failed", error);
-          if (this._isActive(entry)
-              && entry.latestRevision > revision
-              && entry.idleTimer === null
-              && entry.maximumTimer === null) {
-            this._schedule(entry);
-          }
           throw error;
         }
 
         if (!this._isActive(entry)) return;
         entry.persistedRevision = Math.max(entry.persistedRevision, revision);
-        this._resolveWaiters(entry);
 
         if (entry.latestRevision > entry.persistedRevision) {
           this._setStatus(entry, "pending");
         }
       }
 
-      if (this._isActive(entry)) this._setStatus(entry, "clean");
+      if (this._isActive(entry)) {
+        this._setStatus(entry, "clean");
+        if (this._isActive(entry) && entry.latestRevision <= entry.persistedRevision) {
+          this._resolveWaiters(entry);
+        }
+      }
     }
 
     _finish(entry, operation) {

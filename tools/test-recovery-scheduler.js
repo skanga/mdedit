@@ -99,31 +99,39 @@ test("continuous edits checkpoint the latest revision by the maximum interval", 
   assert.deepEqual(writes, [["a", 11]]);
 });
 
-test("edits during a write skip intermediate revisions and flush waits for its requested revision", async () => {
+test("a flush drains revisions queued during its write before resolving", async () => {
   const clock = fakeClock();
   const firstWrite = deferred();
+  const thirdWrite = deferred();
   const writes = [];
   const scheduler = new RecoveryScheduler({
     clock,
     write(id, revision) {
       writes.push([id, revision]);
-      return revision === 1 ? firstWrite.promise : Promise.resolve();
+      return revision === 1 ? firstWrite.promise : thirdWrite.promise;
     },
   });
 
   scheduler.changed("a", 1);
-  const revisionOneDurable = scheduler.flush("a");
+  const drainingFlush = scheduler.flush("a");
+  let settled = false;
+  drainingFlush.then(
+    () => { settled = true; },
+    () => { settled = true; },
+  );
   scheduler.changed("a", 2);
   scheduler.changed("a", 3);
   assert.deepEqual(writes, [["a", 1]]);
 
   firstWrite.resolve();
-  await revisionOneDurable;
   await settle();
-  assert.equal(clock.pending(), 0);
-  await scheduler.flush("a");
-
   assert.deepEqual(writes, [["a", 1], ["a", 3]]);
+  assert.equal(settled, false);
+  assert.equal(clock.pending(), 0);
+
+  thirdWrite.resolve();
+  await drainingFlush;
+  assert.equal(settled, true);
 });
 
 test("different documents write in parallel", async () => {
@@ -212,33 +220,48 @@ test("retry from the failed status callback waits for the replacement write", as
   assert.deepEqual(writes, [["a", 1], ["a", 1]]);
 });
 
-test("a new edit after failure clears the failed state and schedules the newer revision", async () => {
+test("failure remains sticky across changes and flush until explicit retry", async () => {
   const clock = fakeClock();
+  const statuses = [];
   const writes = [];
+  const failure = new Error("synchronous failure");
   let attempt = 0;
   const scheduler = new RecoveryScheduler({
     clock,
     write(id, revision) {
       writes.push([id, revision]);
       attempt += 1;
-      if (attempt === 1) throw new Error("synchronous failure");
+      if (attempt === 1) throw failure;
+    },
+    onStatus(id, status, error) {
+      statuses.push([id, status, error]);
     },
   });
 
   scheduler.changed("a", 1);
-  await assert.rejects(scheduler.flush("a"), /synchronous failure/);
-  scheduler.changed("a", 2);
-  clock.tick(1000);
-  await settle();
+  await assert.rejects(scheduler.flush("a"), (error) => error === failure);
+  const statusCount = statuses.length;
 
+  scheduler.changed("a", 2);
+  assert.equal(clock.pending(), 0);
+  assert.equal(statuses.length, statusCount);
+  assert.equal(statuses.at(-1)[1], "failed");
+
+  clock.tick(20000);
+  await settle();
+  assert.deepEqual(writes, [["a", 1]]);
+  await assert.rejects(scheduler.flush("a"), (error) => error === failure);
+  assert.deepEqual(writes, [["a", 1]]);
+
+  await scheduler.retry("a");
   assert.deepEqual(writes, [["a", 1], ["a", 2]]);
-  await scheduler.flush("a");
 });
 
-test("an edit queued during a failed write retries the newer revision on its timer", async () => {
+test("failure cancels a newer edit timer and waits for explicit retry", async () => {
   const clock = fakeClock();
   const firstWrite = deferred();
   const writes = [];
+  const failure = new Error("revision one failed");
   const scheduler = new RecoveryScheduler({
     clock,
     write(id, revision) {
@@ -250,19 +273,26 @@ test("an edit queued during a failed write retries the newer revision on its tim
   scheduler.changed("a", 1);
   const failedFlush = scheduler.flush("a");
   scheduler.changed("a", 2);
-  firstWrite.reject(new Error("revision one failed"));
-  await assert.rejects(failedFlush, /revision one failed/);
-
-  clock.tick(1000);
+  assert.equal(clock.pending(), 2);
+  firstWrite.reject(failure);
+  await assert.rejects(failedFlush, (error) => error === failure);
   await settle();
+  assert.equal(clock.pending(), 0);
+
+  clock.tick(20000);
+  await settle();
+  assert.deepEqual(writes, [["a", 1]]);
+  await assert.rejects(scheduler.flush("a"), (error) => error === failure);
+
+  await scheduler.retry("a");
   assert.deepEqual(writes, [["a", 1], ["a", 2]]);
-  await scheduler.flush("a");
 });
 
-test("a newer edit remains scheduled when its timer fires before the older write fails", async () => {
+test("failure stays sticky when a newer edit timer fired during the older write", async () => {
   const clock = fakeClock();
   const firstWrite = deferred();
   const writes = [];
+  const failure = new Error("revision one failed late");
   const scheduler = new RecoveryScheduler({
     clock,
     write(id, revision) {
@@ -275,14 +305,37 @@ test("a newer edit remains scheduled when its timer fires before the older write
   const failedFlush = scheduler.flush("a");
   scheduler.changed("a", 2);
   clock.tick(1000);
-  firstWrite.reject(new Error("revision one failed late"));
-  await assert.rejects(failedFlush, /revision one failed late/);
+  firstWrite.reject(failure);
+  await assert.rejects(failedFlush, (error) => error === failure);
   await settle();
+  assert.equal(clock.pending(), 0);
+
+  clock.tick(20000);
+  await settle();
+  assert.deepEqual(writes, [["a", 1]]);
+  await assert.rejects(scheduler.flush("a"), (error) => error === failure);
+
+  await scheduler.retry("a");
+  assert.deepEqual(writes, [["a", 1], ["a", 2]]);
+});
+
+test("retry is a no-op for nonfailed documents and preserves pending timers", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  const scheduler = new RecoveryScheduler({ clock, write: async (id, revision) => writes.push([id, revision]) });
+
+  scheduler.changed("a", 1);
+  assert.equal(clock.pending(), 2);
+  assert.equal(await scheduler.retry("a"), false);
+  assert.equal(clock.pending(), 2);
+  assert.deepEqual(writes, []);
 
   clock.tick(1000);
   await settle();
-  assert.deepEqual(writes, [["a", 1], ["a", 2]]);
+  assert.deepEqual(writes, [["a", 1]]);
   await scheduler.flush("a");
+  assert.equal(await scheduler.retry("a"), false);
+  assert.deepEqual(writes, [["a", 1]]);
 });
 
 test("flushAll attempts every document and aggregates failed document IDs", async () => {
