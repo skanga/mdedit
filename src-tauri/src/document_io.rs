@@ -261,6 +261,13 @@ fn temporary_path(directory: &Path) -> PathBuf {
     directory.join(format!(".mdedit-{}.tmp", Uuid::new_v4()))
 }
 
+#[cfg(any(windows, test))]
+fn replacement_backup_path(directory: &Path) -> PathBuf {
+    // Recovery only ever cleans this exact per-attempt path; broad stale-file
+    // sweeping could delete the sole surviving copy after a partial replace.
+    directory.join(format!(".mdedit-{}.bak", Uuid::new_v4()))
+}
+
 fn remove_temporary(path: &Path, directory: &Path) {
     remove_file_best_effort(path);
     sync_directory(directory);
@@ -285,6 +292,7 @@ fn remove_file_best_effort(path: &Path) {
     }
 }
 
+#[cfg(test)]
 fn write_temporary_with_writer<W>(
     path: &Path,
     directory: &Path,
@@ -292,6 +300,20 @@ fn write_temporary_with_writer<W>(
     writer: W,
 ) -> Result<(PathBuf, File), String>
 where
+    W: FnOnce(&mut File) -> io::Result<()>,
+{
+    write_temporary_with_hooks(path, directory, permissions, |_, _| Ok(()), writer)
+}
+
+fn write_temporary_with_hooks<P, W>(
+    path: &Path,
+    directory: &Path,
+    permissions: Option<&fs::Permissions>,
+    prepare: P,
+    writer: W,
+) -> Result<(PathBuf, File), String>
+where
+    P: FnOnce(&File, &Path) -> io::Result<()>,
     W: FnOnce(&mut File) -> io::Result<()>,
 {
     // UUID collisions are extraordinarily unlikely, while create_new ensures a
@@ -315,6 +337,7 @@ where
         if let Some(permissions) = permissions {
             file.set_permissions(permissions.clone())?;
         }
+        prepare(&file, &temporary)?;
         writer(&mut file)?;
         file.sync_all()
     })();
@@ -328,6 +351,166 @@ where
     }
 
     Ok((temporary, file))
+}
+
+#[cfg(any(windows, test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplacementRecovery {
+    DestinationPreserved,
+    BackupRestored,
+    TemporaryPublished,
+}
+
+#[cfg(any(windows, test))]
+impl ReplacementRecovery {
+    fn description(self) -> &'static str {
+        match self {
+            Self::DestinationPreserved => "existing destination preserved",
+            Self::BackupRestored => "original backup restored",
+            Self::TemporaryPublished => "editor temporary file published",
+        }
+    }
+}
+
+fn durable_document_copy_exists(path: &Path) -> bool {
+    fingerprint(path).is_ok()
+}
+
+#[cfg(any(windows, test))]
+fn cleanup_replacement_files(
+    temporary: &Path,
+    backup: &Path,
+    directory: &Path,
+    destination: &Path,
+) {
+    if !durable_document_copy_exists(destination) {
+        return;
+    }
+    remove_file_best_effort(temporary);
+    remove_file_best_effort(backup);
+    sync_directory(directory);
+}
+
+fn retain_or_cleanup_failed_temporary(
+    temporary: &Path,
+    destination: &Path,
+    directory: &Path,
+) -> bool {
+    if durable_document_copy_exists(destination) {
+        remove_temporary(temporary, directory);
+        false
+    } else {
+        sync_directory(directory);
+        temporary.exists()
+    }
+}
+
+#[cfg(any(windows, test))]
+fn finish_successful_replacement(
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    directory: &Path,
+) -> Result<(), String> {
+    if !durable_document_copy_exists(destination) {
+        return Err(format!(
+            "replacement reported success but destination {} is not a readable document; backup and temporary files were retained",
+            destination.display()
+        ));
+    }
+    cleanup_replacement_files(temporary, backup, directory, destination);
+    Ok(())
+}
+
+#[cfg(any(windows, test))]
+fn recover_failed_replacement<P>(
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    directory: &Path,
+    mut publish: P,
+) -> Result<ReplacementRecovery, String>
+where
+    P: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    if durable_document_copy_exists(destination) {
+        cleanup_replacement_files(temporary, backup, directory, destination);
+        return Ok(ReplacementRecovery::DestinationPreserved);
+    }
+
+    let mut failures = Vec::new();
+    for (candidate, recovered) in [
+        (backup, ReplacementRecovery::BackupRestored),
+        (temporary, ReplacementRecovery::TemporaryPublished),
+    ] {
+        if !durable_document_copy_exists(candidate) {
+            continue;
+        }
+        match publish(candidate, destination) {
+            Ok(()) if durable_document_copy_exists(destination) => {
+                cleanup_replacement_files(temporary, backup, directory, destination);
+                return Ok(recovered);
+            }
+            Ok(()) => failures.push(format!(
+                "publishing {} reported success without producing a readable destination",
+                candidate.display()
+            )),
+            Err(_error) if durable_document_copy_exists(destination) => {
+                cleanup_replacement_files(temporary, backup, directory, destination);
+                return Ok(ReplacementRecovery::DestinationPreserved);
+            }
+            Err(error) => failures.push(format!(
+                "failed to publish recovery copy {}: {error}",
+                candidate.display()
+            )),
+        }
+    }
+
+    let detail = if failures.is_empty() {
+        "no recovery publication was possible".to_owned()
+    } else {
+        failures.join("; ")
+    };
+    Err(format!(
+        "no readable document copy could be restored at {}; {detail}; remaining paths were retained",
+        destination.display()
+    ))
+}
+
+#[cfg(any(windows, test))]
+fn complete_replacement<P>(
+    replacement_result: io::Result<()>,
+    temporary: &Path,
+    destination: &Path,
+    backup: &Path,
+    directory: &Path,
+    publish: P,
+) -> io::Result<()>
+where
+    P: FnMut(&Path, &Path) -> io::Result<()>,
+{
+    match replacement_result {
+        Ok(()) => finish_successful_replacement(temporary, destination, backup, directory)
+            .map_err(io::Error::other),
+        Err(original) => {
+            let original_kind = original.kind();
+            let original_message = original.to_string();
+            let recovery = match recover_failed_replacement(
+                temporary,
+                destination,
+                backup,
+                directory,
+                publish,
+            ) {
+                Ok(outcome) => format!("recovery completed: {}", outcome.description()),
+                Err(error) => format!("recovery failed: {error}"),
+            };
+            Err(io::Error::new(
+                original_kind,
+                format!("{original_message}; {recovery}"),
+            ))
+        }
+    }
 }
 
 #[cfg(unix)]
@@ -353,6 +536,115 @@ fn apply_replacement_permissions(file: &File, permissions: fs::Permissions) -> i
     file.sync_all()
 }
 
+#[cfg(windows)]
+fn windows_path(path: &Path) -> Vec<u16> {
+    use std::os::windows::ffi::OsStrExt;
+    path.as_os_str().encode_wide().chain(Some(0)).collect()
+}
+
+#[cfg(windows)]
+fn copy_document_dacl(source: &Path, destination: &Path) -> io::Result<()> {
+    use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
+    use windows_sys::Win32::Security::{
+        GetFileSecurityW, GetSecurityDescriptorControl, SetFileSecurityW,
+        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED,
+        UNPROTECTED_DACL_SECURITY_INFORMATION,
+    };
+
+    let source = windows_path(source);
+    let destination = windows_path(destination);
+    let mut bytes_needed = 0_u32;
+    // SAFETY: source is a live, NUL-terminated UTF-16 path; the null
+    // descriptor and zero size intentionally query the required buffer size.
+    let query_result = unsafe {
+        GetFileSecurityW(
+            source.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            0,
+            &mut bytes_needed,
+        )
+    };
+    if query_result == 0 {
+        let error = io::Error::last_os_error();
+        if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
+            return Err(error);
+        }
+    }
+    if bytes_needed == 0 {
+        return Err(io::Error::other(
+            "GetFileSecurityW returned an empty DACL security descriptor",
+        ));
+    }
+
+    let word_size = std::mem::size_of::<usize>();
+    let word_count = (bytes_needed as usize).div_ceil(word_size);
+    let mut descriptor = vec![0_usize; word_count];
+    let descriptor_pointer = descriptor.as_mut_ptr().cast();
+    // SAFETY: descriptor is aligned and large enough for bytes_needed bytes;
+    // all pointers remain live for the duration of these synchronous calls.
+    if unsafe {
+        GetFileSecurityW(
+            source.as_ptr(),
+            DACL_SECURITY_INFORMATION,
+            descriptor_pointer,
+            bytes_needed,
+            &mut bytes_needed,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let mut control = 0_u16;
+    let mut revision = 0_u32;
+    // SAFETY: descriptor_pointer refers to the validated security descriptor
+    // returned above, and both output pointers are live.
+    if unsafe { GetSecurityDescriptorControl(descriptor_pointer, &mut control, &mut revision) } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    let inheritance = if control & SE_DACL_PROTECTED != 0 {
+        PROTECTED_DACL_SECURITY_INFORMATION
+    } else {
+        UNPROTECTED_DACL_SECURITY_INFORMATION
+    };
+    // Only the DACL is copied. DOS attributes such as read-only are deliberately
+    // left untouched so the open temp remains writable and removable.
+    if unsafe {
+        SetFileSecurityW(
+            destination.as_ptr(),
+            DACL_SECURITY_INFORMATION | inheritance,
+            descriptor_pointer,
+        )
+    } == 0
+    {
+        return Err(io::Error::last_os_error());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn prepare_temporary_security(
+    temporary: &Path,
+    destination: &Path,
+    replacing: bool,
+) -> io::Result<()> {
+    if replacing {
+        copy_document_dacl(destination, temporary)
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn prepare_temporary_security(
+    _temporary: &Path,
+    _destination: &Path,
+    _replacing: bool,
+) -> io::Result<()> {
+    Ok(())
+}
+
 #[cfg(not(windows))]
 fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(temporary, destination)
@@ -360,47 +652,40 @@ fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
-    use std::ffi::c_void;
-    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn ReplaceFileW(
-            replaced_file_name: *const u16,
-            replacement_file_name: *const u16,
-            backup_file_name: *const u16,
-            replace_flags: u32,
-            exclude: *mut c_void,
-            reserved: *mut c_void,
-        ) -> i32;
-    }
-
-    let replaced: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
-    let replacement: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-    // SAFETY: both path pointers refer to live, NUL-terminated UTF-16 buffers
-    // for the duration of this synchronous call. Optional backup, exclude,
-    // and reserved pointers are null as required by ReplaceFileW. Windows does
-    // not support REPLACEFILE_WRITE_THROUGH, so the temp handle is synced
-    // before this call and no unsupported replacement flags are requested.
+    let directory = parent_directory(destination);
+    let backup = replacement_backup_path(directory);
+    let replaced = windows_path(destination);
+    let replacement = windows_path(temporary);
+    let backup_path = windows_path(&backup);
+    // SAFETY: all path pointers refer to live, NUL-terminated UTF-16 buffers
+    // for this synchronous call. Exclude and reserved are null as required.
+    // Windows does not support REPLACEFILE_WRITE_THROUGH, so the temp handle
+    // is synced before this call and no unsupported flags are requested.
     let result = unsafe {
         ReplaceFileW(
             replaced.as_ptr(),
             replacement.as_ptr(),
-            std::ptr::null(),
+            backup_path.as_ptr(),
             0,
-            std::ptr::null_mut(),
-            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
         )
     };
-    if result == 0 {
+    let replacement_result = if result == 0 {
         Err(io::Error::last_os_error())
     } else {
         Ok(())
-    }
+    };
+    complete_replacement(
+        replacement_result,
+        temporary,
+        destination,
+        &backup,
+        directory,
+        publish_new,
+    )
 }
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -412,21 +697,10 @@ fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
-    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
 
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
-
-    #[link(name = "Kernel32")]
-    extern "system" {
-        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
-    }
-
-    let existing: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-    let replacement: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(Some(0))
-        .collect();
+    let existing = windows_path(temporary);
+    let replacement = windows_path(destination);
     // SAFETY: both pointers refer to live, NUL-terminated UTF-16 buffers for
     // the duration of this synchronous Windows API call. Omitting
     // MOVEFILE_REPLACE_EXISTING gives this operation no-clobber semantics.
@@ -558,10 +832,15 @@ where
         .is_some()
         .then(restrictive_replacement_permissions)
         .flatten();
-    let (temporary, temporary_file) =
-        write_temporary_with_writer(path, directory, restrictive_permissions.as_ref(), |file| {
-            writer(file, &destination)
-        })?;
+    let (temporary, temporary_file) = write_temporary_with_hooks(
+        path,
+        directory,
+        restrictive_permissions.as_ref(),
+        |_, temporary| {
+            prepare_temporary_security(temporary, &destination, expected_sha256.is_some())
+        },
+        |file| writer(file, &destination),
+    )?;
 
     // Fingerprint again after the temp file is fully synced so this guard stays
     // immediately adjacent to publication.
@@ -621,10 +900,16 @@ where
                 .and_then(|metadata| modified_ms(&metadata));
             drop(temporary_file);
             if let Err(error) = install(&temporary, &destination) {
-                remove_temporary(&temporary, directory);
+                let retained =
+                    retain_or_cleanup_failed_temporary(&temporary, &destination, directory);
+                let recovery = if retained {
+                    format!("; temporary document retained at {}", temporary.display())
+                } else {
+                    String::new()
+                };
                 return Err(format!(
-                    "failed to replace document {}: {error}",
-                    path.display()
+                    "failed to replace document {}: {error}{recovery}",
+                    path.display(),
                 ));
             }
         }
@@ -739,6 +1024,190 @@ mod tests {
 
         assert_eq!(actual_sha256, sha256(&bytes));
         assert_eq!(actual_size, bytes.len() as u64);
+    }
+
+    #[test]
+    fn successful_replacement_keeps_destination_before_cleaning_backup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = replacement_backup_path(directory.path());
+        fs::write(&destination, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        complete_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
+        assert!(!backup.exists());
+        assert_eq!(backup.parent(), Some(directory.path()));
+        assert!(backup
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .starts_with(".mdedit-"));
+        assert_eq!(
+            backup.extension().and_then(|value| value.to_str()),
+            Some("bak")
+        );
+    }
+
+    #[test]
+    fn ordinary_replacement_failure_preserves_existing_destination() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "original").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+
+        let outcome = recover_failed_replacement(
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, ReplacementRecovery::DestinationPreserved);
+        assert_eq!(fs::read_to_string(destination).unwrap(), "original");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn partial_replacement_failure_restores_original_backup_first() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        let outcome = recover_failed_replacement(
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, ReplacementRecovery::BackupRestored);
+        assert_eq!(fs::read_to_string(destination).unwrap(), "original");
+        assert!(!temporary.exists());
+        assert!(!backup.exists());
+    }
+
+    #[test]
+    fn partial_replacement_failure_publishes_editor_temp_without_backup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("missing-backup.md");
+        fs::write(&temporary, "editor").unwrap();
+
+        let outcome = recover_failed_replacement(
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(outcome, ReplacementRecovery::TemporaryPublished);
+        assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
+        assert!(!temporary.exists());
+    }
+
+    #[test]
+    fn replacement_failure_reports_original_error_and_recovery_result() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        let error = complete_replacement(
+            Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "ReplaceFileW failed with error 1177",
+            )),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
+        assert!(error.to_string().contains("error 1177"));
+        assert!(error.to_string().contains("original backup restored"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "original");
+    }
+
+    #[test]
+    fn unrecoverable_replacement_state_does_not_delete_remaining_paths() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("missing-document.md");
+        let temporary = directory.path().join("temporary-directory");
+        let backup = directory.path().join("backup-directory");
+        fs::create_dir(&temporary).unwrap();
+        fs::create_dir(&backup).unwrap();
+
+        let error = recover_failed_replacement(
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert!(error.contains("no readable document copy"));
+        assert!(temporary.is_dir());
+        assert!(backup.is_dir());
+        assert!(!destination.exists());
+    }
+
+    #[test]
+    fn temporary_preparation_runs_while_file_is_empty_before_content_write() {
+        use std::cell::Cell;
+
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let prepared = Cell::new(false);
+
+        let (temporary, file) = write_temporary_with_hooks(
+            &destination,
+            directory.path(),
+            None,
+            |temporary_file, temporary_path| {
+                assert_eq!(temporary_file.metadata()?.len(), 0);
+                assert!(temporary_path.exists());
+                prepared.set(true);
+                Ok(())
+            },
+            |temporary_file| {
+                assert!(prepared.get());
+                temporary_file.write_all(b"sensitive")
+            },
+        )
+        .unwrap();
+        drop(file);
+
+        assert_eq!(fs::read(&temporary).unwrap(), b"sensitive");
+        remove_temporary(&temporary, directory.path());
     }
 
     #[test]
@@ -919,6 +1388,38 @@ mod tests {
         assert!(error.contains("installer failed"));
         assert!(!path.exists());
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn failed_existing_installer_retains_temp_when_destination_is_missing() {
+        use std::cell::RefCell;
+
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        fs::write(&destination, "original").unwrap();
+        let expected = sha256(b"original");
+        let observed_temporary = RefCell::new(None);
+
+        let error = save_document_path_with_installer(
+            &destination,
+            "editor",
+            Some(&expected),
+            |temporary, target| {
+                observed_temporary.replace(Some(temporary.to_owned()));
+                fs::remove_file(target)?;
+                Err(io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "installer failed after destination disappeared",
+                ))
+            },
+        )
+        .unwrap_err();
+
+        let temporary = observed_temporary.into_inner().unwrap();
+        assert!(error.contains("temporary document retained"));
+        assert!(!destination.exists());
+        assert_eq!(fs::read_to_string(&temporary).unwrap(), "editor");
+        remove_temporary(&temporary, directory.path());
     }
 
     #[test]
