@@ -47,35 +47,39 @@
     return string;
   }
 
-  function requireInteger(value, name) {
-    if (!Number.isInteger(value)) throw new TypeError(`${name} must be an integer`);
+  function requireSafeInteger(value, name) {
+    if (!Number.isSafeInteger(value)) throw new TypeError(`${name} must be a safe integer`);
     return value;
   }
 
-  function requireNonNegativeInteger(value, name) {
-    const integer = requireInteger(value, name);
+  function requireSafeNonNegativeInteger(value, name) {
+    const integer = requireSafeInteger(value, name);
     if (integer < 0) throw new RangeError(`${name} must be non-negative`);
     return integer;
   }
 
-  function requirePositiveInteger(value, name) {
-    const integer = requireInteger(value, name);
+  function requireSafePositiveInteger(value, name) {
+    const integer = requireSafeInteger(value, name);
     if (integer < 1) throw new RangeError(`${name} must be a positive integer`);
     return integer;
   }
 
-  function normalizeLoadingStub(document) {
+  function normalizeSessionDocument(document) {
     if (!document || typeof document !== "object" || Array.isArray(document)) {
       throw new TypeError("document is required");
     }
 
     const id = requireNonEmptyString(document.id, "document id");
     const displayName = requireNonEmptyString(document.displayName, "display name");
-    const snapshotRevision = requireNonNegativeInteger(document.snapshotRevision, "snapshot revision");
+    const snapshotRevision = requireSafeNonNegativeInteger(document.snapshotRevision, "snapshot revision");
 
     let canonicalPath = null;
     if (hasOwn(document, "canonicalPath") && document.canonicalPath !== null) {
       canonicalPath = requireNonEmptyString(document.canonicalPath, "canonical path");
+    }
+
+    if (document instanceof DocumentModel) {
+      return document;
     }
 
     return {
@@ -98,7 +102,7 @@
     } catch (error) {
       throw new TypeError("invalid tab label");
     }
-    const snapshotRevision = requireNonNegativeInteger(tab.snapshotRevision, "snapshot revision");
+    const snapshotRevision = requireSafeNonNegativeInteger(tab.snapshotRevision, "snapshot revision");
 
     let canonicalPath = null;
     if (hasOwn(tab, "canonicalPath")) {
@@ -137,7 +141,9 @@
   function parseGeneratedUntitledNumber(displayName) {
     if (typeof displayName !== "string") return null;
     const match = /^Untitled ([1-9]\d*)$/.exec(displayName);
-    return match ? Number(match[1]) : null;
+    if (!match) return null;
+    const number = Number(match[1]);
+    return Number.isSafeInteger(number) ? number : null;
   }
 
   class SessionModel {
@@ -155,7 +161,7 @@
     }
 
     add(document) {
-      const entry = document instanceof DocumentModel ? document : normalizeLoadingStub(document);
+      const entry = normalizeSessionDocument(document);
 
       if (this.documents.has(entry.id)) {
         throw new Error("duplicate document id");
@@ -171,7 +177,11 @@
             throw new Error("duplicate untitled label");
           }
         }
-        this.nextUntitledNumber = Math.max(this.nextUntitledNumber, untitledNumber + 1);
+        const nextUntitledNumber = untitledNumber + 1;
+        if (!Number.isSafeInteger(nextUntitledNumber)) {
+          throw new RangeError("untitled label exceeds safe integer range");
+        }
+        this.nextUntitledNumber = Math.max(this.nextUntitledNumber, nextUntitledNumber);
       }
 
       this.documents.set(entry.id, entry);
@@ -183,6 +193,7 @@
 
     createUntitled() {
       const id = this._idFactory();
+      requireNonEmptyString(id, "document id");
       const document = new DocumentModel({
         id,
         displayName: `Untitled ${this.nextUntitledNumber}`,
@@ -237,7 +248,7 @@
     move(id, delta) {
       requireNonEmptyString(id, "document id");
       if (!this.documents.has(id)) throw new Error("unknown document id");
-      requireInteger(delta, "delta");
+      requireSafeInteger(delta, "delta");
 
       const from = this.tabOrder.indexOf(id);
       const to = clamp(from + delta, 0, this.tabOrder.length - 1);
@@ -283,8 +294,8 @@
         throw new Error("unsupported session schema version");
       }
 
-      const generation = requireNonNegativeInteger(value.generation, "generation");
-      const nextUntitledNumber = requirePositiveInteger(value.nextUntitledNumber, "next untitled number");
+      const generation = requireSafeNonNegativeInteger(value.generation, "generation");
+      const nextUntitledNumber = requireSafePositiveInteger(value.nextUntitledNumber, "next untitled number");
 
       if (!Array.isArray(value.tabs) || value.tabs.length === 0) {
         throw new TypeError("tabs must not be empty");

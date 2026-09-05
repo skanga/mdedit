@@ -78,6 +78,12 @@ test("createUntitled creates unique untitled tabs in creation order", () => {
   assert.equal(session.nextUntitledNumber, 3);
 });
 
+test("createUntitled rejects an empty id from the idFactory", () => {
+  const session = new SessionModel({ idFactory: () => "" });
+
+  assert.throws(() => session.createUntitled(), /document id must be a non-empty string/i);
+});
+
 test("add returns the added document, appends it, activates it, and increments generation once", () => {
   const session = new SessionModel({ idFactory: () => "generated-id" });
   const doc = makeDocument({ id: "doc-1" });
@@ -89,6 +95,19 @@ test("add returns the added document, appends it, activates it, and increments g
   assert.deepEqual(session.tabOrder, ["doc-1"]);
   assert.equal(session.activeDocumentId, "doc-1");
   assert.equal(session.generation, beforeGeneration + 1);
+});
+
+test("add rejects session-invalid fields on a DocumentModel instance", () => {
+  const session = new SessionModel({ idFactory: () => "generated-id" });
+  const doc = new DocumentModel({
+    id: "",
+    displayName: "",
+    canonicalPath: "",
+    content: "",
+    savedContentSha256: EMPTY_SHA256,
+  });
+
+  assert.throws(() => session.add(doc), /document id must be a non-empty string/i);
 });
 
 test("add rejects duplicate document IDs and duplicate canonical paths", () => {
@@ -224,7 +243,8 @@ test("move clamps within bounds, preserves the active id, and rejects invalid in
   assert.equal(session.generation, beforeUpperClamp + 1);
 
   assert.throws(() => session.move("unknown", 1), /unknown document id/i);
-  assert.throws(() => session.move("a", 1.5), /delta must be an integer/i);
+  assert.throws(() => session.move("a", 1.5), /delta must be a safe integer/i);
+  assert.throws(() => session.move("a", 9007199254740992), /delta must be a safe integer/i);
 });
 
 test("toManifest emits the session schema and ordered tab metadata", () => {
@@ -285,6 +305,8 @@ test("fromManifest rejects invalid session manifests", () => {
   assert.throws(() => SessionModel.fromManifest({ ...base, tabs: [] }), /tabs must not be empty/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, generation: 1.5 }), /generation/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 1.5 }), /next untitled number/i);
+  assert.throws(() => SessionModel.fromManifest({ ...base, generation: 9007199254740992 }), /generation/i);
+  assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 9007199254740992 }), /next untitled number/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     tabs: [
@@ -299,6 +321,13 @@ test("fromManifest rejects invalid session manifests", () => {
       { documentId: "doc-2", displayName: "Second.md", snapshotRevision: 2, canonicalPath: "/documents/a.md" },
     ],
   }), /duplicate canonical path/i);
+  assert.throws(() => SessionModel.fromManifest({
+    ...base,
+    nextUntitledNumber: 9007199254740991,
+    tabs: [
+      { documentId: "doc-1", displayName: "Untitled 9007199254740991", snapshotRevision: 1 },
+    ],
+  }), /untitled label/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     nextUntitledNumber: 3,
@@ -329,6 +358,12 @@ test("fromManifest rejects invalid session manifests", () => {
       { documentId: "doc-1", displayName: "First.md", snapshotRevision: -1 },
     ],
   }), /snapshot revision/i);
+  assert.throws(() => SessionModel.fromManifest({
+    ...base,
+    tabs: [
+      { documentId: "doc-1", displayName: "First.md", snapshotRevision: 9007199254740992 },
+    ],
+  }), /snapshot revision/i);
 });
 
 test("fromManifest preserves supplied canonical paths", () => {
@@ -356,5 +391,5 @@ test("fromManifest rejects fractional snapshot revisions", () => {
     tabs: [
       { documentId: "doc-1", displayName: "First.md", snapshotRevision: 1.5 },
     ],
-  }, { idFactory: () => "generated-id" }), /snapshot revision must be an integer/i);
+  }, { idFactory: () => "generated-id" }), /snapshot revision must be a safe integer/i);
 });
