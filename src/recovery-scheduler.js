@@ -71,7 +71,10 @@
       entry.latestRevision = revision;
       if (entry.failed) return true;
       this._setStatus(entry, "pending");
-      if (!this._isActive(entry)) return true;
+      if (!this._isActive(entry)
+          || entry.failed
+          || entry.inFlight
+          || entry.latestRevision <= entry.persistedRevision) return true;
       this._schedule(entry);
       return true;
     }

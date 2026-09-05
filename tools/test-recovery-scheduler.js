@@ -97,6 +97,41 @@ test("forget from changed pending status leaves no timers", async () => {
   assert.equal(scheduler.forget("a"), false);
 });
 
+test("flush from changed pending status owns the write without leaving timers", async () => {
+  const clock = fakeClock();
+  const writeGate = deferred();
+  const writes = [];
+  const statuses = [];
+  let observedFlush;
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    write(id, revision) {
+      writes.push([id, revision]);
+      return writeGate.promise;
+    },
+    onStatus(id, status) {
+      statuses.push([id, status]);
+      if (status === "pending" && !observedFlush) observedFlush = scheduler.flush(id);
+    },
+  });
+
+  assert.equal(scheduler.changed("a", 1), true);
+  assert.deepEqual(writes, [["a", 1]]);
+  assert.equal(clock.pending(), 0);
+
+  writeGate.resolve();
+  await observedFlush;
+  await scheduler.flush("a");
+  assert.deepEqual(writes, [["a", 1]]);
+  assert.deepEqual(statuses, [["a", "pending"], ["a", "writing"], ["a", "clean"]]);
+  assert.equal(clock.pending(), 0);
+
+  clock.tick(20000);
+  await settle();
+  assert.deepEqual(writes, [["a", 1]]);
+});
+
 test("forget from flush pending status rejects instead of orphaning its promise", async () => {
   const clock = fakeClock();
   const writes = [];
@@ -353,7 +388,7 @@ test("failure remains sticky across changes and flush until explicit retry", asy
   assert.deepEqual(writes, [["a", 1], ["a", 2]]);
 });
 
-test("failure cancels a newer edit timer and waits for explicit retry", async () => {
+test("failure keeps an in-flight newer edit for explicit retry without timers", async () => {
   const clock = fakeClock();
   const firstWrite = deferred();
   const writes = [];
@@ -369,7 +404,7 @@ test("failure cancels a newer edit timer and waits for explicit retry", async ()
   scheduler.changed("a", 1);
   const failedFlush = scheduler.flush("a");
   scheduler.changed("a", 2);
-  assert.equal(clock.pending(), 2);
+  assert.equal(clock.pending(), 0);
   firstWrite.reject(failure);
   await assert.rejects(failedFlush, (error) => error === failure);
   await settle();
