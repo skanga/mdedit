@@ -25,11 +25,24 @@ function baseSnapshot(overrides = {}) {
       ...emptyWorkspace(),
       selectionStart: 99,
       selectionEnd: 100,
-      editorScrollTop: -12,
-      previewScrollTop: Number.POSITIVE_INFINITY,
+      editorScrollTop: 12,
+      previewScrollTop: 34,
       viewMode: "split",
     },
     ...overrides,
+  };
+}
+
+function modelState(doc) {
+  return {
+    content: doc.content,
+    editRevision: doc.editRevision,
+    dirty: doc.dirty,
+    recoveryStatus: doc.recoveryStatus,
+    persistedRevision: doc.persistedRevision,
+    savedContentSha256: doc.savedContentSha256,
+    expectedDiskSha256: doc.expectedDiskSha256,
+    fileStatus: doc.fileStatus,
   };
 }
 
@@ -90,6 +103,26 @@ test("constructor rejects negative revisions except the persisted sentinel", () 
     }),
     /persisted revision/i,
   );
+  assert.throws(
+    () => new DocumentModel({
+      id: "doc-1",
+      displayName: "a.md",
+      content: "",
+      savedContentSha256: EMPTY_SHA,
+      fileStatus: "broken",
+    }),
+    /file status/i,
+  );
+  assert.throws(
+    () => new DocumentModel({
+      id: "doc-1",
+      displayName: "a.md",
+      content: "",
+      savedContentSha256: EMPTY_SHA,
+      recoveryStatus: "glitched",
+    }),
+    /recovery status/i,
+  );
 });
 
 test("applyContent increments the edit revision and marks recovery pending", () => {
@@ -116,23 +149,13 @@ test("applyContent returns false for identical content and leaves state unchange
     dirty: true,
     recoveryStatus: "pending",
   });
-  const before = {
-    content: doc.content,
-    editRevision: doc.editRevision,
-    dirty: doc.dirty,
-    recoveryStatus: doc.recoveryStatus,
-  };
+  const before = modelState(doc);
 
   assert.equal(doc.applyContent("a"), false);
-  assert.deepEqual({
-    content: doc.content,
-    editRevision: doc.editRevision,
-    dirty: doc.dirty,
-    recoveryStatus: doc.recoveryStatus,
-  }, before);
+  assert.deepEqual(modelState(doc), before);
 });
 
-test("reconcileDirty ignores stale revisions and clears matching content", () => {
+test("reconcileDirty preserves recovery status while updating dirty state", () => {
   const doc = new DocumentModel({
     id: "doc-1",
     displayName: "a.md",
@@ -142,15 +165,21 @@ test("reconcileDirty ignores stale revisions and clears matching content", () =>
 
   doc.applyContent("ab");
   doc.applyContent("a");
+  doc.recoveryStatus = "pending";
 
   assert.equal(doc.reconcileDirty("sha-a", 1), false);
   assert.equal(doc.dirty, true);
+  assert.equal(doc.recoveryStatus, "pending");
 
-  assert.equal(doc.reconcileDirty("sha-a", 2), true);
-  assert.equal(doc.dirty, false);
+  for (const recoveryStatus of ["clean", "pending", "writing", "failed"]) {
+    doc.recoveryStatus = recoveryStatus;
+    assert.equal(doc.reconcileDirty("sha-a", 2), true);
+    assert.equal(doc.dirty, false);
+    assert.equal(doc.recoveryStatus, recoveryStatus);
+  }
 });
 
-test("recordSave updates the save baseline without clearing dirty after a newer edit", () => {
+test("recordSave updates the save baseline without changing recovery state", () => {
   const doc = new DocumentModel({
     id: "doc-1",
     displayName: "a.md",
@@ -159,6 +188,8 @@ test("recordSave updates the save baseline without clearing dirty after a newer 
   });
 
   doc.applyContent("ab");
+  doc.recoveryStatus = "pending";
+  const before = modelState(doc);
 
   doc.recordSave({
     editRevision: 0,
@@ -174,6 +205,31 @@ test("recordSave updates the save baseline without clearing dirty after a newer 
   assert.equal(doc.recoveryStatus, "pending");
 });
 
+test("recordSave rejects invalid results without mutating the model", () => {
+  const doc = new DocumentModel({
+    id: "doc-1",
+    displayName: "a.md",
+    content: "a",
+    savedContentSha256: "sha-a",
+    expectedDiskSha256: "disk-a",
+    fileStatus: "externally-changed",
+    recoveryStatus: "writing",
+  });
+  doc.applyContent("ab");
+  doc.recoveryStatus = "writing";
+  const before = modelState(doc);
+
+  assert.throws(
+    () => doc.recordSave({
+      editRevision: -1,
+      contentSha256: "",
+      diskSha256: "",
+    }),
+    /edit revision/i,
+  );
+  assert.deepEqual(modelState(doc), before);
+});
+
 test("fromSnapshot restores state and clamps selection and scroll positions", () => {
   const doc = DocumentModel.fromSnapshot(baseSnapshot());
 
@@ -184,26 +240,26 @@ test("fromSnapshot restores state and clamps selection and scroll positions", ()
   assert.equal(doc.persistedRevision, 4);
   assert.equal(doc.workspace.selectionStart, 3);
   assert.equal(doc.workspace.selectionEnd, 3);
-  assert.equal(doc.workspace.editorScrollTop, 0);
-  assert.equal(doc.workspace.previewScrollTop, 0);
+  assert.equal(doc.workspace.editorScrollTop, 12);
+  assert.equal(doc.workspace.previewScrollTop, 34);
   assert.equal(doc.workspace.viewMode, "split");
 });
 
-test("fromSnapshot normalizes negative and non-finite selection and scroll values", () => {
-  const doc = DocumentModel.fromSnapshot(baseSnapshot({
-    workspace: {
-      ...emptyWorkspace(),
-      selectionStart: -9,
-      selectionEnd: Number.POSITIVE_INFINITY,
-      editorScrollTop: -12,
-      previewScrollTop: Number.NaN,
-    },
-  }));
+test("fromSnapshot rejects missing or invalid required snapshot fields", () => {
+  const missingPath = baseSnapshot();
+  delete missingPath.path;
+  assert.throws(() => DocumentModel.fromSnapshot(missingPath), /invalid document snapshot/i);
 
-  assert.equal(doc.workspace.selectionStart, 0);
-  assert.equal(doc.workspace.selectionEnd, 0);
-  assert.equal(doc.workspace.editorScrollTop, 0);
-  assert.equal(doc.workspace.previewScrollTop, 0);
+  const invalidExpectedDisk = baseSnapshot({ expectedDiskSha256: 7 });
+  assert.throws(() => DocumentModel.fromSnapshot(invalidExpectedDisk), /invalid document snapshot/i);
+
+  const missingWorkspaceField = baseSnapshot();
+  delete missingWorkspaceField.workspace.selectionStart;
+  assert.throws(() => DocumentModel.fromSnapshot(missingWorkspaceField), /invalid document snapshot/i);
+
+  const missingFindField = baseSnapshot();
+  delete missingFindField.workspace.find.replacement;
+  assert.throws(() => DocumentModel.fromSnapshot(missingFindField), /invalid document snapshot/i);
 });
 
 test("fromSnapshot rejects unsupported schema versions", () => {
@@ -214,7 +270,7 @@ test("fromSnapshot rejects missing required fields", () => {
   assert.throws(() => DocumentModel.fromSnapshot({ schemaVersion: SNAPSHOT_SCHEMA_VERSION }), /invalid document snapshot/i);
 });
 
-test("fromSnapshot rejects invalid file status, view mode, and revisions", () => {
+test("fromSnapshot rejects invalid file status, view mode, revisions, and numeric bounds", () => {
   assert.throws(
     () => DocumentModel.fromSnapshot(baseSnapshot({ fileStatus: "broken" })),
     /file status/i,
@@ -227,13 +283,78 @@ test("fromSnapshot rejects invalid file status, view mode, and revisions", () =>
   );
   assert.throws(
     () => DocumentModel.fromSnapshot(baseSnapshot({ editRevision: "4" })),
-    /revision/i,
+    /invalid document snapshot/i,
+  );
+  assert.throws(
+    () => DocumentModel.fromSnapshot(baseSnapshot({
+      workspace: {
+        ...emptyWorkspace(),
+        selectionStart: -9,
+        selectionEnd: 1,
+        editorScrollTop: 0,
+        previewScrollTop: 0,
+      },
+    })),
+    /selection start/i,
+  );
+  assert.throws(
+    () => DocumentModel.fromSnapshot(baseSnapshot({
+      workspace: {
+        ...emptyWorkspace(),
+        selectionStart: 0,
+        selectionEnd: Number.POSITIVE_INFINITY,
+        editorScrollTop: 0,
+        previewScrollTop: 0,
+      },
+    })),
+    /selection end/i,
+  );
+  assert.throws(
+    () => DocumentModel.fromSnapshot(baseSnapshot({
+      workspace: {
+        ...emptyWorkspace(),
+        selectionStart: 0,
+        selectionEnd: 0,
+        editorScrollTop: -12,
+        previewScrollTop: 0,
+      },
+    })),
+    /editor scroll top/i,
+  );
+  assert.throws(
+    () => DocumentModel.fromSnapshot(baseSnapshot({
+      workspace: {
+        ...emptyWorkspace(),
+        selectionStart: 0,
+        selectionEnd: 0,
+        editorScrollTop: 0,
+        previewScrollTop: Number.NaN,
+      },
+    })),
+    /preview scroll top/i,
   );
 });
 
-test("toSnapshot includes the serializable document fields and excludes derived render state", () => {
+test("toSnapshot returns a detached snapshot tree", () => {
   const doc = DocumentModel.fromSnapshot(baseSnapshot());
   const snapshot = doc.toSnapshot();
+
+  snapshot.workspace.selectionStart = 0;
+  snapshot.workspace.find.query = "changed";
+  snapshot.workspace.find.matchIndex = 99;
+  snapshot.content = "mutated";
+
+  assert.equal(doc.workspace.selectionStart, 3);
+  assert.equal(doc.workspace.find.query, "");
+  assert.equal(doc.content, "abc");
+
+  doc.workspace.selectionStart = 1;
+  doc.workspace.find.query = "doc";
+  doc.content = "xyz";
+
+  assert.equal(snapshot.workspace.selectionStart, 0);
+  assert.equal(snapshot.workspace.find.query, "changed");
+  assert.equal(snapshot.content, "mutated");
 
   assert.deepEqual(Object.keys(snapshot).sort(), [
     "canonicalPath",

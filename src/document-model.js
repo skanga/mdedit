@@ -9,6 +9,11 @@
   const SNAPSHOT_SCHEMA_VERSION = 1;
   const FILE_STATUSES = new Set(["normal", "externally-changed", "missing", "read-error"]);
   const VIEW_MODES = new Set(["split", "edit", "preview"]);
+  const RECOVERY_STATUSES = new Set(["clean", "pending", "writing", "failed"]);
+
+  function hasOwn(value, key) {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
 
   function emptyWorkspace() {
     return {
@@ -42,6 +47,12 @@
     return value;
   }
 
+  function requireNonEmptyString(value, name) {
+    const string = requireString(value, name);
+    if (string.length === 0) throw new TypeError(`${name} must be a non-empty string`);
+    return string;
+  }
+
   function requireNonNegativeInteger(value, name) {
     const integer = requireInteger(value, name);
     if (integer < 0) throw new RangeError(`${name} must be non-negative`);
@@ -55,30 +66,61 @@
     return integer;
   }
 
-  function normalizeScrollTop(value) {
-    return Number.isFinite(value) && value >= 0 ? value : 0;
+  function requireRecoveryStatus(value) {
+    if (value === undefined) return "clean";
+    if (!RECOVERY_STATUSES.has(value)) throw new TypeError("recovery status must be clean, pending, writing, or failed");
+    return value;
   }
 
-  function normalizeSelection(value, max, fallback) {
-    if (!Number.isFinite(value) || value < 0) return fallback;
-    return Math.min(max, Math.trunc(value));
+  function requireFileStatus(value) {
+    if (value === undefined) return "normal";
+    if (!FILE_STATUSES.has(value)) throw new TypeError("file status must be normal, externally-changed, missing, or read-error");
+    return value;
   }
 
-  function normalizeFind(value) {
-    const find = emptyWorkspace().find;
-    if (value === undefined || value === null) return find;
-    if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("invalid find state");
+  function requireSnapshotNullableString(snapshot, key) {
+    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
+    const value = snapshot[key];
+    if (value !== null && typeof value !== "string") throw new TypeError("invalid document snapshot");
+    return value;
+  }
 
-    if (value.open !== undefined && typeof value.open !== "boolean") throw new TypeError("invalid find state");
-    if (value.query !== undefined && typeof value.query !== "string") throw new TypeError("invalid find state");
-    if (value.replacement !== undefined && typeof value.replacement !== "string") throw new TypeError("invalid find state");
-    if (value.matchIndex !== undefined && !Number.isInteger(value.matchIndex)) throw new TypeError("invalid find state");
+  function requireSnapshotString(snapshot, key) {
+    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
+    const value = snapshot[key];
+    if (typeof value !== "string") throw new TypeError("invalid document snapshot");
+    return value;
+  }
 
-    find.open = value.open ?? find.open;
-    find.query = value.query ?? find.query;
-    find.replacement = value.replacement ?? find.replacement;
-    find.matchIndex = value.matchIndex ?? find.matchIndex;
-    return find;
+  function requireSnapshotNonNegativeInteger(snapshot, key, label) {
+    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
+    const value = snapshot[key];
+    if (!Number.isInteger(value) || value < 0) throw new TypeError(label);
+    return value;
+  }
+
+  function requireSnapshotNonNegativeNumber(snapshot, key, label) {
+    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
+    const value = snapshot[key];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) throw new TypeError(label);
+    return value;
+  }
+
+  function cloneWorkspace(workspace) {
+    return {
+      selectionStart: workspace.selectionStart,
+      selectionEnd: workspace.selectionEnd,
+      editorScrollTop: workspace.editorScrollTop,
+      previewScrollTop: workspace.previewScrollTop,
+      viewMode: workspace.viewMode,
+      tocOpen: workspace.tocOpen,
+      find: {
+        open: workspace.find.open,
+        query: workspace.find.query,
+        replacement: workspace.find.replacement,
+        matchIndex: workspace.find.matchIndex,
+      },
+    };
   }
 
   function normalizeWorkspace(value, contentLength) {
@@ -93,15 +135,71 @@
 
     workspace.viewMode = value.viewMode ?? workspace.viewMode;
     workspace.tocOpen = value.tocOpen ?? workspace.tocOpen;
-    workspace.editorScrollTop = normalizeScrollTop(value.editorScrollTop);
-    workspace.previewScrollTop = normalizeScrollTop(value.previewScrollTop);
+    workspace.editorScrollTop = typeof value.editorScrollTop === "number" && Number.isFinite(value.editorScrollTop) && value.editorScrollTop >= 0 ? value.editorScrollTop : 0;
+    workspace.previewScrollTop = typeof value.previewScrollTop === "number" && Number.isFinite(value.previewScrollTop) && value.previewScrollTop >= 0 ? value.previewScrollTop : 0;
 
-    const start = normalizeSelection(value.selectionStart, contentLength, 0);
-    const end = normalizeSelection(value.selectionEnd, contentLength, start);
+    const start = Number.isFinite(value.selectionStart) && value.selectionStart >= 0 ? Math.min(contentLength, Math.trunc(value.selectionStart)) : 0;
+    const end = Number.isFinite(value.selectionEnd) && value.selectionEnd >= 0 ? Math.min(contentLength, Math.trunc(value.selectionEnd)) : start;
     workspace.selectionStart = start;
     workspace.selectionEnd = end < start ? start : end;
-    workspace.find = normalizeFind(value.find);
+    if (value.find === undefined || value.find === null) {
+      workspace.find = emptyWorkspace().find;
+    } else {
+      if (typeof value.find !== "object" || Array.isArray(value.find)) throw new TypeError("invalid find state");
+      if (value.find.open !== undefined && typeof value.find.open !== "boolean") throw new TypeError("invalid find state");
+      if (value.find.query !== undefined && typeof value.find.query !== "string") throw new TypeError("invalid find state");
+      if (value.find.replacement !== undefined && typeof value.find.replacement !== "string") throw new TypeError("invalid find state");
+      if (value.find.matchIndex !== undefined && !Number.isInteger(value.find.matchIndex)) throw new TypeError("invalid find state");
+
+      workspace.find = {
+        open: value.find.open ?? false,
+        query: value.find.query ?? "",
+        replacement: value.find.replacement ?? "",
+        matchIndex: value.find.matchIndex ?? -1,
+      };
+    }
     return workspace;
+  }
+
+  function validateSnapshotWorkspace(workspace, contentLength) {
+    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) throw new TypeError("invalid document snapshot");
+    if (!hasOwn(workspace, "selectionStart") || !hasOwn(workspace, "selectionEnd") || !hasOwn(workspace, "editorScrollTop")
+      || !hasOwn(workspace, "previewScrollTop") || !hasOwn(workspace, "viewMode") || !hasOwn(workspace, "tocOpen")
+      || !hasOwn(workspace, "find")) {
+      throw new TypeError("invalid document snapshot");
+    }
+    if (!Number.isInteger(workspace.selectionStart) || workspace.selectionStart < 0) throw new TypeError("selection start must be a non-negative integer");
+    if (!Number.isInteger(workspace.selectionEnd) || workspace.selectionEnd < 0) throw new TypeError("selection end must be a non-negative integer");
+    if (typeof workspace.editorScrollTop !== "number" || !Number.isFinite(workspace.editorScrollTop) || workspace.editorScrollTop < 0) {
+      throw new TypeError("editor scroll top must be a non-negative finite number");
+    }
+    if (typeof workspace.previewScrollTop !== "number" || !Number.isFinite(workspace.previewScrollTop) || workspace.previewScrollTop < 0) {
+      throw new TypeError("preview scroll top must be a non-negative finite number");
+    }
+    if (!VIEW_MODES.has(workspace.viewMode)) throw new TypeError("invalid view mode");
+    if (typeof workspace.tocOpen !== "boolean") throw new TypeError("invalid workspace");
+    if (!workspace.find || typeof workspace.find !== "object" || Array.isArray(workspace.find)) throw new TypeError("invalid find state");
+    if (!hasOwn(workspace.find, "open") || !hasOwn(workspace.find, "query") || !hasOwn(workspace.find, "replacement") || !hasOwn(workspace.find, "matchIndex")) {
+      throw new TypeError("invalid document snapshot");
+    }
+    if (typeof workspace.find.open !== "boolean") throw new TypeError("invalid find state");
+    if (typeof workspace.find.query !== "string") throw new TypeError("invalid find state");
+    if (typeof workspace.find.replacement !== "string") throw new TypeError("invalid find state");
+    if (!Number.isInteger(workspace.find.matchIndex)) throw new TypeError("invalid find state");
+    return {
+      selectionStart: Math.trunc(workspace.selectionStart),
+      selectionEnd: Math.trunc(workspace.selectionEnd),
+      editorScrollTop: workspace.editorScrollTop,
+      previewScrollTop: workspace.previewScrollTop,
+      viewMode: workspace.viewMode,
+      tocOpen: workspace.tocOpen,
+      find: {
+        open: workspace.find.open,
+        query: workspace.find.query,
+        replacement: workspace.find.replacement,
+        matchIndex: workspace.find.matchIndex,
+      },
+    };
   }
 
   class DocumentModel {
@@ -122,10 +220,10 @@
         : requireNonNegativeInteger(input.snapshotRevision, "snapshot revision");
       this.savedContentSha256 = requireString(input.savedContentSha256, "saved content sha256");
       this.expectedDiskSha256 = optionalString(input.expectedDiskSha256, "expected disk sha256");
-      this.fileStatus = FILE_STATUSES.has(input.fileStatus) ? input.fileStatus : "normal";
+      this.fileStatus = requireFileStatus(input.fileStatus);
       this.workspace = normalizeWorkspace(input.workspace, this.content.length);
       this.dirty = typeof input.dirty === "boolean" ? input.dirty : false;
-      this.recoveryStatus = typeof input.recoveryStatus === "string" ? input.recoveryStatus : "clean";
+      this.recoveryStatus = requireRecoveryStatus(input.recoveryStatus);
     }
 
     applyContent(content) {
@@ -145,7 +243,6 @@
       if (editRevision !== this.editRevision) return false;
 
       this.dirty = contentSha256 !== this.savedContentSha256;
-      if (!this.dirty) this.recoveryStatus = "clean";
       return true;
     }
 
@@ -153,8 +250,11 @@
       if (!result || typeof result !== "object") throw new TypeError("save result is required");
 
       const editRevision = requireNonNegativeInteger(result.editRevision, "edit revision");
-      this.savedContentSha256 = requireString(result.contentSha256, "content sha256");
-      this.expectedDiskSha256 = requireString(result.diskSha256, "disk sha256");
+      const savedContentSha256 = requireNonEmptyString(result.contentSha256, "content sha256");
+      const expectedDiskSha256 = requireNonEmptyString(result.diskSha256, "disk sha256");
+
+      this.savedContentSha256 = savedContentSha256;
+      this.expectedDiskSha256 = expectedDiskSha256;
       this.fileStatus = "normal";
       this.dirty = this.editRevision !== editRevision;
     }
@@ -172,7 +272,7 @@
         savedContentSha256: this.savedContentSha256,
         expectedDiskSha256: this.expectedDiskSha256,
         fileStatus: this.fileStatus,
-        workspace: this.workspace,
+        workspace: cloneWorkspace(this.workspace),
       };
     }
 
@@ -186,46 +286,54 @@
       let snapshotRevision;
       let editRevision;
       let savedContentSha256;
+      let path;
+      let canonicalPath;
+      let expectedDiskSha256;
+      let fileStatus;
+      let workspace;
+      let recoveryStatus;
 
       try {
         documentId = requireString(value.documentId, "document id");
         displayName = requireString(value.displayName, "display name");
         content = requireString(value.content, "content");
         savedContentSha256 = requireString(value.savedContentSha256, "saved content sha256");
+        path = requireSnapshotNullableString(value, "path");
+        canonicalPath = requireSnapshotNullableString(value, "canonicalPath");
+        expectedDiskSha256 = requireSnapshotNullableString(value, "expectedDiskSha256");
+        if (!hasOwn(value, "fileStatus") || !FILE_STATUSES.has(value.fileStatus)) throw new TypeError("invalid file status");
+        fileStatus = value.fileStatus;
+        recoveryStatus = hasOwn(value, "recoveryStatus") ? requireRecoveryStatus(value.recoveryStatus) : "clean";
+        snapshotRevision = requireSnapshotNonNegativeInteger(value, "snapshotRevision", "snapshot revision must be a non-negative integer");
+        editRevision = requireSnapshotNonNegativeInteger(value, "editRevision", "edit revision must be a non-negative integer");
+        workspace = value.workspace;
       } catch (error) {
-        throw new TypeError("invalid document snapshot");
+        if (error instanceof TypeError && error.message !== "invalid file status") throw new TypeError("invalid document snapshot");
+        throw error;
       }
 
-      if (!value.workspace || typeof value.workspace !== "object" || Array.isArray(value.workspace)) {
-        throw new TypeError("invalid document snapshot");
-      }
-      if (value.snapshotRevision === undefined || value.editRevision === undefined) {
-        throw new TypeError("invalid document snapshot");
-      }
-      snapshotRevision = requireNonNegativeInteger(value.snapshotRevision, "snapshot revision");
-      editRevision = requireNonNegativeInteger(value.editRevision, "edit revision");
-      if (!FILE_STATUSES.has(value.fileStatus)) throw new TypeError("invalid file status");
-
-      const workspace = normalizeWorkspace(value.workspace, content.length);
-      workspace.selectionStart = normalizeSelection(workspace.selectionStart, content.length, 0);
-      workspace.selectionEnd = normalizeSelection(workspace.selectionEnd, content.length, workspace.selectionStart);
-      workspace.editorScrollTop = normalizeScrollTop(workspace.editorScrollTop);
-      workspace.previewScrollTop = normalizeScrollTop(workspace.previewScrollTop);
+      const normalizedWorkspace = validateSnapshotWorkspace(workspace, content.length);
+      const clampedSelectionStart = Math.min(content.length, normalizedWorkspace.selectionStart);
+      const clampedSelectionEnd = Math.min(content.length, Math.max(clampedSelectionStart, normalizedWorkspace.selectionEnd));
 
       return new DocumentModel({
         id: documentId,
         displayName,
-        path: value.path,
-        canonicalPath: value.canonicalPath,
+        path,
+        canonicalPath,
         content,
         editRevision,
         persistedRevision: editRevision,
         snapshotRevision,
         savedContentSha256,
-        expectedDiskSha256: value.expectedDiskSha256,
-        fileStatus: value.fileStatus,
-        workspace,
-        recoveryStatus: typeof value.recoveryStatus === "string" ? value.recoveryStatus : "clean",
+        expectedDiskSha256,
+        fileStatus,
+        workspace: {
+          ...normalizedWorkspace,
+          selectionStart: clampedSelectionStart,
+          selectionEnd: clampedSelectionEnd,
+        },
+        recoveryStatus,
       });
     }
   }
