@@ -29,6 +29,10 @@
     return new Error(String(reason));
   }
 
+  function forgottenError(id) {
+    return new Error(`recovery was forgotten for document ${id}`);
+  }
+
   function defaultClock() {
     return {
       setTimeout(callback, delay) {
@@ -67,6 +71,7 @@
       entry.latestRevision = revision;
       if (entry.failed) return true;
       this._setStatus(entry, "pending");
+      if (!this._isActive(entry)) return true;
       this._schedule(entry);
       return true;
     }
@@ -81,12 +86,15 @@
         entry = this._entry(id);
       }
       if (entry.forgotten) {
-        return Promise.reject(new Error(`recovery was forgotten for document ${id}`));
+        return Promise.reject(forgottenError(id));
       }
 
       if (revision !== undefined && revision > entry.latestRevision) {
         entry.latestRevision = revision;
-        if (!entry.failed) this._setStatus(entry, "pending");
+        if (!entry.failed) {
+          this._setStatus(entry, "pending");
+          if (!this._isActive(entry)) return Promise.reject(forgottenError(id));
+        }
       }
 
       const targetRevision = entry.latestRevision;
@@ -94,12 +102,14 @@
         this._clearTimers(entry);
         return Promise.resolve();
       }
-      return this._requestFlush(entry, targetRevision);
+      return this._flushExisting(entry, targetRevision);
     }
 
     async flushAll() {
       const entries = [...this._entries.values()].filter((entry) => !entry.forgotten);
-      const results = await Promise.allSettled(entries.map((entry) => this.flush(entry.id, entry.latestRevision)));
+      const results = await Promise.allSettled(
+        entries.map((entry) => this._flushExisting(entry, entry.latestRevision, true)),
+      );
       const failures = [];
 
       for (let index = 0; index < results.length; index += 1) {
@@ -126,7 +136,7 @@
 
       entry.forgotten = true;
       this._clearTimers(entry);
-      this._rejectWaiters(entry, new Error(`recovery was forgotten for document ${id}`));
+      this._rejectWaiters(entry, forgottenError(id));
       if (!entry.inFlight) this._entries.delete(id);
       return true;
     }
@@ -138,7 +148,8 @@
 
       entry.failed = null;
       this._setStatus(entry, "pending");
-      return this._requestFlush(entry, entry.latestRevision);
+      if (!this._isActive(entry)) return Promise.reject(forgottenError(id));
+      return this._flushExisting(entry, entry.latestRevision);
     }
 
     _entry(id) {
@@ -186,7 +197,10 @@
       if (entry.latestRevision > entry.persistedRevision) this._start(entry);
     }
 
-    _requestFlush(entry, targetRevision) {
+    _flushExisting(entry, targetRevision, skipInactive = false) {
+      if (!this._isActive(entry)) {
+        return skipInactive ? Promise.resolve() : Promise.reject(forgottenError(entry.id));
+      }
       if (entry.failed) return Promise.reject(entry.failed);
       this._clearTimers(entry);
       if (targetRevision <= entry.persistedRevision) return Promise.resolve();
@@ -220,6 +234,7 @@
         const revision = entry.latestRevision;
         this._clearTimers(entry);
         this._setStatus(entry, "writing");
+        if (!this._isActive(entry)) return;
 
         try {
           await this._write(entry.id, revision);
@@ -238,6 +253,7 @@
 
         if (entry.latestRevision > entry.persistedRevision) {
           this._setStatus(entry, "pending");
+          if (!this._isActive(entry)) return;
         }
       }
 

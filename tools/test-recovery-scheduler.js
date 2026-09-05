@@ -54,6 +54,16 @@ async function settle() {
   await Promise.resolve();
 }
 
+async function outcomeByImmediate(promise) {
+  return Promise.race([
+    promise.then(
+      (value) => ({ status: "fulfilled", value }),
+      (reason) => ({ status: "rejected", reason }),
+    ),
+    new Promise((resolve) => setImmediate(() => resolve({ status: "unsettled" }))),
+  ]);
+}
+
 test("browser wrapper merges RecoveryScheduler into window.MDEdit", () => {
   const code = fs.readFileSync(path.join(__dirname, "..", "src", "recovery-scheduler.js"), "utf8");
   const sandbox = {
@@ -65,6 +75,65 @@ test("browser wrapper merges RecoveryScheduler into window.MDEdit", () => {
   vm.runInNewContext(code, sandbox, { filename: "recovery-scheduler.js" });
 
   assert.equal(typeof sandbox.window.MDEdit.RecoveryScheduler, "function");
+});
+
+test("forget from changed pending status leaves no timers", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    write: async (id, revision) => writes.push([id, revision]),
+    onStatus(id, status) {
+      if (status === "pending") scheduler.forget(id);
+    },
+  });
+
+  assert.equal(scheduler.changed("a", 1), true);
+  assert.equal(clock.pending(), 0);
+  clock.tick(20000);
+  await settle();
+  assert.deepEqual(writes, []);
+  assert.equal(scheduler.forget("a"), false);
+});
+
+test("forget from flush pending status rejects instead of orphaning its promise", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    write: async (id, revision) => writes.push([id, revision]),
+    onStatus(id, status) {
+      if (status === "pending") scheduler.forget(id);
+    },
+  });
+
+  const outcome = await outcomeByImmediate(scheduler.flush("a", 1));
+  assert.equal(outcome.status, "rejected");
+  assert.match(outcome.reason.message, /forgotten/i);
+  assert.equal(clock.pending(), 0);
+  assert.deepEqual(writes, []);
+});
+
+test("forget from writing status prevents the recovery write and settles flush", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    write: async (id, revision) => writes.push([id, revision]),
+    onStatus(id, status) {
+      if (status === "writing") scheduler.forget(id);
+    },
+  });
+
+  scheduler.changed("a", 1);
+  await assert.rejects(scheduler.flush("a"), /forgotten/i);
+  await settle();
+  assert.deepEqual(writes, []);
+  assert.equal(clock.pending(), 0);
+  assert.equal(scheduler.forget("a"), false);
 });
 
 test("idle debounce coalesces edits and resets only the idle timer", async () => {
@@ -220,6 +289,33 @@ test("retry from the failed status callback waits for the replacement write", as
   assert.deepEqual(writes, [["a", 1], ["a", 1]]);
 });
 
+test("forget from retry pending status rejects instead of orphaning its promise", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  let forgetOnPending = false;
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    write(id, revision) {
+      writes.push([id, revision]);
+      throw new Error("initial write failed");
+    },
+    onStatus(id, status) {
+      if (forgetOnPending && status === "pending") scheduler.forget(id);
+    },
+  });
+
+  scheduler.changed("a", 1);
+  await assert.rejects(scheduler.flush("a"), /initial write failed/i);
+  forgetOnPending = true;
+
+  const outcome = await outcomeByImmediate(scheduler.retry("a"));
+  assert.equal(outcome.status, "rejected");
+  assert.match(outcome.reason.message, /forgotten/i);
+  assert.deepEqual(writes, [["a", 1]]);
+  assert.equal(clock.pending(), 0);
+});
+
 test("failure remains sticky across changes and flush until explicit retry", async () => {
   const clock = fakeClock();
   const statuses = [];
@@ -367,6 +463,31 @@ test("flushAll attempts every document and aggregates failed document IDs", asyn
   assert.deepEqual(writes, [["a", 1], ["b", 2], ["c", 3]]);
 });
 
+test("flushAll skips a captured entry forgotten while an earlier document starts", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    async write(id, revision) {
+      writes.push([id, revision]);
+    },
+    onStatus(id, status) {
+      if (id === "a" && status === "writing") scheduler.forget("b");
+    },
+  });
+
+  scheduler.changed("a", 1);
+  scheduler.changed("b", 2);
+  await scheduler.flushAll();
+
+  assert.deepEqual(writes, [["a", 1]]);
+  assert.equal(scheduler.forget("b"), false);
+  clock.tick(20000);
+  await settle();
+  assert.deepEqual(writes, [["a", 1]]);
+});
+
 test("flush and forget cancel pending timers", async () => {
   const clock = fakeClock();
   const writes = [];
@@ -446,6 +567,26 @@ test("forget from a failed status callback cannot install stale retry timers", a
   clock.tick(20000);
   await settle();
   assert.deepEqual(writes, [["a", 1]]);
+});
+
+test("forget from clean status settles the draining flush without resurrecting work", async () => {
+  const clock = fakeClock();
+  const writes = [];
+  let scheduler;
+  scheduler = new RecoveryScheduler({
+    clock,
+    write: async (id, revision) => writes.push([id, revision]),
+    onStatus(id, status) {
+      if (status === "clean") scheduler.forget(id);
+    },
+  });
+
+  scheduler.changed("a", 1);
+  await assert.rejects(scheduler.flush("a"), /forgotten/i);
+  await settle();
+  assert.deepEqual(writes, [["a", 1]]);
+  assert.equal(clock.pending(), 0);
+  assert.equal(scheduler.forget("a"), false);
 });
 
 test("same and lower revisions neither delay nor duplicate persistence", async () => {
