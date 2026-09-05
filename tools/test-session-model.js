@@ -346,3 +346,15 @@ test("fromManifest preserves supplied canonical paths", () => {
   assert.equal(session.documents.get("doc-1").canonicalPath, "/documents/first.md");
   assert.equal(session.documents.get("doc-2").canonicalPath, "/documents/second.md");
 });
+
+test("fromManifest rejects fractional snapshot revisions", () => {
+  assert.throws(() => SessionModel.fromManifest({
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    generation: 0,
+    activeDocumentId: "doc-1",
+    nextUntitledNumber: 1,
+    tabs: [
+      { documentId: "doc-1", displayName: "First.md", snapshotRevision: 1.5 },
+    ],
+  }, { idFactory: () => "generated-id" }), /snapshot revision must be an integer/i);
+});
