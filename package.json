@@ -5,7 +5,7 @@
     "build:web": "./build.sh",
     "build:desktop": "./tools/build-desktop.sh",
     "tauri": "tauri",
-    "test": "node --test tools/test-document-model.js tools/test-native-bridge.js tools/test-project-identity.js tools/test-recovery-scheduler.js tools/test-session-model.js"
+    "test": "node --test tools/test-document-model.js tools/test-native-bridge.js tools/test-project-identity.js tools/test-recovery-scheduler.js tools/test-session-controller.js tools/test-session-model.js"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.11.4"
