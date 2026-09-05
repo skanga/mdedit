@@ -120,10 +120,17 @@ impl RecoveryStore {
     }
 
     fn load_manifest_optional(&self) -> Result<Option<Vec<u8>>, String> {
+        self.load_manifest_optional_with_cleanup(cleanup_stale_temps)
+    }
+
+    fn load_manifest_optional_with_cleanup<C>(&self, cleanup: C) -> Result<Option<Vec<u8>>, String>
+    where
+        C: FnOnce(&Path) -> Result<(), String>,
+    {
         let _guard = self.lock()?;
         let current = self.manifest_path();
         let previous = self.manifest_previous_path();
-        cleanup_stale_temps(&current)?;
+        let _ = cleanup(&current);
         if !path_exists(&current)? && !path_exists(&previous)? {
             return Ok(None);
         }
@@ -146,10 +153,22 @@ impl RecoveryStore {
     }
 
     pub fn load_document(&self, id: &str, revision: u64) -> Result<Vec<u8>, String> {
+        self.load_document_with_cleanup(id, revision, cleanup_stale_temps)
+    }
+
+    fn load_document_with_cleanup<C>(
+        &self,
+        id: &str,
+        revision: u64,
+        cleanup: C,
+    ) -> Result<Vec<u8>, String>
+    where
+        C: FnOnce(&Path) -> Result<(), String>,
+    {
         let _guard = self.lock()?;
         let current = self.document_path(id)?;
         let previous = self.document_previous_path(id)?;
-        cleanup_stale_temps(&current)?;
+        let _ = cleanup(&current);
         load_first_valid([current, previous], |bytes| {
             validate_document(bytes, id, Some(revision)).map(|_| ())
         })
@@ -243,6 +262,9 @@ fn validate_manifest(
     }
 
     let mut document_ids = HashSet::with_capacity(metadata.tabs.len());
+    let mut canonical_paths = HashSet::with_capacity(metadata.tabs.len());
+    let mut untitled_numbers = HashSet::with_capacity(metadata.tabs.len());
+    let mut max_untitled_number = 0;
     for tab in &metadata.tabs {
         validate_document_id(&tab.document_id)?;
         if tab.display_name.is_empty() {
@@ -254,9 +276,23 @@ fn validate_manifest(
         if matches!(&tab.canonical_path, Some(path) if path.is_empty()) {
             return Err("recovery manifest canonical path must not be empty".to_string());
         }
+        if let Some(path) = &tab.canonical_path {
+            if !canonical_paths.insert(path.as_str()) {
+                return Err("recovery manifest contains duplicate canonical paths".to_string());
+            }
+        }
+        if let Some(number) = parse_generated_untitled_number(&tab.display_name)? {
+            if !untitled_numbers.insert(number) {
+                return Err("recovery manifest contains duplicate untitled labels".to_string());
+            }
+            max_untitled_number = max_untitled_number.max(number);
+        }
         if !document_ids.insert(tab.document_id.as_str()) {
             return Err("recovery manifest contains duplicate document ids".to_string());
         }
+    }
+    if metadata.next_untitled_number <= max_untitled_number {
+        return Err("recovery manifest untitled label state is inconsistent".to_string());
     }
     validate_document_id(&metadata.active_document_id)?;
     if !document_ids.contains(metadata.active_document_id.as_str()) {
@@ -264,6 +300,30 @@ fn validate_manifest(
     }
 
     Ok(metadata)
+}
+
+fn parse_generated_untitled_number(display_name: &str) -> Result<Option<u64>, String> {
+    let Some(digits) = display_name.strip_prefix("Untitled ") else {
+        return Ok(None);
+    };
+    if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Ok(None);
+    }
+
+    // JavaScript Number accepts arbitrarily many leading zeroes, so remove
+    // them before parsing while retaining zero as an invalid generated label.
+    let significant_digits = digits.trim_start_matches('0');
+    if significant_digits.is_empty() {
+        return Err("untitled label must be a positive JavaScript safe integer".to_string());
+    }
+    let number = significant_digits
+        .parse::<u64>()
+        .map_err(|_| "untitled label is not a JavaScript safe integer".to_string())?;
+    if number >= MAX_SAFE_INTEGER {
+        return Err("untitled label must leave room for the next generated label".to_string());
+    }
+
+    Ok(Some(number))
 }
 
 fn validate_document(
@@ -386,6 +446,32 @@ where
     V: Fn(&[u8]) -> Result<(), String>,
     I: FnOnce(&Path, &Path) -> io::Result<()>,
 {
+    atomic_rotate_write_with_hooks(
+        current,
+        previous,
+        bytes,
+        validate_current,
+        install,
+        cleanup_stale_temps,
+        sync_directory,
+    )
+}
+
+fn atomic_rotate_write_with_hooks<V, I, C, S>(
+    current: &Path,
+    previous: &Path,
+    bytes: &[u8],
+    validate_current: V,
+    install: I,
+    cleanup: C,
+    sync: S,
+) -> Result<(), String>
+where
+    V: Fn(&[u8]) -> Result<(), String>,
+    I: FnOnce(&Path, &Path) -> io::Result<()>,
+    C: FnOnce(&Path) -> Result<(), String>,
+    S: FnOnce(Option<&Path>),
+{
     let directory = current
         .parent()
         .ok_or_else(|| "recovery path has no parent directory".to_string())?;
@@ -457,8 +543,8 @@ where
         ));
     }
 
-    cleanup_stale_temps(current)?;
-    sync_directory(Some(directory));
+    sync(Some(directory));
+    let _ = cleanup(current);
     Ok(())
 }
 
@@ -604,6 +690,7 @@ pub(crate) fn delete_recovery_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::Cell;
     use std::fs;
     use tempfile::tempdir;
 
@@ -615,6 +702,42 @@ mod tests {
             r#"{{"schemaVersion":1,"generation":{generation},"activeDocumentId":"{DOCUMENT_ID}","nextUntitledNumber":1,"tabs":[{{"documentId":"{DOCUMENT_ID}","displayName":"Document","snapshotRevision":1}}]}}"#
         )
         .into_bytes()
+    }
+
+    fn manifest_with_tabs(
+        generation: u64,
+        next_untitled_number: u64,
+        tabs: &[(&str, &str, Option<&str>)],
+    ) -> Vec<u8> {
+        let tabs: Vec<_> = tabs
+            .iter()
+            .map(|(document_id, display_name, canonical_path)| {
+                serde_json::json!({
+                    "documentId": document_id,
+                    "displayName": display_name,
+                    "snapshotRevision": 1,
+                    "canonicalPath": canonical_path,
+                })
+            })
+            .collect();
+        serde_json::to_vec(&serde_json::json!({
+            "schemaVersion": 1,
+            "generation": generation,
+            "activeDocumentId": tabs[0]["documentId"],
+            "nextUntitledNumber": next_untitled_number,
+            "tabs": tabs,
+        }))
+        .unwrap()
+    }
+
+    fn assert_invalid_current_manifest_falls_back(invalid: &[u8]) {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+        store.write_manifest(1, &manifest(1)).unwrap();
+        store.write_manifest(2, &manifest(2)).unwrap();
+        fs::write(store.manifest_path(), invalid).unwrap();
+
+        assert_eq!(store.load_manifest().unwrap(), manifest(1));
     }
 
     fn document(revision: u64) -> Vec<u8> {
@@ -718,6 +841,69 @@ mod tests {
         .unwrap();
 
         assert_eq!(store.load_manifest().unwrap(), manifest(1));
+    }
+
+    #[test]
+    fn duplicate_canonical_paths_in_current_manifest_fall_back_to_previous() {
+        let invalid = manifest_with_tabs(
+            2,
+            1,
+            &[
+                (DOCUMENT_ID, "First", Some("/same.md")),
+                (OTHER_DOCUMENT_ID, "Second", Some("/same.md")),
+            ],
+        );
+
+        assert_invalid_current_manifest_falls_back(&invalid);
+    }
+
+    #[test]
+    fn duplicate_generated_untitled_numbers_in_current_manifest_fall_back_to_previous() {
+        let invalid = manifest_with_tabs(
+            2,
+            2,
+            &[
+                (DOCUMENT_ID, "Untitled 1", None),
+                (OTHER_DOCUMENT_ID, "Untitled 01", None),
+            ],
+        );
+
+        assert_invalid_current_manifest_falls_back(&invalid);
+    }
+
+    #[test]
+    fn inconsistent_next_untitled_number_in_current_manifest_falls_back_to_previous() {
+        let invalid = manifest_with_tabs(2, 7, &[(DOCUMENT_ID, "Untitled 7", Some("/draft.md"))]);
+
+        assert_invalid_current_manifest_falls_back(&invalid);
+    }
+
+    #[test]
+    fn invalid_generated_untitled_bounds_in_current_manifest_fall_back_to_previous() {
+        for label in ["Untitled 0", "Untitled 9007199254740991"] {
+            let invalid = manifest_with_tabs(2, MAX_SAFE_INTEGER, &[(DOCUMENT_ID, label, None)]);
+            assert_invalid_current_manifest_falls_back(&invalid);
+        }
+    }
+
+    #[test]
+    fn valid_generated_untitled_edge_manifests_are_accepted() {
+        let leading_zero_and_non_namespace = manifest_with_tabs(
+            2,
+            2,
+            &[
+                (DOCUMENT_ID, "Untitled 01", None),
+                (OTHER_DOCUMENT_ID, "Untitled 1.0", None),
+            ],
+        );
+        let terminal_progressable = manifest_with_tabs(
+            3,
+            MAX_SAFE_INTEGER,
+            &[(DOCUMENT_ID, "Untitled 9007199254740990", None)],
+        );
+
+        assert!(validate_manifest(&leading_zero_and_non_namespace, None).is_ok());
+        assert!(validate_manifest(&terminal_progressable, None).is_ok());
     }
 
     #[test]
@@ -827,6 +1013,41 @@ mod tests {
         assert!(!stale.exists());
         assert!(unrelated.exists());
         assert!(malformed.exists());
+    }
+
+    #[test]
+    fn cleanup_failure_does_not_block_a_valid_manifest_load() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+        store.write_manifest(1, &manifest(1)).unwrap();
+
+        let loaded = store
+            .load_manifest_optional_with_cleanup(|_| Err("injected cleanup failure".to_string()));
+
+        assert_eq!(loaded.unwrap(), Some(manifest(1)));
+    }
+
+    #[test]
+    fn cleanup_failure_does_not_veto_an_installed_write_or_directory_sync() {
+        let directory = tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().join("session-v1"));
+        let current = store.document_path(DOCUMENT_ID).unwrap();
+        let previous = store.document_previous_path(DOCUMENT_ID).unwrap();
+        let directory_synced = Cell::new(false);
+
+        let result = atomic_rotate_write_with_hooks(
+            &current,
+            &previous,
+            &document(1),
+            |bytes| validate_document(bytes, DOCUMENT_ID, None).map(|_| ()),
+            |source, target| fs::rename(source, target),
+            |_| Err("injected cleanup failure".to_string()),
+            |_| directory_synced.set(true),
+        );
+
+        assert!(result.is_ok());
+        assert!(directory_synced.get());
+        assert_eq!(fs::read(current).unwrap(), document(1));
     }
 
     #[test]
