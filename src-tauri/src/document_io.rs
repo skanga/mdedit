@@ -185,40 +185,74 @@ fn fingerprint_symlink(path: &Path) -> Result<Fingerprint, String> {
     })
 }
 
+fn fingerprint_reader<R: Read>(reader: &mut R) -> io::Result<(String, u64)> {
+    let mut digest = Sha256::new();
+    let mut size = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        size = size
+            .checked_add(read as u64)
+            .ok_or_else(|| io::Error::other("document size overflow"))?;
+    }
+    Ok((format!("{:x}", digest.finalize()), size))
+}
+
 fn fingerprint(path: &Path) -> io::Result<Fingerprint> {
     let mut file = File::open(path)?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
+    let (sha256, size) = fingerprint_reader(&mut file)?;
     let metadata = file.metadata()?;
 
     Ok(Fingerprint {
-        sha256: sha256(&bytes),
-        size: bytes.len() as u64,
+        sha256,
+        size,
         modified_ms: modified_ms(&metadata),
         permissions: metadata.permissions(),
     })
 }
 
 pub fn read_document_path(path: &Path) -> Result<ReadDocumentResult, String> {
+    read_document_path_with_open_hook(path, |_| Ok(()))
+}
+
+fn read_document_path_with_open_hook<F>(
+    path: &Path,
+    after_open: F,
+) -> Result<ReadDocumentResult, String>
+where
+    F: FnOnce(&Path) -> io::Result<()>,
+{
     let canonical = match resolve_document_path(path)? {
         ResolvedDocumentPath::Target(canonical) => canonical,
         ResolvedDocumentPath::DanglingSymlink => {
             return Err(format!("document {} is a dangling symlink", path.display()))
         }
     };
-    let bytes = fs::read(&canonical)
+    let mut file = File::open(&canonical)
         .map_err(|error| format!("failed to read document {}: {error}", path.display()))?;
-    let content = String::from_utf8(bytes.clone())
-        .map_err(|error| format!("document {} is not valid UTF-8: {error}", path.display()))?;
-    let metadata = fs::metadata(&canonical)
+    after_open(&canonical)
+        .map_err(|error| format!("failed after opening document {}: {error}", path.display()))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)
+        .map_err(|error| format!("failed to read document {}: {error}", path.display()))?;
+    let metadata = file
+        .metadata()
         .map_err(|error| format!("failed to inspect document {}: {error}", path.display()))?;
+    let content_sha256 = sha256(&bytes);
+    let size = bytes.len() as u64;
+    let content = String::from_utf8(bytes)
+        .map_err(|error| format!("document {} is not valid UTF-8: {error}", path.display()))?;
 
     Ok(ReadDocumentResult {
         path: path_string(path, "document path")?,
         canonical_path: comparison_string(&canonical)?,
         content,
-        sha256: sha256(&bytes),
-        size: bytes.len() as u64,
+        sha256: content_sha256,
+        size,
         modified_ms: modified_ms(&metadata),
     })
 }
@@ -228,17 +262,27 @@ fn temporary_path(directory: &Path) -> PathBuf {
 }
 
 fn remove_temporary(path: &Path, directory: &Path) {
-    let _ = fs::remove_file(path);
+    remove_file_best_effort(path);
     sync_directory(directory);
 }
 
-fn write_temporary(
-    path: &Path,
-    directory: &Path,
-    content: &[u8],
-    permissions: Option<&fs::Permissions>,
-) -> Result<(PathBuf, File), String> {
-    write_temporary_with_writer(path, directory, permissions, |file| file.write_all(content))
+#[cfg(not(windows))]
+fn remove_file_best_effort(path: &Path) {
+    let _ = fs::remove_file(path);
+}
+
+#[cfg(windows)]
+fn remove_file_best_effort(path: &Path) {
+    if fs::remove_file(path).is_err() {
+        if let Ok(metadata) = fs::metadata(path) {
+            let mut permissions = metadata.permissions();
+            if permissions.readonly() {
+                permissions.set_readonly(false);
+                let _ = fs::set_permissions(path, permissions);
+                let _ = fs::remove_file(path);
+            }
+        }
+    }
 }
 
 fn write_temporary_with_writer<W>(
@@ -286,6 +330,29 @@ where
     Ok((temporary, file))
 }
 
+#[cfg(unix)]
+fn restrictive_replacement_permissions() -> Option<fs::Permissions> {
+    use std::os::unix::fs::PermissionsExt;
+    Some(fs::Permissions::from_mode(0o600))
+}
+
+#[cfg(not(unix))]
+fn restrictive_replacement_permissions() -> Option<fs::Permissions> {
+    None
+}
+
+fn apply_replacement_permissions(file: &File, permissions: fs::Permissions) -> io::Result<()> {
+    #[cfg(not(windows))]
+    file.set_permissions(permissions)?;
+
+    // ReplaceFileW preserves the destination's ACL and attributes. Changing
+    // the replacement temp on Windows would not be an equivalent substitute.
+    #[cfg(windows)]
+    let _ = permissions;
+
+    file.sync_all()
+}
+
 #[cfg(not(windows))]
 fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(temporary, destination)
@@ -293,29 +360,40 @@ fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
 
 #[cfg(windows)]
 fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
+    use std::ffi::c_void;
     use std::os::windows::ffi::OsStrExt;
-
-    const MOVEFILE_REPLACE_EXISTING: u32 = 0x1;
-    const MOVEFILE_WRITE_THROUGH: u32 = 0x8;
 
     #[link(name = "Kernel32")]
     extern "system" {
-        fn MoveFileExW(existing: *const u16, replacement: *const u16, flags: u32) -> i32;
+        fn ReplaceFileW(
+            replaced_file_name: *const u16,
+            replacement_file_name: *const u16,
+            backup_file_name: *const u16,
+            replace_flags: u32,
+            exclude: *mut c_void,
+            reserved: *mut c_void,
+        ) -> i32;
     }
 
-    let existing: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
-    let replacement: Vec<u16> = destination
+    let replaced: Vec<u16> = destination
         .as_os_str()
         .encode_wide()
         .chain(Some(0))
         .collect();
-    // SAFETY: both pointers refer to live, NUL-terminated UTF-16 buffers for
-    // the duration of this synchronous Windows API call.
+    let replacement: Vec<u16> = temporary.as_os_str().encode_wide().chain(Some(0)).collect();
+    // SAFETY: both path pointers refer to live, NUL-terminated UTF-16 buffers
+    // for the duration of this synchronous call. Optional backup, exclude,
+    // and reserved pointers are null as required by ReplaceFileW. Windows does
+    // not support REPLACEFILE_WRITE_THROUGH, so the temp handle is synced
+    // before this call and no unsupported replacement flags are requested.
     let result = unsafe {
-        MoveFileExW(
-            existing.as_ptr(),
+        ReplaceFileW(
+            replaced.as_ptr(),
             replacement.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+            std::ptr::null(),
+            0,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
         )
     };
     if result == 0 {
@@ -406,6 +484,26 @@ fn save_document_path_with_installer<I>(
 where
     I: FnOnce(&Path, &Path) -> io::Result<()>,
 {
+    save_document_path_with_hooks(
+        path,
+        content,
+        expected_sha256,
+        |file, _destination| file.write_all(content.as_bytes()),
+        install,
+    )
+}
+
+fn save_document_path_with_hooks<W, I>(
+    path: &Path,
+    content: &str,
+    expected_sha256: Option<&str>,
+    writer: W,
+    install: I,
+) -> Result<SaveDocumentResult, String>
+where
+    W: FnOnce(&mut File, &Path) -> io::Result<()>,
+    I: FnOnce(&Path, &Path) -> io::Result<()>,
+{
     let saved_sha256 = sha256(content.as_bytes());
     let saved_size = content.len() as u64;
     let destination = match resolve_document_path(path)? {
@@ -456,9 +554,14 @@ where
         _ => {}
     }
 
-    let preserved_permissions = initial.as_ref().map(|actual| &actual.permissions);
+    let restrictive_permissions = expected_sha256
+        .is_some()
+        .then(restrictive_replacement_permissions)
+        .flatten();
     let (temporary, temporary_file) =
-        write_temporary(path, directory, content.as_bytes(), preserved_permissions)?;
+        write_temporary_with_writer(path, directory, restrictive_permissions.as_ref(), |file| {
+            writer(file, &destination)
+        })?;
 
     // Fingerprint again after the temp file is fully synced so this guard stays
     // immediately adjacent to publication.
@@ -478,6 +581,7 @@ where
     // Standard filesystems do not expose a portable compare-and-swap rename.
     // Keep this fingerprint check as close as possible to replacement; a
     // cooperating writer should still use the same digest guard.
+    let saved_modified_ms;
     match (expected_sha256, actual) {
         (Some(_), None) => {
             drop(temporary_file);
@@ -502,7 +606,19 @@ where
                 modified_ms: actual.modified_ms,
             });
         }
-        (Some(_), Some(_)) => {
+        (Some(_), Some(actual)) => {
+            if let Err(error) = apply_replacement_permissions(&temporary_file, actual.permissions) {
+                drop(temporary_file);
+                remove_temporary(&temporary, directory);
+                return Err(format!(
+                    "failed to preserve permissions for document {}: {error}",
+                    path.display()
+                ));
+            }
+            saved_modified_ms = temporary_file
+                .metadata()
+                .ok()
+                .and_then(|metadata| modified_ms(&metadata));
             drop(temporary_file);
             if let Err(error) = install(&temporary, &destination) {
                 remove_temporary(&temporary, directory);
@@ -536,6 +652,10 @@ where
                     ));
                 }
             }
+            saved_modified_ms = temporary_file
+                .metadata()
+                .ok()
+                .and_then(|metadata| modified_ms(&metadata));
             drop(temporary_file);
             if let Err(error) = install(&temporary, &destination) {
                 let conflict = fingerprint(&destination).ok();
@@ -556,18 +676,12 @@ where
     }
 
     sync_directory(directory);
-    let saved_metadata = fs::metadata(&destination).map_err(|error| {
-        format!(
-            "failed to inspect saved document {}: {error}",
-            path.display()
-        )
-    })?;
 
     Ok(SaveDocumentResult::Saved {
         canonical_path,
         sha256: saved_sha256,
         size: saved_size,
-        modified_ms: modified_ms(&saved_metadata),
+        modified_ms: saved_modified_ms,
     })
 }
 
@@ -599,6 +713,32 @@ mod tests {
 
     fn sha256(bytes: &[u8]) -> String {
         format!("{:x}", Sha256::digest(bytes))
+    }
+
+    struct ChunkedReader {
+        bytes: std::io::Cursor<Vec<u8>>,
+        chunk_size: usize,
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            let limit = buffer.len().min(self.chunk_size);
+            self.bytes.read(&mut buffer[..limit])
+        }
+    }
+
+    #[test]
+    fn fingerprint_reader_hashes_large_input_across_short_chunks() {
+        let bytes: Vec<u8> = (0..200_000).map(|index| (index % 251) as u8).collect();
+        let mut reader = ChunkedReader {
+            bytes: std::io::Cursor::new(bytes.clone()),
+            chunk_size: 7,
+        };
+
+        let (actual_sha256, actual_size) = fingerprint_reader(&mut reader).unwrap();
+
+        assert_eq!(actual_sha256, sha256(&bytes));
+        assert_eq!(actual_size, bytes.len() as u64);
     }
 
     #[test]
@@ -811,6 +951,36 @@ mod tests {
     }
 
     #[test]
+    fn saved_result_uses_temp_metadata_when_destination_disappears_after_install() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("document.md");
+        fs::write(&path, "first").unwrap();
+        let expected = read_document_path(&path).unwrap().sha256;
+
+        let result = save_document_path_with_installer(
+            &path,
+            "editor",
+            Some(&expected),
+            |source, target| {
+                fs::rename(source, target)?;
+                fs::remove_file(target)
+            },
+        )
+        .unwrap();
+
+        assert!(matches!(
+            result,
+            SaveDocumentResult::Saved {
+                sha256: actual_sha256,
+                size: 6,
+                modified_ms: Some(_),
+                ..
+            } if actual_sha256 == sha256(b"editor")
+        ));
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn read_rejects_invalid_utf8_and_names_the_path() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("invalid.md");
@@ -820,6 +990,26 @@ mod tests {
 
         assert!(error.contains(&path.to_string_lossy().into_owned()));
         assert!(error.contains("UTF-8"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_content_and_metadata_come_from_one_open_file() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("document.md");
+        let replacement = directory.path().join("replacement.md");
+        fs::write(&path, "first").unwrap();
+        fs::write(&replacement, "later external content").unwrap();
+
+        let result = read_document_path_with_open_hook(&path, |_opened_path| {
+            fs::rename(&replacement, &path)
+        })
+        .unwrap();
+
+        assert_eq!(result.content, "first");
+        assert_eq!(result.sha256, sha256(b"first"));
+        assert_eq!(result.size, 5);
+        assert_eq!(fs::read_to_string(path).unwrap(), "later external content");
     }
 
     #[cfg(unix)]
@@ -867,6 +1057,74 @@ mod tests {
         assert_eq!(observed_mode.get(), 0o600);
         assert_eq!(fs::read(&temporary).unwrap(), b"sensitive");
         remove_temporary(&temporary, directory.path());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_uses_permissions_from_immediately_before_publication() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("document.md");
+        fs::write(&path, "same").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        let expected = sha256(b"same");
+
+        save_document_path_with_hooks(
+            &path,
+            "editor",
+            Some(&expected),
+            |temporary_file, destination| {
+                assert_eq!(
+                    temporary_file.metadata()?.permissions().mode() & 0o777,
+                    0o600
+                );
+                temporary_file.write_all(b"editor")?;
+                fs::set_permissions(destination, fs::Permissions::from_mode(0o600))
+            },
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "editor");
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn replacement_stays_restrictive_until_a_late_permission_widening() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("document.md");
+        fs::write(&path, "same").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        let expected = sha256(b"same");
+
+        save_document_path_with_hooks(
+            &path,
+            "editor",
+            Some(&expected),
+            |temporary_file, destination| {
+                assert_eq!(
+                    temporary_file.metadata()?.permissions().mode() & 0o777,
+                    0o600
+                );
+                temporary_file.write_all(b"editor")?;
+                fs::set_permissions(destination, fs::Permissions::from_mode(0o644))
+            },
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "editor");
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o644
+        );
     }
 
     #[cfg(unix)]
