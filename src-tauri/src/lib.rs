@@ -1,5 +1,7 @@
+pub mod document_io;
 pub mod recovery;
 
+use document_io::{canonicalize_document_path, read_document, save_document};
 use recovery::{
     delete_recovery_document, load_recovery_document, load_recovery_manifest,
     write_recovery_document, write_recovery_manifest, RecoveryStore,
@@ -43,6 +45,9 @@ pub fn run() {
         .manage(PendingFiles::default())
         .invoke_handler(tauri::generate_handler![
             take_pending_files,
+            read_document,
+            save_document,
+            canonicalize_document_path,
             load_recovery_manifest,
             write_recovery_manifest,
             load_recovery_document,
