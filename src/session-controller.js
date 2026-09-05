@@ -78,7 +78,7 @@
       this._restoring = false;
       this._loadQueue = [];
       this._loadingIds = new Set();
-      this._loadPriority = new Set();
+      this._loadPriority = [];
 
       this.start();
     }
@@ -163,11 +163,13 @@
       await this.loadSnapshot(initiallyActiveId);
 
       const inactiveIds = session.tabOrder.filter((id) => id !== initiallyActiveId);
+      const prioritizedIds = this._loadPriority.filter((id) => inactiveIds.includes(id));
+      const prioritizedSet = new Set(prioritizedIds);
       this._loadQueue = [
-        ...inactiveIds.filter((id) => this._loadPriority.has(id)),
-        ...inactiveIds.filter((id) => !this._loadPriority.has(id)),
+        ...prioritizedIds,
+        ...inactiveIds.filter((id) => !prioritizedSet.has(id)),
       ];
-      this._loadPriority.clear();
+      this._loadPriority = [];
 
       const workerCount = Math.min(this.inactiveLoadConcurrency, this._loadQueue.length);
       const workers = Array.from({ length: workerCount }, () => this._loadWorker());
@@ -370,7 +372,9 @@
           this._loadQueue.splice(queuedIndex, 1);
           this._loadQueue.unshift(id);
         } else if (!this._loadingIds.has(id)) {
-          this._loadPriority.add(id);
+          const priorityIndex = this._loadPriority.indexOf(id);
+          if (priorityIndex >= 0) this._loadPriority.splice(priorityIndex, 1);
+          this._loadPriority.unshift(id);
         }
       }
       this._renderSession();

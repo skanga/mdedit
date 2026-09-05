@@ -382,6 +382,50 @@ test("inactive recovery uses at most four loads and promotes a selected loading 
   assert.ok(controller.activeDocument() instanceof DocumentModel);
 });
 
+test("loading-tab selections before inactive hydration use most-recent-first priority", async () => {
+  const activeGate = deferred();
+  const inactiveGates = new Map();
+  const started = [];
+  const fixture = makeDependencies();
+  fixture.dependencies.io.loadRecoveryManifest = async () => JSON.stringify(
+    manifest(["a", "b", "c", "d", "e", "f", "g"], "a"),
+  );
+  fixture.dependencies.io.loadRecoveryDocument = async (id, revision) => {
+    started.push(id);
+    if (id === "a") {
+      await activeGate.promise;
+    } else {
+      const gate = deferred();
+      inactiveGates.set(id, gate);
+      await gate.promise;
+    }
+    return JSON.stringify(snapshot(id, revision));
+  };
+  const controller = new SessionController(fixture.dependencies);
+
+  const restoring = controller.restore();
+  await settle();
+  assert.deepEqual(started, ["a"]);
+
+  for (const id of ["b", "c", "d", "e", "f", "g", "c"]) {
+    controller.activateDocument(id);
+  }
+  assert.equal(controller.session.activeDocumentId, "c");
+
+  activeGate.resolve();
+  await settle();
+  assert.deepEqual(started.slice(0, 5), ["a", "c", "g", "f", "e"]);
+
+  for (const id of ["c", "g", "f", "e"]) inactiveGates.get(id).resolve();
+  await settle();
+  for (const gate of inactiveGates.values()) gate.resolve();
+  await restoring;
+
+  assert.deepEqual(controller.session.tabOrder, ["a", "b", "c", "d", "e", "f", "g"]);
+  assert.equal(controller.session.activeDocumentId, "c");
+  assert.ok(controller.activeDocument() instanceof DocumentModel);
+});
+
 test("file-open events before and during restore queue behind restoration in arrival order", async () => {
   const manifestGate = deferred();
   const fixture = makeDependencies({
