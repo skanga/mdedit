@@ -1,6 +1,8 @@
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::fs::{self, File, OpenOptions};
+#[cfg(not(windows))]
+use std::fs::OpenOptions;
+use std::fs::{self, File};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
@@ -43,6 +45,21 @@ struct Fingerprint {
     size: u64,
     modified_ms: Option<u128>,
     permissions: fs::Permissions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DocumentIdentity {
+    sha256: String,
+    size: u64,
+}
+
+impl Fingerprint {
+    fn identity(&self) -> DocumentIdentity {
+        DocumentIdentity {
+            sha256: self.sha256.clone(),
+            size: self.size,
+        }
+    }
 }
 
 fn sha256(bytes: &[u8]) -> String {
@@ -292,6 +309,36 @@ fn remove_file_best_effort(path: &Path) {
     }
 }
 
+#[cfg(any(windows, test))]
+fn with_prepared_security<S, C, Security, Output>(
+    prepare_security: S,
+    create_file: C,
+) -> io::Result<Output>
+where
+    S: FnOnce() -> io::Result<Security>,
+    C: FnOnce(Security) -> io::Result<Output>,
+{
+    let security = prepare_security()?;
+    create_file(security)
+}
+
+#[cfg(not(windows))]
+fn open_temporary_file(
+    directory: &Path,
+    permissions: Option<&fs::Permissions>,
+    _security_source: Option<&Path>,
+) -> io::Result<(PathBuf, File)> {
+    let temporary = temporary_path(directory);
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    if let Some(permissions) = permissions {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(permissions.mode());
+    }
+    options.open(&temporary).map(|file| (temporary, file))
+}
+
 #[cfg(test)]
 fn write_temporary_with_writer<W>(
     path: &Path,
@@ -302,13 +349,14 @@ fn write_temporary_with_writer<W>(
 where
     W: FnOnce(&mut File) -> io::Result<()>,
 {
-    write_temporary_with_hooks(path, directory, permissions, |_, _| Ok(()), writer)
+    write_temporary_with_hooks(path, directory, permissions, None, |_, _| Ok(()), writer)
 }
 
 fn write_temporary_with_hooks<P, W>(
     path: &Path,
     directory: &Path,
     permissions: Option<&fs::Permissions>,
+    security_source: Option<&Path>,
     prepare: P,
     writer: W,
 ) -> Result<(PathBuf, File), String>
@@ -316,22 +364,13 @@ where
     P: FnOnce(&File, &Path) -> io::Result<()>,
     W: FnOnce(&mut File) -> io::Result<()>,
 {
-    // UUID collisions are extraordinarily unlikely, while create_new ensures a
-    // collision can never overwrite an existing file.
-    let temporary = temporary_path(directory);
-    let mut options = OpenOptions::new();
-    options.write(true).create_new(true);
-    #[cfg(unix)]
-    if let Some(permissions) = permissions {
-        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
-        options.mode(permissions.mode());
-    }
-    let mut file = options.open(&temporary).map_err(|error| {
-        format!(
-            "failed to create temporary file for {}: {error}",
-            path.display()
-        )
-    })?;
+    let (temporary, mut file) = open_temporary_file(directory, permissions, security_source)
+        .map_err(|error| {
+            format!(
+                "failed to create temporary file for {}: {error}",
+                path.display()
+            )
+        })?;
 
     let write_result = (|| -> io::Result<()> {
         if let Some(permissions) = permissions {
@@ -372,31 +411,90 @@ impl ReplacementRecovery {
     }
 }
 
-fn durable_document_copy_exists(path: &Path) -> bool {
-    fingerprint(path).is_ok()
+#[derive(Debug)]
+enum DestinationIdentity {
+    Missing,
+    Original,
+    Editor,
+    ThirdParty,
+    Unreadable(io::Error),
+}
+
+impl DestinationIdentity {
+    fn is_editor(&self) -> bool {
+        match self {
+            Self::Editor => true,
+            Self::Unreadable(error) => {
+                let _ = error.kind();
+                false
+            }
+            Self::Missing | Self::Original | Self::ThirdParty => false,
+        }
+    }
+}
+
+fn classify_destination(
+    path: &Path,
+    original: &DocumentIdentity,
+    editor: &DocumentIdentity,
+) -> DestinationIdentity {
+    match fingerprint(path) {
+        Ok(actual) if actual.sha256 == editor.sha256 && actual.size == editor.size => {
+            DestinationIdentity::Editor
+        }
+        Ok(actual) if actual.sha256 == original.sha256 && actual.size == original.size => {
+            DestinationIdentity::Original
+        }
+        Ok(_) => DestinationIdentity::ThirdParty,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => DestinationIdentity::Missing,
+        Err(error) => DestinationIdentity::Unreadable(error),
+    }
 }
 
 #[cfg(any(windows, test))]
-fn cleanup_replacement_files(
-    temporary: &Path,
-    backup: &Path,
-    directory: &Path,
-    destination: &Path,
-) {
-    if !durable_document_copy_exists(destination) {
-        return;
-    }
+fn path_matches_identity(path: &Path, expected: &DocumentIdentity) -> bool {
+    fingerprint(path)
+        .map(|actual| actual.sha256 == expected.sha256 && actual.size == expected.size)
+        .unwrap_or(false)
+}
+
+#[cfg(any(windows, test))]
+fn cleanup_for_editor_destination(temporary: &Path, backup: &Path, directory: &Path) {
     remove_file_best_effort(temporary);
     remove_file_best_effort(backup);
     sync_directory(directory);
+}
+
+#[cfg(any(windows, test))]
+fn cleanup_for_original_destination(backup: &Path, directory: &Path, original: &DocumentIdentity) {
+    if path_matches_identity(backup, original) {
+        remove_file_best_effort(backup);
+    }
+    sync_directory(directory);
+}
+
+#[cfg(any(windows, test))]
+fn retained_replacement_paths(temporary: &Path, backup: &Path) -> String {
+    let paths: Vec<String> = [temporary, backup]
+        .into_iter()
+        .filter(|path| fs::symlink_metadata(path).is_ok())
+        .map(|path| path.display().to_string())
+        .collect();
+    if paths.is_empty() {
+        "none".to_owned()
+    } else {
+        paths.join(", ")
+    }
 }
 
 fn retain_or_cleanup_failed_temporary(
     temporary: &Path,
     destination: &Path,
     directory: &Path,
+    original: &DocumentIdentity,
+    editor: &DocumentIdentity,
 ) -> bool {
-    if durable_document_copy_exists(destination) {
+    if classify_destination(destination, original, editor).is_editor() {
         remove_temporary(temporary, directory);
         false
     } else {
@@ -411,15 +509,38 @@ fn finish_successful_replacement(
     destination: &Path,
     backup: &Path,
     directory: &Path,
+    identities: (&DocumentIdentity, &DocumentIdentity),
 ) -> Result<(), String> {
-    if !durable_document_copy_exists(destination) {
-        return Err(format!(
-            "replacement reported success but destination {} is not a readable document; backup and temporary files were retained",
-            destination.display()
-        ));
+    let (original, editor) = identities;
+    match classify_destination(destination, original, editor) {
+        DestinationIdentity::Editor => {
+            cleanup_for_editor_destination(temporary, backup, directory);
+            Ok(())
+        }
+        DestinationIdentity::Original => {
+            cleanup_for_original_destination(backup, directory, original);
+            Err(format!(
+                "replacement reported success but destination {} still contains the original document; retained recovery paths: {}",
+                destination.display(),
+                retained_replacement_paths(temporary, backup)
+            ))
+        }
+        DestinationIdentity::ThirdParty => Err(format!(
+            "replacement reported success but a third-party destination exists at {}; retained recovery paths: {}",
+            destination.display(),
+            retained_replacement_paths(temporary, backup)
+        )),
+        DestinationIdentity::Missing => Err(format!(
+            "replacement reported success but destination {} is missing; retained recovery paths: {}",
+            destination.display(),
+            retained_replacement_paths(temporary, backup)
+        )),
+        DestinationIdentity::Unreadable(error) => Err(format!(
+            "replacement reported success but destination {} cannot be identified: {error}; retained recovery paths: {}",
+            destination.display(),
+            retained_replacement_paths(temporary, backup)
+        )),
     }
-    cleanup_replacement_files(temporary, backup, directory, destination);
-    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -428,41 +549,100 @@ fn recover_failed_replacement<P>(
     destination: &Path,
     backup: &Path,
     directory: &Path,
+    identities: (&DocumentIdentity, &DocumentIdentity),
     mut publish: P,
 ) -> Result<ReplacementRecovery, String>
 where
     P: FnMut(&Path, &Path) -> io::Result<()>,
 {
-    if durable_document_copy_exists(destination) {
-        cleanup_replacement_files(temporary, backup, directory, destination);
-        return Ok(ReplacementRecovery::DestinationPreserved);
+    let (original, editor) = identities;
+    match classify_destination(destination, original, editor) {
+        DestinationIdentity::Editor => {
+            cleanup_for_editor_destination(temporary, backup, directory);
+            return Ok(ReplacementRecovery::DestinationPreserved);
+        }
+        DestinationIdentity::Original => {
+            cleanup_for_original_destination(backup, directory, original);
+            return Ok(ReplacementRecovery::DestinationPreserved);
+        }
+        DestinationIdentity::ThirdParty => {
+            return Err(format!(
+                "third-party destination exists at {}; retained recovery paths: {}",
+                destination.display(),
+                retained_replacement_paths(temporary, backup)
+            ));
+        }
+        DestinationIdentity::Unreadable(error) => {
+            return Err(format!(
+                "destination {} cannot be identified: {error}; retained recovery paths: {}",
+                destination.display(),
+                retained_replacement_paths(temporary, backup)
+            ));
+        }
+        DestinationIdentity::Missing => {}
     }
 
     let mut failures = Vec::new();
-    for (candidate, recovered) in [
-        (backup, ReplacementRecovery::BackupRestored),
-        (temporary, ReplacementRecovery::TemporaryPublished),
+    for (candidate, expected, recovered) in [
+        (backup, original, ReplacementRecovery::BackupRestored),
+        (temporary, editor, ReplacementRecovery::TemporaryPublished),
     ] {
-        if !durable_document_copy_exists(candidate) {
+        if !path_matches_identity(candidate, expected) {
             continue;
         }
         match publish(candidate, destination) {
-            Ok(()) if durable_document_copy_exists(destination) => {
-                cleanup_replacement_files(temporary, backup, directory, destination);
-                return Ok(recovered);
-            }
-            Ok(()) => failures.push(format!(
-                "publishing {} reported success without producing a readable destination",
-                candidate.display()
-            )),
-            Err(_error) if durable_document_copy_exists(destination) => {
-                cleanup_replacement_files(temporary, backup, directory, destination);
-                return Ok(ReplacementRecovery::DestinationPreserved);
-            }
-            Err(error) => failures.push(format!(
-                "failed to publish recovery copy {}: {error}",
-                candidate.display()
-            )),
+            Ok(()) => match classify_destination(destination, original, editor) {
+                DestinationIdentity::Editor => {
+                    cleanup_for_editor_destination(temporary, backup, directory);
+                    return Ok(recovered);
+                }
+                DestinationIdentity::Original => {
+                    cleanup_for_original_destination(backup, directory, original);
+                    return Ok(recovered);
+                }
+                DestinationIdentity::ThirdParty => {
+                    return Err(format!(
+                        "publishing {} raced with a third-party destination at {}; retained recovery paths: {}",
+                        candidate.display(),
+                        destination.display(),
+                        retained_replacement_paths(temporary, backup)
+                    ));
+                }
+                DestinationIdentity::Missing => failures.push(format!(
+                    "publishing {} reported success without producing a destination",
+                    candidate.display()
+                )),
+                DestinationIdentity::Unreadable(error) => failures.push(format!(
+                    "published recovery copy {} cannot be identified: {error}",
+                    candidate.display()
+                )),
+            },
+            Err(error) => match classify_destination(destination, original, editor) {
+                DestinationIdentity::Editor => {
+                    cleanup_for_editor_destination(temporary, backup, directory);
+                    return Ok(ReplacementRecovery::DestinationPreserved);
+                }
+                DestinationIdentity::Original => {
+                    cleanup_for_original_destination(backup, directory, original);
+                    return Ok(ReplacementRecovery::DestinationPreserved);
+                }
+                DestinationIdentity::ThirdParty => {
+                    return Err(format!(
+                        "failed to publish recovery copy {}: {error}; a third-party destination exists at {}; retained recovery paths: {}",
+                        candidate.display(),
+                        destination.display(),
+                        retained_replacement_paths(temporary, backup)
+                    ));
+                }
+                DestinationIdentity::Missing => failures.push(format!(
+                    "failed to publish recovery copy {}: {error}",
+                    candidate.display()
+                )),
+                DestinationIdentity::Unreadable(identity_error) => failures.push(format!(
+                    "failed to publish recovery copy {}: {error}; destination identity check failed: {identity_error}",
+                    candidate.display()
+                )),
+            },
         }
     }
 
@@ -472,8 +652,9 @@ where
         failures.join("; ")
     };
     Err(format!(
-        "no readable document copy could be restored at {}; {detail}; remaining paths were retained",
-        destination.display()
+        "no known document copy could be restored at {}; {detail}; retained recovery paths: {}",
+        destination.display(),
+        retained_replacement_paths(temporary, backup)
     ))
 }
 
@@ -484,30 +665,40 @@ fn complete_replacement<P>(
     destination: &Path,
     backup: &Path,
     directory: &Path,
+    identities: (&DocumentIdentity, &DocumentIdentity),
     publish: P,
 ) -> io::Result<()>
 where
     P: FnMut(&Path, &Path) -> io::Result<()>,
 {
     match replacement_result {
-        Ok(()) => finish_successful_replacement(temporary, destination, backup, directory)
-            .map_err(io::Error::other),
-        Err(original) => {
-            let original_kind = original.kind();
-            let original_message = original.to_string();
+        Ok(()) => {
+            finish_successful_replacement(temporary, destination, backup, directory, identities)
+                .map_err(io::Error::other)
+        }
+        Err(replacement_error) => {
+            let original_kind = replacement_error.kind();
+            let original_message = replacement_error.to_string();
             let recovery = match recover_failed_replacement(
                 temporary,
                 destination,
                 backup,
                 directory,
+                identities,
                 publish,
             ) {
                 Ok(outcome) => format!("recovery completed: {}", outcome.description()),
                 Err(error) => format!("recovery failed: {error}"),
             };
+            let retained = retained_replacement_paths(temporary, backup);
+            let retained = if retained == "none" {
+                String::new()
+            } else {
+                format!("; retained recovery paths: {retained}")
+            };
             Err(io::Error::new(
                 original_kind,
-                format!("{original_message}; {recovery}"),
+                format!("{original_message}; {recovery}{retained}"),
             ))
         }
     }
@@ -543,16 +734,14 @@ fn windows_path(path: &Path) -> Vec<u16> {
 }
 
 #[cfg(windows)]
-fn copy_document_dacl(source: &Path, destination: &Path) -> io::Result<()> {
+fn read_document_security_descriptor(source: &Path) -> io::Result<Vec<usize>> {
     use windows_sys::Win32::Foundation::ERROR_INSUFFICIENT_BUFFER;
     use windows_sys::Win32::Security::{
-        GetFileSecurityW, GetSecurityDescriptorControl, SetFileSecurityW,
-        DACL_SECURITY_INFORMATION, PROTECTED_DACL_SECURITY_INFORMATION, SE_DACL_PROTECTED,
-        UNPROTECTED_DACL_SECURITY_INFORMATION,
+        GetFileSecurityW, GetSecurityDescriptorControl, DACL_SECURITY_INFORMATION,
+        SE_DACL_PROTECTED,
     };
 
     let source = windows_path(source);
-    let destination = windows_path(destination);
     let mut bytes_needed = 0_u32;
     // SAFETY: source is a live, NUL-terminated UTF-16 path; the null
     // descriptor and zero size intentionally query the required buffer size.
@@ -603,55 +792,88 @@ fn copy_document_dacl(source: &Path, destination: &Path) -> io::Result<()> {
     {
         return Err(io::Error::last_os_error());
     }
-    let inheritance = if control & SE_DACL_PROTECTED != 0 {
-        PROTECTED_DACL_SECURITY_INFORMATION
-    } else {
-        UNPROTECTED_DACL_SECURITY_INFORMATION
-    };
-    // Only the DACL is copied. DOS attributes such as read-only are deliberately
-    // left untouched so the open temp remains writable and removable.
-    if unsafe {
-        SetFileSecurityW(
-            destination.as_ptr(),
-            DACL_SECURITY_INFORMATION | inheritance,
-            descriptor_pointer,
-        )
-    } == 0
-    {
-        return Err(io::Error::last_os_error());
-    }
-    Ok(())
+    // The self-relative descriptor carries both its DACL and the protected or
+    // inherited control state. Keeping the buffer intact preserves that state
+    // when CreateFileW consumes it through SECURITY_ATTRIBUTES.
+    let _dacl_is_protected = control & SE_DACL_PROTECTED != 0;
+    Ok(descriptor)
 }
 
 #[cfg(windows)]
-fn prepare_temporary_security(
+fn open_temporary_file(
+    directory: &Path,
+    _permissions: Option<&fs::Permissions>,
+    security_source: Option<&Path>,
+) -> io::Result<(PathBuf, File)> {
+    use std::os::windows::io::FromRawHandle;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
+
+    with_prepared_security(
+        || {
+            security_source
+                .map(read_document_security_descriptor)
+                .transpose()
+        },
+        |mut descriptor| {
+            // The security descriptor is obtained before this UUID path is
+            // created, so no visible file ever has the parent default DACL.
+            let temporary = temporary_path(directory);
+            let temporary_path = windows_path(&temporary);
+            let mut security_attributes =
+                descriptor.as_mut().map(|descriptor| SECURITY_ATTRIBUTES {
+                    nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+                    lpSecurityDescriptor: descriptor.as_mut_ptr().cast(),
+                    bInheritHandle: 0,
+                });
+            let security_pointer: *const SECURITY_ATTRIBUTES = match security_attributes.as_mut() {
+                Some(attributes) => attributes,
+                None => std::ptr::null(),
+            };
+            // SAFETY: path and optional security descriptor buffers remain live
+            // for this synchronous call. CREATE_NEW prevents collisions, share
+            // mode zero makes the temp non-shareable, and ownership of a valid
+            // handle is immediately transferred to File.
+            let handle = unsafe {
+                CreateFileW(
+                    temporary_path.as_ptr(),
+                    GENERIC_READ | GENERIC_WRITE,
+                    0,
+                    security_pointer,
+                    CREATE_NEW,
+                    FILE_ATTRIBUTE_NORMAL,
+                    std::ptr::null_mut(),
+                )
+            };
+            if handle == INVALID_HANDLE_VALUE {
+                return Err(io::Error::last_os_error());
+            }
+            // SAFETY: CreateFileW returned a unique owned handle, and File takes
+            // sole responsibility for closing it on all subsequent paths.
+            let file = unsafe { File::from_raw_handle(handle) };
+            Ok((temporary, file))
+        },
+    )
+}
+
+#[cfg(not(windows))]
+fn replace_existing(
     temporary: &Path,
     destination: &Path,
-    replacing: bool,
+    _original: &DocumentIdentity,
+    _editor: &DocumentIdentity,
 ) -> io::Result<()> {
-    if replacing {
-        copy_document_dacl(destination, temporary)
-    } else {
-        Ok(())
-    }
-}
-
-#[cfg(not(windows))]
-fn prepare_temporary_security(
-    _temporary: &Path,
-    _destination: &Path,
-    _replacing: bool,
-) -> io::Result<()> {
-    Ok(())
-}
-
-#[cfg(not(windows))]
-fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
     fs::rename(temporary, destination)
 }
 
 #[cfg(windows)]
-fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
+fn replace_existing(
+    temporary: &Path,
+    destination: &Path,
+    original: &DocumentIdentity,
+    editor: &DocumentIdentity,
+) -> io::Result<()> {
     use windows_sys::Win32::Storage::FileSystem::ReplaceFileW;
 
     let directory = parent_directory(destination);
@@ -684,6 +906,7 @@ fn replace_existing(temporary: &Path, destination: &Path) -> io::Result<()> {
         destination,
         &backup,
         directory,
+        (original, editor),
         publish_new,
     )
 }
@@ -742,9 +965,18 @@ pub fn save_document_path(
     expected_sha256: Option<&str>,
 ) -> Result<SaveDocumentResult, String> {
     match expected_sha256 {
-        Some(expected) => {
-            save_document_path_with_installer(path, content, Some(expected), replace_existing)
-        }
+        Some(expected) => save_document_path_with_identity_hooks(
+            path,
+            content,
+            Some(expected),
+            |file, _destination| file.write_all(content.as_bytes()),
+            |temporary, destination, original, editor| {
+                let original = original.ok_or_else(|| {
+                    io::Error::other("existing replacement is missing its original identity")
+                })?;
+                replace_existing(temporary, destination, original, editor)
+            },
+        ),
         None => save_document_path_with_installer(path, content, None, publish_new),
     }
 }
@@ -778,8 +1010,32 @@ where
     W: FnOnce(&mut File, &Path) -> io::Result<()>,
     I: FnOnce(&Path, &Path) -> io::Result<()>,
 {
+    save_document_path_with_identity_hooks(
+        path,
+        content,
+        expected_sha256,
+        writer,
+        |temporary, destination, _original, _editor| install(temporary, destination),
+    )
+}
+
+fn save_document_path_with_identity_hooks<W, I>(
+    path: &Path,
+    content: &str,
+    expected_sha256: Option<&str>,
+    writer: W,
+    install: I,
+) -> Result<SaveDocumentResult, String>
+where
+    W: FnOnce(&mut File, &Path) -> io::Result<()>,
+    I: FnOnce(&Path, &Path, Option<&DocumentIdentity>, &DocumentIdentity) -> io::Result<()>,
+{
     let saved_sha256 = sha256(content.as_bytes());
     let saved_size = content.len() as u64;
+    let saved_identity = DocumentIdentity {
+        sha256: saved_sha256.clone(),
+        size: saved_size,
+    };
     let destination = match resolve_document_path(path)? {
         ResolvedDocumentPath::Target(destination) => destination,
         ResolvedDocumentPath::DanglingSymlink => {
@@ -836,9 +1092,8 @@ where
         path,
         directory,
         restrictive_permissions.as_ref(),
-        |_, temporary| {
-            prepare_temporary_security(temporary, &destination, expected_sha256.is_some())
-        },
+        expected_sha256.is_some().then_some(destination.as_path()),
+        |_, _| Ok(()),
         |file| writer(file, &destination),
     )?;
 
@@ -886,6 +1141,7 @@ where
             });
         }
         (Some(_), Some(actual)) => {
+            let original_identity = actual.identity();
             if let Err(error) = apply_replacement_permissions(&temporary_file, actual.permissions) {
                 drop(temporary_file);
                 remove_temporary(&temporary, directory);
@@ -899,9 +1155,19 @@ where
                 .ok()
                 .and_then(|metadata| modified_ms(&metadata));
             drop(temporary_file);
-            if let Err(error) = install(&temporary, &destination) {
-                let retained =
-                    retain_or_cleanup_failed_temporary(&temporary, &destination, directory);
+            if let Err(error) = install(
+                &temporary,
+                &destination,
+                Some(&original_identity),
+                &saved_identity,
+            ) {
+                let retained = retain_or_cleanup_failed_temporary(
+                    &temporary,
+                    &destination,
+                    directory,
+                    &original_identity,
+                    &saved_identity,
+                );
                 let recovery = if retained {
                     format!("; temporary document retained at {}", temporary.display())
                 } else {
@@ -942,7 +1208,7 @@ where
                 .ok()
                 .and_then(|metadata| modified_ms(&metadata));
             drop(temporary_file);
-            if let Err(error) = install(&temporary, &destination) {
+            if let Err(error) = install(&temporary, &destination, None, &saved_identity) {
                 let conflict = fingerprint(&destination).ok();
                 remove_temporary(&temporary, directory);
                 if let Some(actual) = conflict {
@@ -1000,6 +1266,13 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
+    fn identity(bytes: &[u8]) -> DocumentIdentity {
+        DocumentIdentity {
+            sha256: sha256(bytes),
+            size: bytes.len() as u64,
+        }
+    }
+
     struct ChunkedReader {
         bytes: std::io::Cursor<Vec<u8>>,
         chunk_size: usize,
@@ -1041,6 +1314,7 @@ mod tests {
             &destination,
             &backup,
             directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
             |source, target| fs::rename(source, target),
         )
         .unwrap();
@@ -1073,13 +1347,14 @@ mod tests {
             &destination,
             &backup,
             directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
             |source, target| fs::rename(source, target),
         )
         .unwrap();
 
         assert_eq!(outcome, ReplacementRecovery::DestinationPreserved);
         assert_eq!(fs::read_to_string(destination).unwrap(), "original");
-        assert!(!temporary.exists());
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "editor");
     }
 
     #[test]
@@ -1096,13 +1371,14 @@ mod tests {
             &destination,
             &backup,
             directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
             |source, target| fs::rename(source, target),
         )
         .unwrap();
 
         assert_eq!(outcome, ReplacementRecovery::BackupRestored);
         assert_eq!(fs::read_to_string(destination).unwrap(), "original");
-        assert!(!temporary.exists());
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "editor");
         assert!(!backup.exists());
     }
 
@@ -1119,6 +1395,7 @@ mod tests {
             &destination,
             &backup,
             directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
             |source, target| fs::rename(source, target),
         )
         .unwrap();
@@ -1146,6 +1423,7 @@ mod tests {
             &destination,
             &backup,
             directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
             |source, target| fs::rename(source, target),
         )
         .unwrap_err();
@@ -1153,7 +1431,125 @@ mod tests {
         assert_eq!(error.kind(), io::ErrorKind::PermissionDenied);
         assert!(error.to_string().contains("error 1177"));
         assert!(error.to_string().contains("original backup restored"));
+        assert!(error
+            .to_string()
+            .contains(&temporary.to_string_lossy().into_owned()));
         assert_eq!(fs::read_to_string(destination).unwrap(), "original");
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "editor");
+    }
+
+    #[test]
+    fn failed_replacement_retains_known_copies_behind_third_party_destination() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "third party").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        let error = complete_replacement(
+            Err(io::Error::other("ReplaceFileW failed")),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("third-party destination"));
+        assert!(error
+            .to_string()
+            .contains(&temporary.to_string_lossy().into_owned()));
+        assert!(error
+            .to_string()
+            .contains(&backup.to_string_lossy().into_owned()));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "third party");
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "editor");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "original");
+    }
+
+    #[test]
+    fn failed_recovery_publication_rechecks_third_party_destination_identity() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        let error = complete_replacement(
+            Err(io::Error::other("ReplaceFileW failed")),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |_source, target| {
+                fs::write(target, "third party")?;
+                Err(io::Error::other("recovery publication raced"))
+            },
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("third-party destination"));
+        assert_eq!(fs::read_to_string(destination).unwrap(), "third party");
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "editor");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "original");
+    }
+
+    #[test]
+    fn successful_replacement_retains_candidates_if_destination_turns_third_party() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "third party").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        let error = complete_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("third-party destination"));
+        assert_eq!(fs::read_to_string(temporary).unwrap(), "editor");
+        assert_eq!(fs::read_to_string(backup).unwrap(), "original");
+    }
+
+    #[test]
+    fn destination_matching_editor_allows_redundant_copy_cleanup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        let backup = directory.path().join("backup.md");
+        fs::write(&destination, "editor").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        fs::write(&backup, "original").unwrap();
+
+        complete_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            &backup,
+            directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
+            |source, target| fs::rename(source, target),
+        )
+        .unwrap();
+
+        assert_eq!(fs::read_to_string(destination).unwrap(), "editor");
+        assert!(!temporary.exists());
+        assert!(!backup.exists());
     }
 
     #[test]
@@ -1170,11 +1566,12 @@ mod tests {
             &destination,
             &backup,
             directory.path(),
+            (&identity(b"original"), &identity(b"editor")),
             |source, target| fs::rename(source, target),
         )
         .unwrap_err();
 
-        assert!(error.contains("no readable document copy"));
+        assert!(error.contains("no known document copy"));
         assert!(temporary.is_dir());
         assert!(backup.is_dir());
         assert!(!destination.exists());
@@ -1192,6 +1589,7 @@ mod tests {
             &destination,
             directory.path(),
             None,
+            None,
             |temporary_file, temporary_path| {
                 assert_eq!(temporary_file.metadata()?.len(), 0);
                 assert!(temporary_path.exists());
@@ -1208,6 +1606,33 @@ mod tests {
 
         assert_eq!(fs::read(&temporary).unwrap(), b"sensitive");
         remove_temporary(&temporary, directory.path());
+    }
+
+    #[test]
+    fn security_material_is_prepared_before_temporary_file_creation() {
+        use std::cell::Cell;
+
+        let directory = tempdir().unwrap();
+        let temporary = directory.path().join("temporary.md");
+        let security_ready = Cell::new(false);
+
+        let marker = with_prepared_security(
+            || {
+                assert!(!temporary.exists());
+                security_ready.set(true);
+                Ok(42_u8)
+            },
+            |security| {
+                assert!(security_ready.get());
+                assert!(!temporary.exists());
+                fs::write(&temporary, [])?;
+                Ok(security)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(marker, 42);
+        assert!(temporary.exists());
     }
 
     #[test]
@@ -1418,6 +1843,35 @@ mod tests {
         let temporary = observed_temporary.into_inner().unwrap();
         assert!(error.contains("temporary document retained"));
         assert!(!destination.exists());
+        assert_eq!(fs::read_to_string(&temporary).unwrap(), "editor");
+        remove_temporary(&temporary, directory.path());
+    }
+
+    #[test]
+    fn failed_existing_installer_retains_editor_temp_behind_third_party_destination() {
+        use std::cell::RefCell;
+
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        fs::write(&destination, "original").unwrap();
+        let expected = sha256(b"original");
+        let observed_temporary = RefCell::new(None);
+
+        let error = save_document_path_with_installer(
+            &destination,
+            "editor",
+            Some(&expected),
+            |temporary, target| {
+                observed_temporary.replace(Some(temporary.to_owned()));
+                fs::write(target, "third party")?;
+                Err(io::Error::other("installer raced with third party"))
+            },
+        )
+        .unwrap_err();
+
+        let temporary = observed_temporary.into_inner().unwrap();
+        assert!(error.contains("temporary document retained"));
+        assert_eq!(fs::read_to_string(&destination).unwrap(), "third party");
         assert_eq!(fs::read_to_string(&temporary).unwrap(), "editor");
         remove_temporary(&temporary, directory.path());
     }
