@@ -134,6 +134,12 @@
     return Math.min(max, Math.max(min, value));
   }
 
+  function parseGeneratedUntitledNumber(displayName) {
+    if (typeof displayName !== "string") return null;
+    const match = /^Untitled ([1-9]\d*)$/.exec(displayName);
+    return match ? Number(match[1]) : null;
+  }
+
   class SessionModel {
     constructor({ idFactory } = {}) {
       if (idFactory !== undefined && typeof idFactory !== "function") {
@@ -158,6 +164,16 @@
         throw new Error("duplicate canonical path");
       }
 
+      const untitledNumber = parseGeneratedUntitledNumber(entry.displayName);
+      if (untitledNumber !== null) {
+        for (const existing of this.documents.values()) {
+          if (existing.displayName === entry.displayName) {
+            throw new Error("duplicate untitled label");
+          }
+        }
+        this.nextUntitledNumber = Math.max(this.nextUntitledNumber, untitledNumber + 1);
+      }
+
       this.documents.set(entry.id, entry);
       this.tabOrder.push(entry.id);
       this.activeDocumentId = entry.id;
@@ -178,7 +194,6 @@
       });
 
       this.add(document);
-      this.nextUntitledNumber += 1;
       return document;
     }
 
@@ -277,11 +292,12 @@
 
       const session = new SessionModel({ idFactory });
       session.generation = generation;
-      session.nextUntitledNumber = nextUntitledNumber;
 
       const seenIds = new Set();
       const seenCanonicalPaths = new Set();
+      const seenUntitledNumbers = new Set();
       const tabs = [];
+      let maxUntitledNumber = 0;
 
       for (const tab of value.tabs) {
         const entry = validateManifestTab(tab);
@@ -294,9 +310,22 @@
           }
           seenCanonicalPaths.add(entry.canonicalPath);
         }
+        const untitledNumber = parseGeneratedUntitledNumber(entry.displayName);
+        if (untitledNumber !== null) {
+          if (seenUntitledNumbers.has(untitledNumber)) {
+            throw new Error("duplicate untitled label");
+          }
+          seenUntitledNumbers.add(untitledNumber);
+          if (untitledNumber > maxUntitledNumber) maxUntitledNumber = untitledNumber;
+        }
         seenIds.add(entry.documentId);
         tabs.push(entry);
       }
+
+      if (nextUntitledNumber <= maxUntitledNumber) {
+        throw new Error("untitled label state is inconsistent");
+      }
+      session.nextUntitledNumber = nextUntitledNumber;
 
       if (!hasOwn(value, "activeDocumentId") || value.activeDocumentId === null || value.activeDocumentId === undefined) {
         throw new Error("active document id is required");

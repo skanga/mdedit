@@ -67,11 +67,28 @@ test("createUntitled creates unique untitled tabs in creation order", () => {
   const first = session.createUntitled();
   const second = session.createUntitled();
 
+  assert.ok(first instanceof DocumentModel);
   assert.equal(first.displayName, "Untitled 1");
+  assert.equal(first.content, "");
+  assert.equal(first.dirty, false);
+  assert.equal(first.savedContentSha256, EMPTY_SHA256);
   assert.equal(second.displayName, "Untitled 2");
   assert.deepEqual(session.tabOrder, ["doc-a", "doc-b"]);
   assert.equal(session.activeDocumentId, "doc-b");
   assert.equal(session.nextUntitledNumber, 3);
+});
+
+test("add returns the added document, appends it, activates it, and increments generation once", () => {
+  const session = new SessionModel({ idFactory: () => "generated-id" });
+  const doc = makeDocument({ id: "doc-1" });
+  const beforeGeneration = session.generation;
+
+  const added = session.add(doc);
+
+  assert.equal(added, doc);
+  assert.deepEqual(session.tabOrder, ["doc-1"]);
+  assert.equal(session.activeDocumentId, "doc-1");
+  assert.equal(session.generation, beforeGeneration + 1);
 });
 
 test("add rejects duplicate document IDs and duplicate canonical paths", () => {
@@ -90,6 +107,50 @@ test("add rejects duplicate document IDs and duplicate canonical paths", () => {
   );
   assert.equal(session.findByCanonicalPath("/documents/a.md"), first);
   assert.equal(session.findByCanonicalPath("/documents/missing.md"), null);
+});
+
+test("add and fromManifest keep exact untitled labels unique and monotonic", () => {
+  const session = new SessionModel({ idFactory: () => "generated-id" });
+  const untitledOne = makeDocument({ id: "doc-1", displayName: "Untitled 1" });
+  const untitledThree = makeDocument({ id: "doc-3", displayName: "Untitled 3" });
+
+  session.add(untitledOne);
+  assert.equal(session.nextUntitledNumber, 2);
+
+  session.add(untitledThree);
+  assert.equal(session.nextUntitledNumber, 4);
+
+  assert.throws(
+    () => session.add(makeDocument({ id: "doc-2", displayName: "Untitled 3" })),
+    /duplicate untitled label/i,
+  );
+
+  assert.throws(
+    () => SessionModel.fromManifest({
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      generation: 0,
+      activeDocumentId: "doc-1",
+      nextUntitledNumber: 3,
+      tabs: [
+        { documentId: "doc-1", displayName: "Untitled 1", snapshotRevision: 1 },
+        { documentId: "doc-2", displayName: "Untitled 3", snapshotRevision: 2 },
+      ],
+    }),
+    /untitled label/i,
+  );
+  assert.throws(
+    () => SessionModel.fromManifest({
+      schemaVersion: SESSION_SCHEMA_VERSION,
+      generation: 0,
+      activeDocumentId: "doc-1",
+      nextUntitledNumber: 4,
+      tabs: [
+        { documentId: "doc-1", displayName: "Untitled 1", snapshotRevision: 1 },
+        { documentId: "doc-2", displayName: "Untitled 1", snapshotRevision: 2 },
+      ],
+    }),
+    /untitled label/i,
+  );
 });
 
 test("activate changes the active tab only when the id changes", () => {
@@ -157,6 +218,11 @@ test("move clamps within bounds, preserves the active id, and rejects invalid in
   assert.equal(session.activeDocumentId, "b");
   assert.equal(session.generation, beforeReorderMove + 1);
 
+  const beforeUpperClamp = session.generation;
+  assert.equal(session.move("c", 99), third);
+  assert.equal(session.tabOrder.join(","), "a,b,c");
+  assert.equal(session.generation, beforeUpperClamp + 1);
+
   assert.throws(() => session.move("unknown", 1), /unknown document id/i);
   assert.throws(() => session.move("a", 1.5), /delta must be an integer/i);
 });
@@ -217,6 +283,8 @@ test("fromManifest rejects invalid session manifests", () => {
 
   assert.throws(() => SessionModel.fromManifest({ ...base, schemaVersion: 2 }), /unsupported session schema version/i);
   assert.throws(() => SessionModel.fromManifest({ ...base, tabs: [] }), /tabs must not be empty/i);
+  assert.throws(() => SessionModel.fromManifest({ ...base, generation: 1.5 }), /generation/i);
+  assert.throws(() => SessionModel.fromManifest({ ...base, nextUntitledNumber: 1.5 }), /next untitled number/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     tabs: [
@@ -231,6 +299,14 @@ test("fromManifest rejects invalid session manifests", () => {
       { documentId: "doc-2", displayName: "Second.md", snapshotRevision: 2, canonicalPath: "/documents/a.md" },
     ],
   }), /duplicate canonical path/i);
+  assert.throws(() => SessionModel.fromManifest({
+    ...base,
+    nextUntitledNumber: 3,
+    tabs: [
+      { documentId: "doc-1", displayName: "Untitled 1", snapshotRevision: 1 },
+      { documentId: "doc-2", displayName: "Untitled 3", snapshotRevision: 2 },
+    ],
+  }), /untitled label/i);
   assert.throws(() => SessionModel.fromManifest({
     ...base,
     tabs: [
@@ -253,4 +329,20 @@ test("fromManifest rejects invalid session manifests", () => {
       { documentId: "doc-1", displayName: "First.md", snapshotRevision: -1 },
     ],
   }), /snapshot revision/i);
+});
+
+test("fromManifest preserves supplied canonical paths", () => {
+  const session = SessionModel.fromManifest({
+    schemaVersion: SESSION_SCHEMA_VERSION,
+    generation: 2,
+    activeDocumentId: "doc-1",
+    nextUntitledNumber: 2,
+    tabs: [
+      { documentId: "doc-1", displayName: "First.md", snapshotRevision: 1, canonicalPath: "/documents/first.md" },
+      { documentId: "doc-2", displayName: "Second.md", snapshotRevision: 2, canonicalPath: "/documents/second.md" },
+    ],
+  }, { idFactory: () => "generated-id" });
+
+  assert.equal(session.documents.get("doc-1").canonicalPath, "/documents/first.md");
+  assert.equal(session.documents.get("doc-2").canonicalPath, "/documents/second.md");
 });
