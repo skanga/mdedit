@@ -479,7 +479,10 @@ test("browser handle saves detect external changes and keep both versions availa
   });
   await openEditor(page);
   await page.getByRole("button", { name: "Open", exact: true }).click();
-  await expect(page.getByRole("tab", { name: /browser\.md/ })).toBeVisible();
+  const browserTab = page.getByRole("tab", { name: /browser\.md/ });
+  await expect(browserTab).toBeVisible();
+  await expect(browserTab).toHaveAttribute("aria-selected", "true");
+  await expect(activeEditor(page)).toHaveValue("disk-original");
   await activeEditor(page).fill("editor-version");
   await page.evaluate(() => { window.__browserHandleTest.state.original = "disk-external"; });
 
