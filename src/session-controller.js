@@ -733,15 +733,13 @@
             ? [] : Array.from(resolvedSourceKeys),
         };
       })();
+      batch.catch(() => {});
       if (this._disposed) {
-        return batch.then(({ files: copiedFiles }) => this._disposedBrowserOpenResult(copiedFiles));
+        return Promise.reject(new Error("session controller is disposed"));
       }
       return this._scheduleOperation(
         (token) => this._openBrowserFilesNow(batch, token),
-        (resolve) => batch.then(
-          ({ files: copiedFiles }) => resolve(this._disposedBrowserOpenResult(copiedFiles)),
-          (reason) => resolve({ opened: [], failed: [{ file: null, error: normalizeError(reason) }], results: [] }),
-        ),
+        (_resolve, reject) => reject(new Error("session controller is disposed")),
       );
     }
 
@@ -767,7 +765,8 @@
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           const sha256 = await this.hashText(content);
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          let canonicalPath = this._browserFileIdentities.get(sourceKey);
+          let canonicalPath = await this._canonicalForBrowserSource(sourceKey, token);
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           if (!canonicalPath) {
             canonicalPath = `browser-file:${this.idFactory()}`;
             this._browserFileIdentities.set(sourceKey, canonicalPath);
@@ -783,6 +782,10 @@
             sha256,
           }, token, { replaceStartupPlaceholder: true });
           this._rememberBrowserSource(document.id, sourceKey);
+          if (sourceKey !== file) {
+            this._browserFileIdentities.set(file, canonicalPath);
+            this._rememberBrowserSource(document.id, file);
+          }
           results.push({ file, sourceKey, document, id: document.id, existing, error: null });
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
@@ -824,6 +827,68 @@
         this._browserSourcesByDocument.set(documentId, sources);
       }
       sources.add(sourceKey);
+    }
+
+    async _canonicalForBrowserSource(sourceKey, token = this._lifecycleToken) {
+      const exact = this._browserFileIdentities.get(sourceKey);
+      if (exact) return exact;
+      for (const sources of this._browserSourcesByDocument.values()) {
+        for (const candidate of sources) {
+          const equivalent = await this._browserSourcesEquivalent(sourceKey, candidate);
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          if (!equivalent) continue;
+          const canonicalPath = this._browserFileIdentities.get(candidate);
+          if (canonicalPath) {
+            this._browserFileIdentities.set(sourceKey, canonicalPath);
+            return canonicalPath;
+          }
+        }
+      }
+      return null;
+    }
+
+    async _browserSourcesEquivalent(left, right) {
+      if (left === right) return true;
+      try {
+        if (left && typeof left.isSameEntry === "function") return Boolean(await left.isSameEntry(right));
+        if (right && typeof right.isSameEntry === "function") return Boolean(await right.isSameEntry(left));
+      } catch (_) {
+        return false;
+      }
+      return false;
+    }
+
+    rebindBrowserSource(documentId, ...sourceKeys) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      return this._scheduleOperation((token) => this._rebindBrowserSourceNow(documentId, sourceKeys, token));
+    }
+
+    bindBrowserSource(documentId, ...sourceKeys) {
+      return this.rebindBrowserSource(documentId, ...sourceKeys);
+    }
+
+    async _rebindBrowserSourceNow(documentId, sourceKeys, token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+      const document = this._requireLoadedDocument(documentId);
+      const validSources = sourceKeys.filter(
+        (source) => source && (typeof source === "object" || typeof source === "function"),
+      );
+      if (validSources.length === 0) throw new TypeError("browser source is required");
+      this._forgetBrowserSources(documentId);
+      for (const source of validSources) {
+        for (const [ownerId, sources] of this._browserSourcesByDocument) {
+          for (const candidate of [...sources]) {
+            if (!await this._browserSourcesEquivalent(source, candidate)) continue;
+            sources.delete(candidate);
+            this._browserFileIdentities.delete(candidate);
+          }
+          if (sources.size === 0) this._browserSourcesByDocument.delete(ownerId);
+        }
+        if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+        this._browserFileIdentities.set(source, document.canonicalPath);
+        this._rememberBrowserSource(documentId, source);
+      }
+      return document;
     }
 
     _forgetBrowserSources(documentId) {

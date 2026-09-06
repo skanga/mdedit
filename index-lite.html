@@ -4121,15 +4121,13 @@ return Pe}()
             ? [] : Array.from(resolvedSourceKeys),
         };
       })();
+      batch.catch(() => {});
       if (this._disposed) {
-        return batch.then(({ files: copiedFiles }) => this._disposedBrowserOpenResult(copiedFiles));
+        return Promise.reject(new Error("session controller is disposed"));
       }
       return this._scheduleOperation(
         (token) => this._openBrowserFilesNow(batch, token),
-        (resolve) => batch.then(
-          ({ files: copiedFiles }) => resolve(this._disposedBrowserOpenResult(copiedFiles)),
-          (reason) => resolve({ opened: [], failed: [{ file: null, error: normalizeError(reason) }], results: [] }),
-        ),
+        (_resolve, reject) => reject(new Error("session controller is disposed")),
       );
     }
 
@@ -4155,7 +4153,8 @@ return Pe}()
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           const sha256 = await this.hashText(content);
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          let canonicalPath = this._browserFileIdentities.get(sourceKey);
+          let canonicalPath = await this._canonicalForBrowserSource(sourceKey, token);
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           if (!canonicalPath) {
             canonicalPath = `browser-file:${this.idFactory()}`;
             this._browserFileIdentities.set(sourceKey, canonicalPath);
@@ -4171,6 +4170,10 @@ return Pe}()
             sha256,
           }, token, { replaceStartupPlaceholder: true });
           this._rememberBrowserSource(document.id, sourceKey);
+          if (sourceKey !== file) {
+            this._browserFileIdentities.set(file, canonicalPath);
+            this._rememberBrowserSource(document.id, file);
+          }
           results.push({ file, sourceKey, document, id: document.id, existing, error: null });
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
@@ -4212,6 +4215,68 @@ return Pe}()
         this._browserSourcesByDocument.set(documentId, sources);
       }
       sources.add(sourceKey);
+    }
+
+    async _canonicalForBrowserSource(sourceKey, token = this._lifecycleToken) {
+      const exact = this._browserFileIdentities.get(sourceKey);
+      if (exact) return exact;
+      for (const sources of this._browserSourcesByDocument.values()) {
+        for (const candidate of sources) {
+          const equivalent = await this._browserSourcesEquivalent(sourceKey, candidate);
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          if (!equivalent) continue;
+          const canonicalPath = this._browserFileIdentities.get(candidate);
+          if (canonicalPath) {
+            this._browserFileIdentities.set(sourceKey, canonicalPath);
+            return canonicalPath;
+          }
+        }
+      }
+      return null;
+    }
+
+    async _browserSourcesEquivalent(left, right) {
+      if (left === right) return true;
+      try {
+        if (left && typeof left.isSameEntry === "function") return Boolean(await left.isSameEntry(right));
+        if (right && typeof right.isSameEntry === "function") return Boolean(await right.isSameEntry(left));
+      } catch (_) {
+        return false;
+      }
+      return false;
+    }
+
+    rebindBrowserSource(documentId, ...sourceKeys) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      return this._scheduleOperation((token) => this._rebindBrowserSourceNow(documentId, sourceKeys, token));
+    }
+
+    bindBrowserSource(documentId, ...sourceKeys) {
+      return this.rebindBrowserSource(documentId, ...sourceKeys);
+    }
+
+    async _rebindBrowserSourceNow(documentId, sourceKeys, token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+      const document = this._requireLoadedDocument(documentId);
+      const validSources = sourceKeys.filter(
+        (source) => source && (typeof source === "object" || typeof source === "function"),
+      );
+      if (validSources.length === 0) throw new TypeError("browser source is required");
+      this._forgetBrowserSources(documentId);
+      for (const source of validSources) {
+        for (const [ownerId, sources] of this._browserSourcesByDocument) {
+          for (const candidate of [...sources]) {
+            if (!await this._browserSourcesEquivalent(source, candidate)) continue;
+            sources.delete(candidate);
+            this._browserFileIdentities.delete(candidate);
+          }
+          if (sources.size === 0) this._browserSourcesByDocument.delete(ownerId);
+        }
+        if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+        this._browserFileIdentities.set(source, document.canonicalPath);
+        this._rememberBrowserSource(documentId, source);
+      }
+      return document;
     }
 
     _forgetBrowserSources(documentId) {
@@ -6181,9 +6246,8 @@ return Pe}()
     };
   }
 
-  function commandForKey(event, options = {}) {
+  function tabCommandForKey(event, options = {}) {
     if (!event || typeof event.key !== "string") return null;
-    if (event.repeat) return null;
     const key = event.key.toLowerCase();
     const ctrl = Boolean(event.ctrlKey);
     const meta = Boolean(event.metaKey);
@@ -6202,11 +6266,21 @@ return Pe}()
     return null;
   }
 
+  function commandForKey(event, options = {}) {
+    if (event && event.repeat) return null;
+    return tabCommandForKey(event, options);
+  }
+
+  function isTabCommandKey(event, options = {}) {
+    return Boolean(tabCommandForKey(event, options));
+  }
+
   function openLaunchFiles(handles, openFiles, reportError = () => {}) {
     if (typeof openFiles !== "function") throw new TypeError("openFiles callback is required");
     const batch = (async () => {
       const files = [];
       const successfulHandles = [];
+      const results = [];
       const orderedHandles = handles === null || handles === undefined ? [] : Array.from(handles);
       for (let index = 0; index < orderedHandles.length; index += 1) {
         const handle = orderedHandles[index];
@@ -6216,8 +6290,10 @@ return Pe}()
           if (!file) throw new Error("launch file handle returned no file");
           files.push(file);
           successfulHandles.push(handle);
+          results.push({ handle, file, error: null });
         } catch (reason) {
           const error = reason instanceof Error ? reason : new Error(String(reason));
+          results.push({ handle, file: null, error, name: handle && handle.name ? handle.name : "browser file" });
           try {
             Promise.resolve(reportError(error, handle, index)).catch(() => {});
           } catch (_) {
@@ -6225,12 +6301,27 @@ return Pe}()
           }
         }
       }
-      return { files, successfulHandles };
+      return { files, successfulHandles, results };
     })();
-    return openFiles(
+    const opening = openFiles(
       batch.then((result) => result.files),
       batch.then((result) => result.successfulHandles),
     );
+    return Promise.resolve(opening).then(async (openedResult) => {
+      const readResult = await batch;
+      let successfulIndex = 0;
+      const results = readResult.results.map((entry) => {
+        if (entry.error) return entry;
+        const outcome = openedResult.results[successfulIndex++] || {};
+        return { ...outcome, handle: entry.handle, file: entry.file };
+      });
+      const readFailures = results.filter((entry) => entry.error && entry.handle);
+      return {
+        ...openedResult,
+        failed: [...(openedResult.failed || []), ...readFailures.filter((entry) => entry.file === null)],
+        results,
+      };
+    });
   }
 
   function requireElement(value, name) {
@@ -6750,6 +6841,11 @@ return Pe}()
         this.onCommand(command, event);
         return;
       }
+      if (event.repeat && isTabCommandKey(event, { isMac: this.isMac })) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        return;
+      }
       const currentId = target.getAttribute("data-document-id");
       const index = this._tabOrder.indexOf(currentId);
       if (index < 0) return;
@@ -6874,7 +6970,7 @@ return Pe}()
     }
   }
 
-  return { WorkspaceView, captureEditorState, commandForKey, openLaunchFiles, tabDescriptor };
+  return { WorkspaceView, captureEditorState, commandForKey, isTabCommandKey, openLaunchFiles, tabDescriptor };
 });
 </script>
 <script>/* Native file access bridge for the desktop (Tauri) shell.
@@ -7501,11 +7597,19 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         return;
       }
       if (!handles || !handles.length) return;
-      await MDEdit.openLaunchFiles(
+      const result = await MDEdit.openLaunchFiles(
         handles,
         openBrowserFiles,
         (error) => setStatus("Could not open that file — " + (error.message || "unknown error")),
       );
+      const failures = result.results.filter((outcome) => outcome.error);
+      if (failures.length) {
+        const openedCount = result.results.length - failures.length;
+        const names = failures.map((outcome) => outcome.name
+          || (outcome.handle && outcome.handle.name)
+          || (outcome.file && outcome.file.name) || "browser file");
+        setStatus(`Opened ${openedCount} files; Failed: ${names.join(", ")}`);
+      }
     } else {
       $("file-input").click();
     }
@@ -7584,6 +7688,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
           types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
         });
         await writeToHandle(handle, capture.content);
+        let currentFile = null;
+        try { currentFile = await handle.getFile(); } catch (_) { /* handle identity is sufficient */ }
+        await controller.rebindBrowserSource(capture.documentId, handle, currentFile);
         browserFileHandles.set(capture.documentId, handle);
         document.updateMetadata({ displayName: handle.name });
         const contentSha256 = await hashText(capture.content);
@@ -7811,8 +7918,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
   const INDENT = "  ";
-  function keyboardCommand(event) {
-    return MDEdit.commandForKey({
+  function keyboardEvent(event) {
+    return {
       key: event.key,
       ctrlKey: event.ctrlKey,
       metaKey: event.metaKey,
@@ -7820,7 +7927,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       shiftKey: event.shiftKey,
       repeat: event.repeat,
       isMac,
-    });
+    };
+  }
+
+  function keyboardCommand(event) {
+    return MDEdit.commandForKey(keyboardEvent(event));
   }
 
   function shortcutFocusOptions(event) {
@@ -7897,6 +8008,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       e.preventDefault();
       e.stopPropagation();
       runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
+    if (e.repeat && MDEdit.isTabCommandKey(keyboardEvent(e))) {
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     const surface = e.target;
@@ -8067,6 +8183,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (command) {
       e.preventDefault();
       runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
+    if (e.repeat && MDEdit.isTabCommandKey(keyboardEvent(e))) {
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     const mod = isMac ? e.metaKey : e.ctrlKey;

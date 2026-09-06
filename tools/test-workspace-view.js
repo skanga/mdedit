@@ -289,6 +289,7 @@ test("browser wrapper merges workspace exports into window.MDEdit", () => {
   assert.equal(typeof sandbox.window.MDEdit.tabDescriptor, "function");
   assert.equal(typeof sandbox.window.MDEdit.captureEditorState, "function");
   assert.equal(typeof sandbox.window.MDEdit.commandForKey, "function");
+  assert.equal(typeof sandbox.window.MDEdit.isTabCommandKey, "function");
   assert.equal(typeof sandbox.window.MDEdit.openLaunchFiles, "function");
 });
 
@@ -315,7 +316,7 @@ test("openLaunchFiles awaits handles in order, reports individual failures, and 
       const files = await filesPromise;
       const successfulHandles = await successfulHandlesPromise;
       opened.push([files, successfulHandles]);
-      return { opened: files, failed: [] };
+      return { opened: files, failed: [], results: files.map((file) => ({ file, document: file, error: null })) };
     },
     (error, _handle, index) => errors.push([index, error.message]),
   );
@@ -334,7 +335,10 @@ test("openLaunchFiles awaits handles in order, reports individual failures, and 
   assert.equal(opened.length, 1);
   assert.deepEqual(opened[0][0], [firstFile, thirdFile]);
   assert.deepEqual(opened[0][1], [handles[0], handles[2]]);
-  assert.deepEqual(result, { opened: [firstFile, thirdFile], failed: [] });
+  assert.deepEqual(result.results.map((item) => item.error && item.error.message), [null, "handle denied", null]);
+  assert.deepEqual(result.opened, [firstFile, thirdFile]);
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].name, "browser file");
 });
 
 test("commandForKey maps only the exact tab-management shortcuts", () => {
@@ -579,13 +583,15 @@ test("tab-strip shortcuts emit one command and prevent browser handling", () => 
   first.dispatchEvent(move);
   const close = { type: "keydown", key: "w", ctrlKey: true, bubbles: true };
   first.dispatchEvent(close);
+  const repeatedNext = { type: "keydown", key: "Tab", ctrlKey: true, repeat: true, bubbles: true };
+  first.dispatchEvent(repeatedNext);
 
   assert.deepEqual(calls, [
     ["next-tab", "Tab"],
     ["move-tab-right", "ArrowRight"],
     ["close-tab", "w"],
   ]);
-  for (const event of [next, move, close]) {
+  for (const event of [next, move, close, repeatedNext]) {
     assert.equal(event.defaultPrevented, true);
     assert.equal(event.propagationStopped, true);
   }
@@ -610,7 +616,8 @@ test("mac tab-strip close is Meta-only and repeated commands remain unhandled", 
   assert.deepEqual(calls, ["close-tab"]);
   assert.equal(control.defaultPrevented, undefined);
   assert.equal(command.defaultPrevented, true);
-  assert.equal(repeat.defaultPrevented, undefined);
+  assert.equal(repeat.defaultPrevented, true);
+  assert.equal(repeat.propagationStopped, true);
 });
 
 test("active, close, dirty, conflict, and recovery announcements share the live region without duplicates", () => {

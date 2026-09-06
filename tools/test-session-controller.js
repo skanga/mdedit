@@ -609,6 +609,53 @@ test("stable browser source handles dedupe new File objects and are forgotten on
   assert.equal(third.results[0].existing, false);
 });
 
+test("equivalent browser handles dedupe, non-equivalent same-name handles do not", async () => {
+  const entry = {};
+  const handleA = { async isSameEntry(other) { return other.entry === entry; }, entry };
+  const handleA2 = { async isSameEntry(other) { return other.entry === entry; }, entry };
+  const handleB = { async isSameEntry() { return false; }, entry: {} };
+  const files = ["one", "two", "three"].map((content) => ({ name: "same.md", async text() { return content; } }));
+  const controller = new SessionController(makeDependencies().dependencies);
+
+  const first = await controller.openBrowserFiles([files[0]], [handleA]);
+  const equivalent = await controller.openBrowserFiles([files[1]], [handleA2]);
+  const distinct = await controller.openBrowserFiles([files[2]], [handleB]);
+
+  assert.equal(equivalent.results[0].id, first.results[0].id);
+  assert.notEqual(distinct.results[0].id, first.results[0].id);
+  assert.equal(controller.session.documents.size, 2);
+});
+
+test("rebindBrowserSource transfers a saved document from handle A to B", async () => {
+  const handleA = {};
+  const handleB = {};
+  const controller = new SessionController(makeDependencies().dependencies);
+  const fileA = { name: "a.md", async text() { return "a"; } };
+  const fileB = { name: "b.md", async text() { return "b"; } };
+  const first = await controller.openBrowserFiles([fileA], [handleA]);
+  const document = first.results[0].document;
+
+  await controller.rebindBrowserSource(document.id, handleB, fileB);
+  const reopenedA = await controller.openBrowserFiles([{ name: "a.md", async text() { return "new a"; } }], [handleA]);
+  const reopenedB = await controller.openBrowserFiles([fileB], [handleB]);
+  const oldFileIdentity = await controller.openBrowserFiles([fileA]);
+
+  assert.notEqual(reopenedA.results[0].id, document.id);
+  assert.equal(reopenedB.results[0].id, document.id);
+  assert.notEqual(oldFileIdentity.results[0].id, document.id);
+});
+
+test("dispose rejects a browser open immediately when its lazy batch never resolves", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const never = new Promise(() => {});
+  const opening = controller.openBrowserFiles(never, never);
+  await settle();
+
+  await controller.dispose();
+
+  await assert.rejects(opening, /disposed/);
+});
+
 test("a delayed first browser batch joins restore and leaves no startup placeholder", async () => {
   const read = deferred();
   const file = { name: "launch.md", text() { return read.promise; } };
@@ -4010,6 +4057,8 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.openBrowserFiles\s*\(/);
   assert.match(template, /controller\.openBrowserFiles\([\s\S]*sourceKeys/);
   assert.match(template, /result\.results/);
+  assert.match(template, /writeToHandle\(handle, capture\.content\)[\s\S]*rebindBrowserSource/);
+  assert.match(template, /Failed:/);
   assert.doesNotMatch(template, /openFromFile/);
   assert.match(template, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/);
   assert.doesNotMatch(template, /launchQueue\.setConsumer[\s\S]*await readyController\.restore\(\)/);

@@ -80,9 +80,8 @@
     };
   }
 
-  function commandForKey(event, options = {}) {
+  function tabCommandForKey(event, options = {}) {
     if (!event || typeof event.key !== "string") return null;
-    if (event.repeat) return null;
     const key = event.key.toLowerCase();
     const ctrl = Boolean(event.ctrlKey);
     const meta = Boolean(event.metaKey);
@@ -101,11 +100,21 @@
     return null;
   }
 
+  function commandForKey(event, options = {}) {
+    if (event && event.repeat) return null;
+    return tabCommandForKey(event, options);
+  }
+
+  function isTabCommandKey(event, options = {}) {
+    return Boolean(tabCommandForKey(event, options));
+  }
+
   function openLaunchFiles(handles, openFiles, reportError = () => {}) {
     if (typeof openFiles !== "function") throw new TypeError("openFiles callback is required");
     const batch = (async () => {
       const files = [];
       const successfulHandles = [];
+      const results = [];
       const orderedHandles = handles === null || handles === undefined ? [] : Array.from(handles);
       for (let index = 0; index < orderedHandles.length; index += 1) {
         const handle = orderedHandles[index];
@@ -115,8 +124,10 @@
           if (!file) throw new Error("launch file handle returned no file");
           files.push(file);
           successfulHandles.push(handle);
+          results.push({ handle, file, error: null });
         } catch (reason) {
           const error = reason instanceof Error ? reason : new Error(String(reason));
+          results.push({ handle, file: null, error, name: handle && handle.name ? handle.name : "browser file" });
           try {
             Promise.resolve(reportError(error, handle, index)).catch(() => {});
           } catch (_) {
@@ -124,12 +135,27 @@
           }
         }
       }
-      return { files, successfulHandles };
+      return { files, successfulHandles, results };
     })();
-    return openFiles(
+    const opening = openFiles(
       batch.then((result) => result.files),
       batch.then((result) => result.successfulHandles),
     );
+    return Promise.resolve(opening).then(async (openedResult) => {
+      const readResult = await batch;
+      let successfulIndex = 0;
+      const results = readResult.results.map((entry) => {
+        if (entry.error) return entry;
+        const outcome = openedResult.results[successfulIndex++] || {};
+        return { ...outcome, handle: entry.handle, file: entry.file };
+      });
+      const readFailures = results.filter((entry) => entry.error && entry.handle);
+      return {
+        ...openedResult,
+        failed: [...(openedResult.failed || []), ...readFailures.filter((entry) => entry.file === null)],
+        results,
+      };
+    });
   }
 
   function requireElement(value, name) {
@@ -649,6 +675,11 @@
         this.onCommand(command, event);
         return;
       }
+      if (event.repeat && isTabCommandKey(event, { isMac: this.isMac })) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        return;
+      }
       const currentId = target.getAttribute("data-document-id");
       const index = this._tabOrder.indexOf(currentId);
       if (index < 0) return;
@@ -773,5 +804,5 @@
     }
   }
 
-  return { WorkspaceView, captureEditorState, commandForKey, openLaunchFiles, tabDescriptor };
+  return { WorkspaceView, captureEditorState, commandForKey, isTabCommandKey, openLaunchFiles, tabDescriptor };
 });

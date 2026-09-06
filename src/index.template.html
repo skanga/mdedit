@@ -1537,11 +1537,19 @@
         return;
       }
       if (!handles || !handles.length) return;
-      await MDEdit.openLaunchFiles(
+      const result = await MDEdit.openLaunchFiles(
         handles,
         openBrowserFiles,
         (error) => setStatus("Could not open that file — " + (error.message || "unknown error")),
       );
+      const failures = result.results.filter((outcome) => outcome.error);
+      if (failures.length) {
+        const openedCount = result.results.length - failures.length;
+        const names = failures.map((outcome) => outcome.name
+          || (outcome.handle && outcome.handle.name)
+          || (outcome.file && outcome.file.name) || "browser file");
+        setStatus(`Opened ${openedCount} files; Failed: ${names.join(", ")}`);
+      }
     } else {
       $("file-input").click();
     }
@@ -1620,6 +1628,9 @@
           types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
         });
         await writeToHandle(handle, capture.content);
+        let currentFile = null;
+        try { currentFile = await handle.getFile(); } catch (_) { /* handle identity is sufficient */ }
+        await controller.rebindBrowserSource(capture.documentId, handle, currentFile);
         browserFileHandles.set(capture.documentId, handle);
         document.updateMetadata({ displayName: handle.name });
         const contentSha256 = await hashText(capture.content);
@@ -1847,8 +1858,8 @@
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
   const INDENT = "  ";
-  function keyboardCommand(event) {
-    return MDEdit.commandForKey({
+  function keyboardEvent(event) {
+    return {
       key: event.key,
       ctrlKey: event.ctrlKey,
       metaKey: event.metaKey,
@@ -1856,7 +1867,11 @@
       shiftKey: event.shiftKey,
       repeat: event.repeat,
       isMac,
-    });
+    };
+  }
+
+  function keyboardCommand(event) {
+    return MDEdit.commandForKey(keyboardEvent(event));
   }
 
   function shortcutFocusOptions(event) {
@@ -1933,6 +1948,11 @@
       e.preventDefault();
       e.stopPropagation();
       runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
+    if (e.repeat && MDEdit.isTabCommandKey(keyboardEvent(e))) {
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     const surface = e.target;
@@ -2103,6 +2123,11 @@
     if (command) {
       e.preventDefault();
       runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
+    if (e.repeat && MDEdit.isTabCommandKey(keyboardEvent(e))) {
+      e.preventDefault();
+      e.stopPropagation();
       return;
     }
     const mod = isMac ? e.metaKey : e.ctrlKey;
