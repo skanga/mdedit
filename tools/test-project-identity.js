@@ -59,6 +59,7 @@ test("npm metadata identifies the package as mdedit", () => {
   assert.equal(packageJson.name, "mdedit");
   assert.equal(packageLock.name, "mdedit");
   assert.equal(packageLock.packages[""].name, "mdedit");
+  assert.equal(packageJson.scripts.test, "node --test");
 });
 
 test("Cargo metadata identifies the mdedit package and targets", () => {

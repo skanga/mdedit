@@ -5,7 +5,7 @@
     "build:web": "./build.sh",
     "build:desktop": "./tools/build-desktop.sh",
     "tauri": "tauri",
-    "test": "node --test tools/test-*.js",
+    "test": "node --test",
     "test:browser": "playwright test tests/browser/tabs.spec.js",
     "test:performance": "playwright test tests/browser/performance.spec.js --workers=1"
   },
