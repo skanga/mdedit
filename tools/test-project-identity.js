@@ -198,6 +198,7 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
 
 test("CI verifies desktop, browser, and explicit performance builds", () => {
   const workflow = readText(".github/workflows/desktop.yml");
+  assert.match(workflow, /^  pull_request:\s*$/m);
   const buildStart = workflow.indexOf("\n  build:\n");
   const browserStart = workflow.indexOf("\n  browser-tests:\n");
   assert.notEqual(buildStart, -1);
@@ -221,11 +222,19 @@ test("CI verifies desktop, browser, and explicit performance builds", () => {
   assert.match(workflow, /performance:\n[\s\S]*?run: npm run test:performance/);
   assert.match(workflow, /performance:\n[\s\S]*?github\.event_name == 'workflow_dispatch'/);
   assert.match(workflow, /performance:\n[\s\S]*?startsWith\(github\.ref, 'refs\/tags\/v'\)/);
-  assert.match(workflow, /name: tab-activation-metrics/);
-  assert.match(workflow, /path: test-results\/tab-activation-metrics\.json/);
+  assert.match(workflow, /cargo test --release --manifest-path src-tauri\/Cargo\.toml --test recovery_performance -- --ignored --nocapture/);
+  assert.match(workflow, /MDEDIT_NATIVE_RECOVERY_METRICS_PATH: test-results\/native-recovery-metrics\.json/);
+  assert.match(workflow, /name: tabbed-editor-performance-metrics/);
+  assert.match(workflow, /path: test-results\/\*-metrics\.json/);
   const performanceTest = readText("tests/browser/performance.spec.js");
   assert.match(performanceTest, /path\.resolve\("test-results\/tab-activation-metrics\.json"\)/);
   assert.match(performanceTest, /fs\.writeFileSync\(metricsPath, serializedMetrics, "utf8"\)/);
+  assert.match(performanceTest, /1_073_741_824/);
+  assert.match(performanceTest, /browser fake bridge/i);
+  const nativePerformanceTest = readText("src-tauri/tests/recovery_performance.rs");
+  assert.match(nativePerformanceTest, /5 \* 1024 \* 1024/);
+  assert.match(nativePerformanceTest, /MDEDIT_NATIVE_RECOVERY_METRICS_PATH/);
+  assert.match(nativePerformanceTest, /write_document/);
 });
 
 test("README documents the multi-document workflow", () => {
@@ -374,8 +383,37 @@ test("the native capability description includes recovery and multi-document acc
     "core:default",
     "core:window:allow-set-title",
     "dialog:default",
-    { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
+    "fs:allow-write-file",
   ]);
+  assert.doesNotMatch(JSON.stringify(capability), /\*\*/);
+});
+
+test("documentation records dialog-scoped exports and honest performance evidence", () => {
+  const readme = readText("README.md");
+  const performance = readText("docs/testing/tabbed-editor-performance.md");
+  const checklist = readText("docs/testing/tabbed-editor-smoke-checklist.md");
+
+  assert.match(readme, /save dialog dynamically grants write access only to the selected destination/i);
+  assert.match(performance, /GitHub-hosted `ubuntu-latest` x64/i);
+  assert.match(performance, /1 GiB/i);
+  assert.match(performance, /fake[- ]bridge/i);
+  assert.match(performance, /does not include.*IPC/i);
+  assert.match(performance, /native recovery/i);
+  assert.equal((checklist.match(/End-to-end 5 MiB recovery checkpoint duration/g) || []).length, 3);
+});
+
+test("approved requirements make every application close explicit", () => {
+  const requirements = readText("docs/superpowers/specs/2026-09-04-tabbed-multi-document-editor-design.md");
+  const quit = readMarkdownSection(requirements, "### 5.7 Quit the application");
+  const acceptance = readMarkdownSection(requirements, "## 13. Acceptance criteria");
+
+  assert.match(quit, /Every application-close request must show one consolidated confirmation/);
+  assert.match(quit, /clean.*\*\*Close\*\* and \*\*Cancel\*\*/s);
+  for (const label of ["Save All & Quit", "Quit and Restore Next Time", "Discard All & Quit", "Cancel"]) {
+    assert.ok(quit.includes(label));
+    assert.ok(acceptance.includes(label));
+  }
+  assert.doesNotMatch(quit, /quit without confirmation/);
 });
 
 test("the lite build marks its attribution banner", () => {

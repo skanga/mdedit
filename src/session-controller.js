@@ -248,6 +248,7 @@
       requestAnimationFrame,
       previewCacheMaxEntries = DEFAULT_PREVIEW_CACHE_MAX_ENTRIES,
       previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
+      onRecoveryPerformance = () => {},
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -274,6 +275,7 @@
         : (callback) => callback();
       this.previewCacheMaxEntries = previewCacheMaxEntries;
       this.previewCacheMaxBytes = previewCacheMaxBytes;
+      this.onRecoveryPerformance = requireFunction(onRecoveryPerformance, "onRecoveryPerformance");
       this.session = null;
 
       this._started = false;
@@ -1484,11 +1486,14 @@
       if (!(document instanceof DocumentModel) || document.snapshotRevision !== snapshotRevision) {
         return Promise.resolve(false);
       }
+      const serializationStartedAt = Date.now();
+      const snapshotJson = JSON.stringify(document.toSnapshot());
       const capture = Object.freeze({
         document,
         documentId,
         snapshotRevision,
-        json: JSON.stringify(document.toSnapshot()),
+        json: snapshotJson,
+        serializationDurationMs: Date.now() - serializationStartedAt,
         tab: Object.freeze({
           documentId,
           displayName: document.displayName,
@@ -1528,7 +1533,24 @@
     async _writeRecoveryCheckpointNow(capture) {
       if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
       try {
-        await this.io.writeRecoveryDocument(capture.documentId, capture.snapshotRevision, capture.json);
+        const writeMetrics = await this.io.writeRecoveryDocument(
+          capture.documentId, capture.snapshotRevision, capture.json,
+        );
+        if (writeMetrics && Number.isFinite(writeMetrics.ipcAndNativeDurationMs)) {
+          try {
+            this.onRecoveryPerformance(Object.freeze({
+              documentId: capture.documentId,
+              revision: capture.snapshotRevision,
+              bytes: Number.isSafeInteger(writeMetrics.bytes) ? writeMetrics.bytes : capture.json.length,
+              serializationDurationMs: capture.serializationDurationMs,
+              ipcAndNativeDurationMs: writeMetrics.ipcAndNativeDurationMs,
+              atomicWriteDurationMs: writeMetrics.atomicWriteDurationMs,
+              endToEndDurationMs: capture.serializationDurationMs + writeMetrics.ipcAndNativeDurationMs,
+            }));
+          } catch (_) {
+            // Diagnostics must never turn a durable recovery write into a failure.
+          }
+        }
         if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
         const candidate = this._durableManifestCandidate(capture);
         if (!candidate) return false;

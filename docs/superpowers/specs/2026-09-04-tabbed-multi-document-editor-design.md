@@ -118,12 +118,15 @@ The window title must identify the active document and indicate when it is dirty
 
 ### 5.7 Quit the application
 
-If every document is clean, MDedit must persist the session and quit without confirmation.
+Every application-close request must show one consolidated confirmation.
+
+If every document is clean, the confirmation must offer **Close** and **Cancel**. Close must persist the latest session state before closing; Cancel must return to the editor.
 
 If one or more documents are dirty, MDedit must show one consolidated confirmation with these actions:
 
 - **Save All & Quit**: Save every dirty document, requesting destinations for untitled documents, and quit only if all saves and the final session persistence succeed.
 - **Quit and Restore Next Time**: Persist all dirty content and state to recovery storage, then quit without writing the document files.
+- **Discard All & Quit**: Explicitly discard every unsaved edit, remove its pending recovery data after the updated session is safely persisted, and quit.
 - **Cancel**: Return to the editor without closing the window.
 
 MDedit must stop quitting if a save, destination selection, or required recovery write fails. It must not show a separate quit confirmation for every dirty tab.
@@ -284,7 +287,7 @@ The phase is complete when automated tests and desktop integration checks demons
 5. Normal restart restores clean, dirty, saved, untitled, missing, and externally changed documents in the correct order and restores the active tab.
 6. Forced termination recovery meets the 1-second idle and 10-second continuous-typing guarantees.
 7. Closing a dirty tab implements Save, Don't Save, and Cancel correctly.
-8. Quitting with dirty tabs implements Save All & Quit, Quit and Restore Next Time, and Cancel through one consolidated confirmation.
+8. Every application close shows one consolidated confirmation: clean sessions offer Close and Cancel; dirty sessions offer Save All & Quit, Quit and Restore Next Time, Discard All & Quit, and Cancel.
 9. Save failures and canceled destination pickers stop destructive close or quit actions.
 10. External changes never result in a silent overwrite.
 11. A corrupt or interrupted persistence write leaves a previous valid snapshot recoverable.

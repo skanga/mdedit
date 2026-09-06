@@ -4,13 +4,21 @@ const { makeNativeApp } = require("../src/native-bridge.js");
 
 function fakeTauri() {
   const calls = { open: null, save: null, writeFile: [], invoke: [] };
+  const selectedExportPaths = new Set();
   const tauri = {
     dialog: {
       open: async (opts) => { calls.open = opts; return "C:\\notes\\doc.md"; },
-      save: async (opts) => { calls.save = opts; return "C:\\notes\\out.md"; },
+      save: async (opts) => {
+        calls.save = opts;
+        selectedExportPaths.add("C:\\notes\\out.md");
+        return "C:\\notes\\out.md";
+      },
     },
     fs: {
-      writeFile: async (p, d) => { calls.writeFile.push(["bytes", p, d]); },
+      writeFile: async (p, d) => {
+        if (!selectedExportPaths.has(p)) throw new Error("path not allowed by dialog scope");
+        calls.writeFile.push(["bytes", p, d]);
+      },
     },
     core: {
       invoke: async (command, args) => {
@@ -21,7 +29,7 @@ function fakeTauri() {
           canonicalize_document_path: "C:\\notes\\doc.md",
           load_recovery_manifest: null,
           load_recovery_document: "recovery-document-result",
-          write_recovery_document: undefined,
+          write_recovery_document: { bytes: 2, atomicWriteDurationMs: 1.25 },
           write_recovery_manifest: undefined,
           delete_recovery_document: undefined,
           recovery_directory: "C:\\recovery",
@@ -52,15 +60,17 @@ test("native bridge exposes no direct text-file read or Save As APIs", () => {
   assert.equal(app.saveAs, undefined);
 });
 
-test("writeFile rejects text and accepts only raw byte data", async () => {
+test("writeFile rejects text and paths not granted by the save dialog", async () => {
   const { tauri, calls } = fakeTauri();
   const app = makeNativeApp(tauri);
 
   await assert.rejects(app.writeFile("C:\\notes\\out.md", "text"), /raw byte/i);
   assert.deepEqual(calls.writeFile, []);
   const bytes = new Uint8Array([1, 2, 3]);
-  await app.writeFile("C:\\notes\\out.png", bytes.buffer);
-  assert.deepEqual(calls.writeFile, [["bytes", "C:\\notes\\out.png", bytes]]);
+  await assert.rejects(app.writeFile("C:\\notes\\arbitrary.png", bytes), /not allowed/i);
+  await app.chooseSavePath({ suggestedName: "out.png" });
+  await app.writeFile("C:\\notes\\out.md", bytes.buffer);
+  assert.deepEqual(calls.writeFile, [["bytes", "C:\\notes\\out.md", bytes]]);
 });
 
 test("pickFile resolves the chosen path and null on cancel", async () => {
@@ -134,7 +144,11 @@ test("document bridge methods invoke the expected Tauri commands and forward res
   assert.equal(await app.canonicalizeDocumentPath("C:\\notes\\doc.md"), "C:\\notes\\doc.md");
   assert.equal(await app.loadRecoveryManifest(), null);
   assert.equal(await app.loadRecoveryDocument("doc-1", 4), "recovery-document-result");
-  assert.equal(await app.writeRecoveryDocument("doc-1", 5, "{}"), undefined);
+  const recoveryMetrics = await app.writeRecoveryDocument("doc-1", 5, "{}");
+  assert.equal(recoveryMetrics.bytes, 2);
+  assert.equal(recoveryMetrics.atomicWriteDurationMs, 1.25);
+  assert.ok(Number.isFinite(recoveryMetrics.ipcAndNativeDurationMs));
+  assert.ok(recoveryMetrics.ipcAndNativeDurationMs >= 0);
   assert.equal(await app.writeRecoveryManifest(6, "{}"), undefined);
   assert.equal(await app.deleteRecoveryDocument("doc-1"), undefined);
   assert.equal(await app.recoveryDirectory(), "C:\\recovery");

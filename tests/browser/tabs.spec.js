@@ -416,6 +416,8 @@ test("conflict actions preserve both versions", async ({ page }) => {
   });
   await openEditor(page);
   await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("tab", { name: /^both\.md(?:\s|$)/ }))
+    .toHaveAttribute("aria-selected", "true");
   await activeEditor(page).fill("editor-version");
   await page.locator("#btn-save").click();
   await expect(page.getByRole("dialog")).toBeVisible();

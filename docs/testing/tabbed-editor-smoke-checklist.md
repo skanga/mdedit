@@ -13,6 +13,7 @@ Use two small Markdown fixtures with different names and content. Keep a copy ou
 - Recovery-data location (from recovery error details or the app-data directory):
 - Tester and date:
 - Notes / evidence:
+- End-to-end 5 MiB recovery checkpoint duration (JS serialization + IPC + native disk, ms; read `window.__MDEDIT_RECOVERY_PERFORMANCE__` in the packaged app):
 
 - [ ] **Startup file association:** Install the NSIS or MSI package, open each fixture from Explorer, and confirm both appear once in the expected tab order.
 - [ ] **Second-instance open:** With MDedit already running, open the other fixture from Explorer and confirm the existing window gains one tab and becomes focused.
@@ -31,6 +32,7 @@ Use two small Markdown fixtures with different names and content. Keep a copy ou
 - Recovery-data location (from recovery error details or the app-data directory):
 - Tester and date:
 - Notes / evidence:
+- End-to-end 5 MiB recovery checkpoint duration (JS serialization + IPC + native disk, ms; read `window.__MDEDIT_RECOVERY_PERFORMANCE__` in the packaged app):
 
 - [ ] **Startup file association:** Open each fixture with MDedit from Finder and confirm both appear once in the expected tab order.
 - [ ] **Second-instance open:** With MDedit already running, open the other fixture from Finder and confirm the existing window gains one tab and becomes focused.
@@ -49,6 +51,7 @@ Use two small Markdown fixtures with different names and content. Keep a copy ou
 - Recovery-data location (from recovery error details or the app-data directory):
 - Tester and date:
 - Notes / evidence:
+- End-to-end 5 MiB recovery checkpoint duration (JS serialization + IPC + native disk, ms; read `window.__MDEDIT_RECOVERY_PERFORMANCE__` in the packaged app):
 
 - [ ] **Startup file association:** Open each fixture with MDedit from the desktop file manager and confirm both appear once in the expected tab order.
 - [ ] **Second-instance open:** With MDedit already running, open the other fixture from the file manager and confirm the existing window gains one tab and becomes focused.

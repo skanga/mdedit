@@ -271,6 +271,7 @@ function makeDependencies(overrides = {}) {
     }),
     previewCacheMaxEntries: overrides.previewCacheMaxEntries,
     previewCacheMaxBytes: overrides.previewCacheMaxBytes,
+    onRecoveryPerformance: overrides.onRecoveryPerformance,
   };
 
   return {
@@ -2394,6 +2395,48 @@ test("checkpoint transactions from two document timers serialize their manifests
   assert.deepEqual(documentWrites, [a.id, b.id]);
   assert.deepEqual(manifests[0].tabs.map((tab) => tab.documentId), [a.id]);
   assert.deepEqual(manifests[1].tabs.map((tab) => tab.documentId), [a.id, b.id]);
+});
+
+test("native recovery checkpoint reports serialization, IPC, and disk timing", async () => {
+  const metrics = [];
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryDocument() {
+        return { ipcAndNativeDurationMs: 4.5, atomicWriteDurationMs: 3.25 };
+      },
+    },
+    onRecoveryPerformance(metric) { metrics.push(metric); },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+
+  await controller.writeRecoveryCheckpoint(document.id, document.snapshotRevision);
+
+  assert.equal(metrics.length, 1);
+  assert.equal(metrics[0].documentId, document.id);
+  assert.equal(metrics[0].ipcAndNativeDurationMs, 4.5);
+  assert.equal(metrics[0].atomicWriteDurationMs, 3.25);
+  assert.ok(metrics[0].serializationDurationMs >= 0);
+  assert.equal(
+    metrics[0].endToEndDurationMs,
+    metrics[0].serializationDurationMs + metrics[0].ipcAndNativeDurationMs,
+  );
+});
+
+test("recovery performance reporting cannot fail a durable checkpoint", async () => {
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryDocument() {
+        return { bytes: 2, ipcAndNativeDurationMs: 1, atomicWriteDurationMs: 0.5 };
+      },
+    },
+    onRecoveryPerformance() { throw new Error("diagnostic failed"); },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+
+  assert.equal(await controller.writeRecoveryCheckpoint(document.id, document.snapshotRevision), true);
+  assert.equal(document.persistedRevision, document.snapshotRevision);
 });
 
 test("closing a document during its checkpoint preserves old recovery until an excluding manifest", async () => {

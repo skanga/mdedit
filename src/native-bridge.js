@@ -17,7 +17,8 @@
  * edited; without it the OS picks its own default location.
  *
  * Document text and recovery data route through native commands. The filesystem
- * plugin is used only for raw byte exports selected by the user.
+ * plugin is used only for raw byte exports. Tauri's save dialog adds its selected
+ * destination to the filesystem scope; the capability defines no static paths.
  */
 const markdownFilters = [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "txt"] }];
 
@@ -76,7 +77,14 @@ function makeNativeApp(tauri) {
       return tauri.core.invoke("load_recovery_document", { documentId, snapshotRevision });
     },
     async writeRecoveryDocument(documentId, revision, json) {
-      return tauri.core.invoke("write_recovery_document", { documentId, revision, json });
+      const started = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now() : Date.now();
+      const native = await tauri.core.invoke("write_recovery_document", { documentId, revision, json });
+      const completed = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now() : Date.now();
+      return native && typeof native === "object"
+        ? { ...native, ipcAndNativeDurationMs: completed - started }
+        : native;
     },
     async writeRecoveryManifest(generation, json) {
       return tauri.core.invoke("write_recovery_manifest", { generation, json });

@@ -2727,6 +2727,11 @@
 
   controller = new MDEdit.SessionController({
     io: sessionIo,
+    onRecoveryPerformance(metric) {
+      const measurements = window.__MDEDIT_RECOVERY_PERFORMANCE__ || [];
+      measurements.push(metric);
+      window.__MDEDIT_RECOVERY_PERFORMANCE__ = measurements.slice(-20);
+    },
     scheduler: recoveryScheduler,
     view: workspaceView,
     dialogs: {

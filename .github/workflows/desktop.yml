@@ -1,5 +1,6 @@
 name: Desktop
 on:
+  pull_request:
   push:
     tags: ["v*"]
   workflow_dispatch:
@@ -85,6 +86,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: 20
@@ -93,14 +95,22 @@ jobs:
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Linux native dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
       - name: Test 250 MB session performance
         run: npm run test:performance
+      - name: Measure native 5 MiB recovery write
+        env:
+          MDEDIT_NATIVE_RECOVERY_METRICS_PATH: test-results/native-recovery-metrics.json
+        run: cargo test --release --manifest-path src-tauri/Cargo.toml --test recovery_performance -- --ignored --nocapture
       - name: Upload performance metrics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tab-activation-metrics
-          path: test-results/tab-activation-metrics.json
+          name: tabbed-editor-performance-metrics
+          path: test-results/*-metrics.json
           if-no-files-found: error
 
   release:

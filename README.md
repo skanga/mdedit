@@ -21,7 +21,9 @@ An unsaved change shows a dirty indicator on that document's tab and an asterisk
 
 MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload Disk Version**, **Keep Editing**, and **Save Editor Version As**. A deleted source remains open and can be saved to a new location.
 
-Closing the application always asks for confirmation. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
+Closing the application always asks for confirmation. With clean documents, choose **Close** or **Cancel**. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
+
+Desktop exports use raw bytes and Tauri's native save dialog. The save dialog dynamically grants write access only to the selected destination; MDedit has no wildcard filesystem scope. Document saves and private recovery storage remain behind validated Rust commands.
 
 ### Keyboard shortcuts
 
@@ -75,6 +77,8 @@ npm run tauri -- build
 # Create a Windows NSIS installer.
 npm run tauri -- build --bundles nsis
 ```
+
+Pull requests run the unit, Rust, desktop-build, and Linux Chromium browser gates. The 250 MB browser benchmark and native recovery-write diagnostic run only for version tags or an explicit workflow dispatch; see [the performance evidence guide](docs/testing/tabbed-editor-performance.md).
 
 ## Project structure
 

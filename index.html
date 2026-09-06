@@ -6471,6 +6471,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       requestAnimationFrame,
       previewCacheMaxEntries = DEFAULT_PREVIEW_CACHE_MAX_ENTRIES,
       previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
+      onRecoveryPerformance = () => {},
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -6497,6 +6498,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         : (callback) => callback();
       this.previewCacheMaxEntries = previewCacheMaxEntries;
       this.previewCacheMaxBytes = previewCacheMaxBytes;
+      this.onRecoveryPerformance = requireFunction(onRecoveryPerformance, "onRecoveryPerformance");
       this.session = null;
 
       this._started = false;
@@ -7707,11 +7709,14 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!(document instanceof DocumentModel) || document.snapshotRevision !== snapshotRevision) {
         return Promise.resolve(false);
       }
+      const serializationStartedAt = Date.now();
+      const snapshotJson = JSON.stringify(document.toSnapshot());
       const capture = Object.freeze({
         document,
         documentId,
         snapshotRevision,
-        json: JSON.stringify(document.toSnapshot()),
+        json: snapshotJson,
+        serializationDurationMs: Date.now() - serializationStartedAt,
         tab: Object.freeze({
           documentId,
           displayName: document.displayName,
@@ -7751,7 +7756,24 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     async _writeRecoveryCheckpointNow(capture) {
       if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
       try {
-        await this.io.writeRecoveryDocument(capture.documentId, capture.snapshotRevision, capture.json);
+        const writeMetrics = await this.io.writeRecoveryDocument(
+          capture.documentId, capture.snapshotRevision, capture.json,
+        );
+        if (writeMetrics && Number.isFinite(writeMetrics.ipcAndNativeDurationMs)) {
+          try {
+            this.onRecoveryPerformance(Object.freeze({
+              documentId: capture.documentId,
+              revision: capture.snapshotRevision,
+              bytes: Number.isSafeInteger(writeMetrics.bytes) ? writeMetrics.bytes : capture.json.length,
+              serializationDurationMs: capture.serializationDurationMs,
+              ipcAndNativeDurationMs: writeMetrics.ipcAndNativeDurationMs,
+              atomicWriteDurationMs: writeMetrics.atomicWriteDurationMs,
+              endToEndDurationMs: capture.serializationDurationMs + writeMetrics.ipcAndNativeDurationMs,
+            }));
+          } catch (_) {
+            // Diagnostics must never turn a durable recovery write into a failure.
+          }
+        }
         if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
         const candidate = this._durableManifestCandidate(capture);
         if (!candidate) return false;
@@ -10327,7 +10349,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
  * edited; without it the OS picks its own default location.
  *
  * Document text and recovery data route through native commands. The filesystem
- * plugin is used only for raw byte exports selected by the user.
+ * plugin is used only for raw byte exports. Tauri's save dialog adds its selected
+ * destination to the filesystem scope; the capability defines no static paths.
  */
 const markdownFilters = [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "txt"] }];
 
@@ -10386,7 +10409,14 @@ function makeNativeApp(tauri) {
       return tauri.core.invoke("load_recovery_document", { documentId, snapshotRevision });
     },
     async writeRecoveryDocument(documentId, revision, json) {
-      return tauri.core.invoke("write_recovery_document", { documentId, revision, json });
+      const started = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now() : Date.now();
+      const native = await tauri.core.invoke("write_recovery_document", { documentId, revision, json });
+      const completed = typeof performance !== "undefined" && typeof performance.now === "function"
+        ? performance.now() : Date.now();
+      return native && typeof native === "object"
+        ? { ...native, ipcAndNativeDurationMs: completed - started }
+        : native;
     },
     async writeRecoveryManifest(generation, json) {
       return tauri.core.invoke("write_recovery_manifest", { generation, json });
@@ -12104,6 +12134,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   controller = new MDEdit.SessionController({
     io: sessionIo,
+    onRecoveryPerformance(metric) {
+      const measurements = window.__MDEDIT_RECOVERY_PERFORMANCE__ || [];
+      measurements.push(metric);
+      window.__MDEDIT_RECOVERY_PERFORMANCE__ = measurements.slice(-20);
+    },
     scheduler: recoveryScheduler,
     view: workspaceView,
     dialogs: {

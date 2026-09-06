@@ -4,7 +4,7 @@ const path = require("node:path");
 
 test.use({ trace: "off" });
 
-test("50 recovered 5 MiB documents activate within the p95 budget", async ({ page }, testInfo) => {
+test("50 recovered 5 MiB documents activate within the p95 and memory budgets", async ({ page, browser }, testInfo) => {
   test.setTimeout(120_000);
   await page.addInitScript(() => {
     window.__MDEDIT_TEST_HOOK__ = { restored: false };
@@ -185,7 +185,7 @@ test("50 recovered 5 MiB documents activate within the p95 budget", async ({ pag
         jsHeapSizeLimitBytes: performance.memory && performance.memory.jsHeapSizeLimit,
       },
       recoverySnapshotWrites: {
-        metric: "fake Tauri write_recovery_document invoke duration",
+        metric: "browser fake bridge write_recovery_document duration; excludes native IPC and disk I/O",
         count: snapshotWrites.length,
         totalDurationMs: snapshotWrites.reduce((sum, write) => sum + write.durationMs, 0),
         maxDurationMs: Math.max(...snapshotWrites.map((write) => write.durationMs)),
@@ -203,6 +203,17 @@ test("50 recovered 5 MiB documents activate within the p95 budget", async ({ pag
       selectionWindowMs: selectionCompletedAt - selectionStartedAt,
     };
   });
+  metrics.evidence = {
+    kind: "browser fake bridge",
+    referenceEnvironment: "GitHub-hosted ubuntu-latest x64, Node.js 20, headless Playwright Chromium",
+    actualEnvironment: {
+      platform: process.platform,
+      architecture: process.arch,
+      browser: browser.version(),
+    },
+    workload: { documents: 50, contentBytesPerDocument: 5 * 1024 * 1024, activations: 200 },
+    budgets: { activationP95Ms: 100, peakRendererHeapBytes: 1_073_741_824 },
+  };
   console.log("Selection phase metrics:", JSON.stringify(metrics));
   metrics.preview = await page.evaluate(async () => {
     const preview = document.querySelector("#preview");
@@ -261,4 +272,5 @@ test("50 recovered 5 MiB documents activate within the p95 budget", async ({ pag
   expect(metrics.preview.timedOut).toBe(false);
   expect(metrics.preview.textLength).toBeGreaterThanOrEqual(5 * 1024 * 1024);
   expect(metrics.p95).toBeLessThanOrEqual(100);
+  expect(metrics.memory.peakObservedUsedBytes).toBeLessThanOrEqual(1_073_741_824);
 });

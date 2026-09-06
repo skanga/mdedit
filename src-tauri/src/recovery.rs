@@ -1,9 +1,10 @@
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, MutexGuard};
+use std::time::Instant;
 use uuid::Uuid;
 
 const MANIFEST_FILE: &str = "manifest.json";
@@ -675,8 +676,21 @@ pub(crate) fn write_recovery_document(
     document_id: String,
     revision: u64,
     json: String,
-) -> Result<(), String> {
-    store.write_document(&document_id, revision, json.as_bytes())
+) -> Result<RecoveryWriteMetrics, String> {
+    let bytes = json.len();
+    let started = Instant::now();
+    store.write_document(&document_id, revision, json.as_bytes())?;
+    Ok(RecoveryWriteMetrics {
+        bytes,
+        atomic_write_duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
+    })
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecoveryWriteMetrics {
+    bytes: usize,
+    atomic_write_duration_ms: f64,
 }
 
 #[tauri::command]
