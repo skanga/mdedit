@@ -8121,13 +8121,18 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   let activeStatsToken = 0;
+  let activeStatsTimer = null;
   function scheduleActiveDocumentStats(documentId, content) {
     const token = ++activeStatsToken;
-    requestAnimationFrame(() => requestAnimationFrame(() => {
-      const active = controller && controller.activeDocument();
-      if (token !== activeStatsToken || !active || active.id !== documentId || active.content !== content) return;
-      updateStats(content);
-    }));
+    if (activeStatsTimer !== null) clearTimeout(activeStatsTimer);
+    activeStatsTimer = setTimeout(() => {
+      activeStatsTimer = null;
+      requestAnimationFrame(() => {
+        const active = controller && controller.activeDocument();
+        if (token !== activeStatsToken || !active || active.id !== documentId || active.content !== content) return;
+        updateStats(content);
+      });
+    }, 150);
   }
 
   function setStatus(msg, sticky, documentId) {

@@ -1223,7 +1223,7 @@ test("template provides the accessible tab strip, editor host, and dialog contra
   assert.match(template, /<span id="status" role="status" aria-live="polite"><\/span>/);
   assert.match(template, /<input type="file" id="file-input"[^>]*\bmultiple\b/);
   assert.match(template, /function shortcutFocusOptions\(event\)[\s\S]*focusEditor: isActiveEditorEvent\(event\)[\s\S]*preserveTabFocus: tabFocused/);
-  assert.match(template, /function scheduleActiveDocumentStats\(documentId, content\)[\s\S]*requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) =>/);
+  assert.match(template, /let activeStatsTimer = null;[\s\S]*function scheduleActiveDocumentStats\(documentId, content\)[\s\S]*clearTimeout\(activeStatsTimer\)[\s\S]*activeStatsTimer = setTimeout\([\s\S]*activeStatsTimer = null;[\s\S]*requestAnimationFrame/);
   assert.match(template, /function syncActiveSurface\(\)[\s\S]*scheduleActiveDocumentStats\(active\.id, active\.content\)/);
   assert.match(template, /\$\("editor-surfaces"\)\.addEventListener\("keydown", \(e\) => \{[\s\S]*const command = keyboardCommand\(e\);[\s\S]*e\.stopPropagation\(\);[\s\S]*if \(e\.key !== "Tab"/);
   assert.match(template, /const items = Array\.from\(\(e\.dataTransfer && e\.dataTransfer\.items\)[\s\S]*for \(const item of items\)[\s\S]*files\.push\(file\)[\s\S]*await openBrowserFiles\(files, handles\)/);
