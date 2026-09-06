@@ -39,12 +39,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
-      - name: Test native core
-        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build frontend
         # npm uses cmd.exe for package scripts on Windows; invoke the POSIX build explicitly.
         shell: bash
         run: bash ./tools/build-desktop.sh
+      - name: Test native core
+        run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build desktop bundles
         run: npx tauri build ${{ matrix.args }}
       - name: Stage portable Windows executable
@@ -99,6 +99,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+      - name: Build frontend
+        shell: bash
+        run: bash ./tools/build-desktop.sh
       - name: Test 250 MB session performance
         run: npm run test:performance
       - name: Measure native 5 MiB recovery write

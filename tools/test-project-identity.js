@@ -208,14 +208,16 @@ test("CI verifies desktop, browser, and explicit performance builds", () => {
   const buildJob = workflow.slice(buildStart, browserStart);
   const cargoTest = "cargo test --manifest-path src-tauri/Cargo.toml";
   const linuxSystemDeps = "sudo apt-get install -y libwebkit2gtk-4.1-dev";
+  const frontendBuild = "run: bash ./tools/build-desktop.sh";
   const bundle = "npx tauri build ${{ matrix.args }}";
   const npmTest = "run: npm test";
 
-  for (const requiredStep of [npmTest, linuxSystemDeps, cargoTest, bundle]) {
+  for (const requiredStep of [npmTest, linuxSystemDeps, frontendBuild, cargoTest, bundle]) {
     assert.notEqual(buildJob.indexOf(requiredStep), -1);
   }
   assert.ok(buildJob.indexOf(npmTest) < buildJob.indexOf(cargoTest));
   assert.ok(buildJob.indexOf(linuxSystemDeps) < buildJob.indexOf(cargoTest));
+  assert.ok(buildJob.indexOf(frontendBuild) < buildJob.indexOf(cargoTest));
   assert.ok(buildJob.indexOf(cargoTest) < buildJob.indexOf(bundle));
   assert.match(workflow, /browser-tests:\n[\s\S]*?runs-on: ubuntu-latest/);
   assert.match(workflow, /npx playwright install --with-deps chromium/);
@@ -223,6 +225,7 @@ test("CI verifies desktop, browser, and explicit performance builds", () => {
   assert.match(workflow, /performance:\n[\s\S]*?run: npm run test:performance/);
   assert.match(workflow, /performance:\n[\s\S]*?github\.event_name == 'workflow_dispatch'/);
   assert.match(workflow, /performance:\n[\s\S]*?startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.match(workflow, /performance:\n[\s\S]*?name: Build frontend\n\s+shell: bash\n\s+run: bash \.\/tools\/build-desktop\.sh[\s\S]*?cargo test --release/);
   assert.match(workflow, /cargo test --release --manifest-path src-tauri\/Cargo\.toml --test recovery_performance -- --ignored --nocapture/);
   assert.match(workflow, /MDEDIT_NATIVE_RECOVERY_METRICS_PATH: test-results\/native-recovery-metrics\.json/);
   assert.match(workflow, /name: tabbed-editor-performance-metrics/);
