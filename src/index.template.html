@@ -250,6 +250,12 @@
     color: var(--warning);
     font-weight: 700;
   }
+  .document-tab-recovery {
+    color: var(--danger);
+    font-size: 10px;
+    font-weight: 600;
+    margin-left: 6px;
+  }
   .document-tab-close {
     min-width: 32px;
     min-height: 32px;
@@ -998,7 +1004,7 @@
   <span id="stat-chars">0 chars</span>
   <span id="stat-lines" class="hide-sm">1 line</span>
   <span class="spacer"></span>
-  <span id="status"></span>
+  <span id="status" role="status" aria-live="polite"></span>
   <span class="hide-sm">everything stays on your device</span>
 </footer>
 

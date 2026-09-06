@@ -96,6 +96,9 @@ class FakeElement {
   }
 
   replaceChildren(...children) {
+    if (this.children.some((child) => child.contains(this.ownerDocument.activeElement))) {
+      this.ownerDocument.activeElement = this.ownerDocument.body;
+    }
     this.children.forEach((child) => { child.parentNode = null; });
     this.children = [];
     this._text = "";
@@ -104,6 +107,7 @@ class FakeElement {
 
   remove() {
     if (!this.parentNode) return;
+    if (this.contains(this.ownerDocument.activeElement)) this.ownerDocument.activeElement = this.ownerDocument.body;
     const index = this.parentNode.children.indexOf(this);
     if (index >= 0) this.parentNode.children.splice(index, 1);
     this.parentNode = null;
@@ -167,6 +171,11 @@ class FakeElement {
     this.selectionStart = start;
     this.selectionEnd = end;
   }
+
+  scrollIntoView(options) {
+    this.scrollIntoViewCalls ||= [];
+    this.scrollIntoViewCalls.push(options);
+  }
 }
 
 class FakeDocument {
@@ -205,7 +214,7 @@ function find(element, predicate) {
   return descendants(element).find(predicate);
 }
 
-function makeFixture(callbacks = {}) {
+function makeFixture(callbacks = {}, fixtureOptions = {}) {
   const document = new FakeDocument();
   const elements = {};
   const ids = {
@@ -229,8 +238,18 @@ function makeFixture(callbacks = {}) {
   elements.dialog.hidden = true;
   elements.dialogBackdrop.hidden = true;
   Object.values(elements).forEach((element) => document.body.appendChild(element));
+  let legacy = null;
+  if (fixtureOptions.legacy) {
+    const surface = document.createElement("div");
+    surface.className = "editor-surface";
+    const editor = document.createElement("textarea");
+    editor.id = "editor";
+    surface.appendChild(editor);
+    elements.editorSurfaces.appendChild(surface);
+    legacy = { surface, editor };
+  }
   const view = new WorkspaceView({ document, ...elements, ...callbacks });
-  return { document, elements, view };
+  return { document, elements, legacy, view };
 }
 
 function doc(id, overrides = {}) {
@@ -370,6 +389,24 @@ test("editors stay independently mounted while activation only changes visibilit
   assert.equal(two.getAttribute("data-document-id"), "two");
 });
 
+test("managed editors hide the legacy bootstrap surface and lifecycle restores it alone", () => {
+  const { elements, legacy, view } = makeFixture({}, { legacy: true });
+  assert.equal(legacy.surface.hidden, false);
+  const first = view.ensureEditor(doc("one"));
+  view.activateEditor("one");
+  assert.equal(legacy.surface.hidden, true);
+  assert.equal(first.parentNode.hidden, false);
+
+  assert.equal(view.removeEditor("one"), true);
+  assert.equal(legacy.surface.hidden, false);
+  const second = view.ensureEditor(doc("two"));
+  view.activateEditor("two");
+  view.dispose();
+  assert.equal(second.parentNode.parentNode, null);
+  assert.equal(elements.editorSurfaces.children.length, 1);
+  assert.equal(legacy.surface.hidden, false);
+});
+
 test("captureWorkspace and applyWorkspace clamp state and focus the active editor", () => {
   const { document, view } = makeFixture();
   const editor = view.ensureEditor(doc("one", { content: "abcd" }));
@@ -412,6 +449,39 @@ test("delegated tab, close, add, and keyboard events emit intents without mutati
   ]);
   assert.equal(one.dirty, false);
   assert.equal(two.dirty, false);
+});
+
+test("renderTabs preserves control focus and scrolls the focused or active tab into view", () => {
+  const { document, elements, view } = makeFixture();
+  const documents = [doc("one"), doc("two")];
+  view.renderTabs(documents, "one");
+  const oldClose = find(elements.tabList.children[1], (el) => el.getAttribute("data-action") === "close");
+  oldClose.focus();
+
+  view.renderTabs(documents, "one");
+  const newClose = find(elements.tabList.children[1], (el) => el.getAttribute("data-action") === "close");
+  const focusedTab = find(elements.tabList.children[1], (el) => el.getAttribute("role") === "tab");
+  assert.equal(document.activeElement, newClose);
+  assert.equal(focusedTab.scrollIntoViewCalls.length, 1);
+  assert.deepEqual(focusedTab.scrollIntoViewCalls[0], { block: "nearest", inline: "nearest" });
+});
+
+test("keyboard activation keeps focus after a synchronous controller rerender", () => {
+  const documents = [doc("one"), doc("two"), doc("three")];
+  let view;
+  const fixture = makeFixture({
+    onActivate(id) { view.renderTabs(documents, id); },
+  });
+  view = fixture.view;
+  view.renderTabs(documents, "one");
+  const first = find(fixture.elements.tabList.children[0], (el) => el.getAttribute("role") === "tab");
+  first.focus();
+  first.dispatchEvent({ type: "keydown", key: "End", bubbles: true });
+
+  const last = find(fixture.elements.tabList.children[2], (el) => el.getAttribute("role") === "tab");
+  assert.equal(fixture.document.activeElement, last);
+  assert.equal(last.getAttribute("aria-selected"), "true");
+  assert.equal(last.scrollIntoViewCalls.length, 1);
 });
 
 test("showDialog safely renders text, awaits actions, closes, and restores focus", async () => {
@@ -470,9 +540,9 @@ test("Escape closes a dialog and status updates affect only the target document"
   assert.equal(elements.dialog.hidden, true);
 });
 
-test("a stale asynchronous dialog action cannot close its replacement", async () => {
+test("showDialog cannot replace a dialog with an action in flight", async () => {
   const pending = deferred();
-  const { document, elements, view } = makeFixture();
+  const { elements, view } = makeFixture();
   const first = view.showDialog({
     title: "First",
     actions: [{ id: "wait", label: "Wait", callback: () => pending.promise }],
@@ -480,15 +550,88 @@ test("a stale asynchronous dialog action cannot close its replacement", async ()
   elements.dialogActions.children[0].dispatchEvent({ type: "click", bubbles: true });
 
   const second = view.showDialog({ title: "Second", actions: [] });
-  assert.equal(await first, null);
+  assert.equal(second, first);
+  assert.equal(elements.dialogTitle.textContent, "First");
   pending.resolve("old result");
-  await Promise.resolve();
-  await Promise.resolve();
+  assert.equal(await second, "old result");
+});
 
-  assert.equal(elements.dialog.hidden, false);
-  assert.equal(elements.dialogTitle.textContent, "Second");
+test("a busy dialog ignores Escape and backdrop cancellation until its action settles", async () => {
+  const pending = deferred();
+  const { document, elements, view } = makeFixture();
+  const result = view.showDialog({
+    title: "Saving",
+    actions: [{ id: "save", label: "Save", callback: () => pending.promise }],
+  });
+  elements.dialogActions.children[0].dispatchEvent({ type: "click", bubbles: true });
+  assert.equal(elements.dialog.getAttribute("aria-busy"), "true");
+  assert.equal(elements.dialogActions.getAttribute("aria-busy"), "true");
+  assert.equal(elements.dialogActions.children[0].disabled, true);
+
   document.dispatchEvent({ type: "keydown", key: "Escape" });
-  assert.equal(await second, null);
+  elements.dialogBackdrop.dispatchEvent({ type: "click" });
+  assert.equal(elements.dialog.hidden, false);
+  assert.equal(await Promise.race([result.then(() => "settled"), Promise.resolve("pending")]), "pending");
+
+  pending.resolve("saved");
+  assert.equal(await result, "saved");
+  assert.equal(elements.dialog.hidden, true);
+});
+
+test("a rejected dialog action re-enables the dialog and can be retried", async () => {
+  let attempts = 0;
+  const { elements, view } = makeFixture();
+  const result = view.showDialog({
+    title: "Retry",
+    message: "Original message",
+    actions: [{
+      id: "retry",
+      label: "Retry",
+      callback: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("Disk unavailable");
+        return "recovered";
+      },
+    }],
+  });
+  elements.dialogActions.children[0].dispatchEvent({ type: "click", bubbles: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(elements.dialog.hidden, false);
+  assert.equal(elements.dialogActions.children[0].disabled, false);
+  assert.equal(elements.dialog.getAttribute("aria-busy"), null);
+  assert.equal(elements.dialogMessage.textContent, "Disk unavailable");
+
+  elements.dialogActions.children[0].dispatchEvent({ type: "click", bubbles: true });
+  assert.equal(await result, "recovered");
+});
+
+test("recovery status layers over dirty and conflict state and survives tab rerenders", () => {
+  const documents = [doc("one", { dirty: true, fileStatus: "externally-changed" }), doc("two")];
+  const { elements, view } = makeFixture();
+  view.renderTabs(documents, "one");
+  view.setDocumentStatus("one", "pending");
+  let firstStatus = find(elements.tabList.children[0], (el) => el.classList.contains("document-tab-status"));
+  assert.match(firstStatus.textContent, /File changed outside MDedit; Unsaved changes/);
+  assert.match(firstStatus.textContent, /Recovery pending/);
+
+  view.setDocumentStatus("one", { recoveryStatus: "failed", message: "Recovery write failed" });
+  const badge = find(elements.tabList.children[0], (el) => el.classList.contains("document-tab-recovery"));
+  assert.equal(badge.hidden, false);
+  assert.equal(badge.textContent, "Recovery write failed");
+  assert.equal(elements.tabList.children[0].classList.contains("recovery-failed"), true);
+
+  view.setDocumentStatus("one", "clean");
+  firstStatus = find(elements.tabList.children[0], (el) => el.classList.contains("document-tab-status"));
+  assert.equal(firstStatus.textContent, "File changed outside MDedit; Unsaved changes");
+  assert.equal(elements.tabList.children[0].classList.contains("is-conflict"), true);
+  assert.equal(elements.tabList.children[0].classList.contains("is-dirty"), true);
+  assert.equal(badge.hidden, true);
+
+  view.setDocumentStatus("two", "writing");
+  view.renderTabs(documents, "one");
+  const secondStatus = find(elements.tabList.children[1], (el) => el.classList.contains("document-tab-status"));
+  assert.match(secondStatus.textContent, /Saving recovery/);
 });
 
 test("removeEditor and dispose clean up mounted surfaces and listeners", () => {
@@ -520,6 +663,7 @@ test("template provides the accessible tab strip, editor host, and dialog contra
   assert.match(template, /#document-tabs-wrap\s*\{[^}]*height:\s*36px/s);
   assert.match(template, /\.document-tab-close\s*\{[^}]*min-width:\s*32px[^}]*min-height:\s*32px/s);
   assert.match(template, /\.editor-surface\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(template, /<span id="status" role="status" aria-live="polite"><\/span>/);
 });
 
 test("template and builder keep application modules in dependency order", () => {
