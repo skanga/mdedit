@@ -768,14 +768,18 @@
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           const reservation = await this._browserReservationForSource(sourceKey, token);
           if (reservation) {
-            const document = this.session && this.session.documents.get(reservation.documentId);
-            if (document) {
-              this.activateDocument(document.id);
-              results.push({
-                file, sourceKey, document, id: document.id, existing: true, reserved: true, error: null,
-              });
-              if (!openedIds.has(document.id)) { openedIds.add(document.id); opened.push(document); }
-              continue;
+            const settlement = await reservation.settled;
+            if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+            if (settlement.committed) {
+              const document = this.session && this.session.documents.get(reservation.documentId);
+              if (document) {
+                this.activateDocument(document.id);
+                results.push({
+                  file, sourceKey, document, id: document.id, existing: true, reserved: true, error: null,
+                });
+                if (!openedIds.has(document.id)) { openedIds.add(document.id); opened.push(document); }
+                continue;
+              }
             }
           }
           let canonicalPath = await this._canonicalForBrowserSource(sourceKey, token);
@@ -862,11 +866,19 @@
 
     async _browserSourcesEquivalent(left, right) {
       if (left === right) return true;
-      try {
-        if (left && typeof left.isSameEntry === "function") return Boolean(await left.isSameEntry(right));
-        if (right && typeof right.isSameEntry === "function") return Boolean(await right.isSameEntry(left));
-      } catch (_) {
-        return false;
+      if (left && typeof left.isSameEntry === "function") {
+        try {
+          if (await left.isSameEntry(right)) return true;
+        } catch (_) {
+          // A handle may reject one comparison direction; try the reciprocal.
+        }
+      }
+      if (right && typeof right.isSameEntry === "function") {
+        try {
+          if (await right.isSameEntry(left)) return true;
+        } catch (_) {
+          // An unavailable or rejected comparator does not establish identity.
+        }
       }
       return false;
     }
@@ -910,12 +922,14 @@
         canonicalPath: document.canonicalPath || `browser-file:${this.idFactory()}`,
         sourceKeys: validSources,
       };
+      reservation.settled = new Promise((resolve) => { reservation.settle = resolve; });
       this._browserSourceReservations.set(reservation.id, reservation);
       return { reserved: true, collision: false, reservation };
     }
 
     commitBrowserSourceReservation(reservation, ...sourceKeys) {
-      return this._scheduleOperation((token) => {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      try {
         const held = reservation && this._browserSourceReservations.get(reservation.id);
         if (!held || held !== reservation) throw new Error("browser source reservation is not active");
         const document = this._requireLoadedDocument(held.documentId);
@@ -929,13 +943,20 @@
         this._browserSourceReservations.delete(held.id);
         this._scheduleRecoveryRevision(document);
         this._renderSession();
-        return document;
-      });
+        held.settle({ committed: true, documentId: document.id, canonicalPath: held.canonicalPath });
+        return Promise.resolve(document);
+      } catch (reason) {
+        return Promise.reject(reason);
+      }
     }
 
     releaseBrowserSourceReservation(reservation) {
       if (!reservation || !reservation.id) return Promise.resolve(false);
-      return this._scheduleOperation(() => this._browserSourceReservations.delete(reservation.id));
+      const held = this._browserSourceReservations.get(reservation.id);
+      if (!held || held !== reservation) return Promise.resolve(false);
+      this._browserSourceReservations.delete(held.id);
+      held.settle({ committed: false });
+      return Promise.resolve(true);
     }
 
     rebindBrowserSource(documentId, ...sourceKeys) {
@@ -2792,6 +2813,9 @@
       this._loadPriority = [];
       this._loadingIds.clear();
       this._browserSourcesByDocument.clear();
+      for (const reservation of this._browserSourceReservations.values()) {
+        reservation.settle({ committed: false, disposed: true });
+      }
       this._browserSourceReservations.clear();
       this._browserFileIdentities = new WeakMap();
       this._startupPlaceholderId = null;

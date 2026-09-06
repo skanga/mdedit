@@ -660,6 +660,20 @@ test("browser source reservation reports an existing B owner without transferrin
   assert.equal(controller.activeDocument(), b.results[0].document);
 });
 
+test("browser source collision checks reciprocal isSameEntry after incoming rejection", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const existingB = { async isSameEntry(other) { return other && other.entry === "b"; } };
+  const incomingB = { entry: "b", async isSameEntry() { throw new Error("one-way denial"); } };
+  const handleA = {};
+  const a = await controller.openBrowserFiles([{ name: "a.md", async text() { return "a"; } }], [handleA]);
+  const b = await controller.openBrowserFiles([{ name: "b.md", async text() { return "b"; } }], [existingB]);
+
+  const result = await controller.reserveBrowserSource(a.results[0].id, incomingB);
+
+  assert.equal(result.reserved, false);
+  assert.equal(result.document, b.results[0].document);
+});
+
 test("an open during Save As reservation resolves to its owner and untitled commit gains identity", async () => {
   const controller = new SessionController(makeDependencies().dependencies);
   await controller.restore();
@@ -667,14 +681,33 @@ test("an open during Save As reservation resolves to its owner and untitled comm
   const handleB = {};
   const reserved = await controller.reserveBrowserSource(untitled.id, handleB);
 
-  const during = await controller.openBrowserFiles([{ name: "b.md", async text() { return "during"; } }], [handleB]);
+  const duringOpening = controller.openBrowserFiles([{ name: "b.md", async text() { return "during"; } }], [handleB]);
+  await settle();
+  assert.equal((await outcomeByImmediate(duringOpening)).status, "unsettled");
+  await controller.commitBrowserSourceReservation(reserved.reservation);
+  const during = await duringOpening;
   assert.equal(during.results[0].id, untitled.id);
   assert.equal(controller.session.documents.size, 1);
-
-  await controller.commitBrowserSourceReservation(reserved.reservation);
   assert.ok(untitled.canonicalPath);
   const reopened = await controller.openBrowserFiles([{ name: "b.md", async text() { return "after"; } }], [handleB]);
   assert.equal(reopened.results[0].id, untitled.id);
+});
+
+test("an open waiting on a failed Save As retries and owns B after release", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const handleA = {};
+  const handleB = {};
+  const a = await controller.openBrowserFiles([{ name: "a.md", async text() { return "a"; } }], [handleA]);
+  const reserved = await controller.reserveBrowserSource(a.results[0].id, handleB);
+  const openingB = controller.openBrowserFiles([{ name: "b.md", async text() { return "b"; } }], [handleB]);
+  await settle();
+  assert.equal((await outcomeByImmediate(openingB)).status, "unsettled");
+
+  await controller.releaseBrowserSourceReservation(reserved.reservation);
+  const b = await openingB;
+
+  assert.notEqual(b.results[0].id, a.results[0].id);
+  assert.equal(controller.activeDocument(), b.results[0].document);
 });
 
 test("releasing a failed Save As reservation preserves A and leaves B unowned", async () => {
