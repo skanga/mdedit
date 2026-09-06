@@ -64,6 +64,47 @@
     };
   }
 
+  function createNativeCloseRequestHandler(controller, currentWindow) {
+    requireObject(controller, "controller");
+    requireObject(currentWindow, "currentWindow");
+    requireFunction(controller.allowNativeClose, "controller.allowNativeClose");
+    requireFunction(controller.requestQuit, "controller.requestQuit");
+    requireFunction(currentWindow.close, "currentWindow.close");
+    let closeRequest = null;
+
+    return function handleNativeCloseRequest(event) {
+      if (controller.allowNativeClose()) return Promise.resolve({ allowClose: true, authorized: true });
+      requireObject(event, "close event");
+      requireFunction(event.preventDefault, "close event.preventDefault");
+      event.preventDefault();
+      if (closeRequest) return closeRequest;
+
+      closeRequest = (async () => {
+        const result = await controller.requestQuit();
+        if (!result || !result.allowClose) return result;
+        try {
+          await currentWindow.close();
+          return result;
+        } catch (reason) {
+          if (typeof controller.disallowNativeClose === "function") controller.disallowNativeClose();
+          else controller.allowNativeClose();
+          return { ...result, allowClose: false, error: normalizeError(reason) };
+        }
+      })();
+      const request = closeRequest;
+      return request.then(
+        (result) => {
+          if (closeRequest === request) closeRequest = null;
+          return result;
+        },
+        (reason) => {
+          if (closeRequest === request) closeRequest = null;
+          throw reason;
+        },
+      );
+    };
+  }
+
   function utf8ByteLength(value) {
     const text = String(value);
     if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(text).byteLength;
@@ -1794,9 +1835,18 @@
       const dirtyDocuments = this.session.tabOrder
         .map((id) => this.session.documents.get(id))
         .filter((document) => document instanceof DocumentModel && document.dirty);
-      let choice = "restore";
-      if (dirtyDocuments.length > 0) choice = await this._showQuitChoice(dirtyDocuments);
+      const recoveryRisk = Boolean(this._sessionRecoveryFailure) || documents.some(
+        (document) => document.recoveryStatus === "failed",
+      );
+      const requiresRecoveryChoice = dirtyDocuments.length > 0 || recoveryRisk;
+      const choice = await this._showQuitChoice(dirtyDocuments, { requiresRecoveryChoice });
       if (!choice || choice === "cancel") return { allowClose: false, canceled: true };
+
+      if (!requiresRecoveryChoice) {
+        if (choice !== "close") return { allowClose: false, canceled: true };
+        this._nativeCloseAllowed = true;
+        return { allowClose: true, choice };
+      }
 
       try {
         if (choice === "save-all") {
@@ -1848,12 +1898,26 @@
       await this._persistManifestNow(this._lifecycleToken);
     }
 
-    _showQuitChoice(documents) {
-      const actions = ["save-all", "restore", "discard-all", "cancel"];
+    _showQuitChoice(documents, { requiresRecoveryChoice = true } = {}) {
+      const actions = requiresRecoveryChoice
+        ? ["save-all", "restore", "discard-all", "cancel"]
+        : ["close", "cancel"];
       if (typeof this.dialogs.showQuit === "function") return this.dialogs.showQuit(documents, actions);
       if (typeof this.view.showDialog !== "function") return Promise.resolve("cancel");
+      if (!requiresRecoveryChoice) {
+        return this.view.showDialog({
+          title: "Close application?",
+          message: "Close MDedit?",
+          documents: [],
+          cancelable: true,
+          actions: [
+            { id: "close", label: "Close", primary: true },
+            { id: "cancel", label: "Cancel" },
+          ],
+        });
+      }
       return this.view.showDialog({
-        title: "Unsaved documents",
+        title: "Close application?",
         message: "Choose what MDedit should do before closing.",
         documents,
         cancelable: true,
@@ -1870,6 +1934,10 @@
       if (!this._nativeCloseAllowed) return false;
       this._nativeCloseAllowed = false;
       return true;
+    }
+
+    disallowNativeClose() {
+      this._nativeCloseAllowed = false;
     }
 
     hasUnsavedOrRecoveryRisk() {
@@ -2317,5 +2385,6 @@
     BROWSER_RECOVERY_PREFIX,
     createBrowserRecoveryIo,
     createBrowserRecoveryEnvironment,
+    createNativeCloseRequestHandler,
   };
 });

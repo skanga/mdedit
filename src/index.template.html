@@ -2021,9 +2021,8 @@
   });
 
   window.addEventListener("beforeunload", (e) => {
-    if (controller && controller.hasUnsavedOrRecoveryRisk()) {
-      e.preventDefault(); e.returnValue = "";
-    }
+    e.preventDefault();
+    e.returnValue = "";
   });
 
   /* ── Buttons ────────────────────────────────── */
@@ -2494,19 +2493,8 @@
     if (!nativeApp || !windowApi || typeof windowApi.getCurrentWindow !== "function") return null;
     const currentWindow = windowApi.getCurrentWindow();
     if (!currentWindow || typeof currentWindow.onCloseRequested !== "function") return null;
-    let closeRequest = null;
-    return currentWindow.onCloseRequested(async (event) => {
-      if (controller.allowNativeClose()) return;
-      event.preventDefault();
-      if (closeRequest) return;
-      closeRequest = controller.requestQuit();
-      try {
-        const result = await closeRequest;
-        if (result && result.allowClose) await currentWindow.close();
-      } finally {
-        closeRequest = null;
-      }
-    });
+    const handleCloseRequest = MDEdit.createNativeCloseRequestHandler(controller, currentWindow);
+    return currentWindow.onCloseRequested(handleCloseRequest);
   }
   const nativeCloseGuardReady = installNativeCloseGuard();
   if (browserRecoveryEnvironment && browserRecoveryEnvironment.error) {

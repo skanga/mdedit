@@ -11,6 +11,7 @@ const {
   LEGACY_DRAFT_KEY,
   createBrowserRecoveryIo,
   createBrowserRecoveryEnvironment,
+  createNativeCloseRequestHandler,
 } = require("../src/session-controller.js");
 const { RecoveryScheduler } = require("../src/recovery-scheduler.js");
 
@@ -2953,6 +2954,175 @@ test("closing the final tab checkpoints a clean replacement before its manifest"
     < order.findIndex(([kind, id]) => kind === "manifest" && id === replacement.id));
 });
 
+test("clean quit asks once and only an explicit Close allows native shutdown", async () => {
+  let dialogs = 0;
+  let flushes = 0;
+  let dialogDocuments;
+  const choices = ["cancel", "restore", "close"];
+  const fixture = makeDependencies({
+    scheduler: { async flushAll() { flushes += 1; } },
+    dialogs: {
+      async showQuit(documents, actions) {
+        dialogs += 1;
+        dialogDocuments = documents;
+        assert.deepEqual(actions, ["close", "cancel"]);
+        return choices.shift();
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+  await controller.restore();
+  await controller._manifestWrites;
+  const manifestWrites = fixture.calls.manifestWrites.length;
+
+  assert.deepEqual(await controller.requestQuit(), { allowClose: false, canceled: true });
+  assert.equal(controller.allowNativeClose(), false);
+
+  assert.deepEqual(await controller.requestQuit(), { allowClose: false, canceled: true });
+  assert.equal(controller.allowNativeClose(), false);
+
+  const result = await controller.requestQuit();
+  assert.deepEqual(result, { allowClose: true, choice: "close" });
+  assert.equal(dialogs, 3);
+  assert.deepEqual(dialogDocuments, []);
+  assert.equal(flushes, 0);
+  assert.equal(fixture.calls.manifestWrites.length, manifestWrites);
+  assert.equal(controller.allowNativeClose(), true);
+  assert.equal(controller.allowNativeClose(), false);
+});
+
+test("clean fallback quit dialog uses Close application copy and safe actions", async () => {
+  let options;
+  const fixture = makeDependencies({
+    view: {
+      async showDialog(received) {
+        options = received;
+        return null;
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+  await controller.restore();
+
+  const result = await controller.requestQuit();
+
+  assert.equal(result.allowClose, false);
+  assert.equal(options.title, "Close application?");
+  assert.deepEqual(options.documents, []);
+  assert.deepEqual(options.actions.map(({ id, label }) => [id, label]), [
+    ["close", "Close"],
+    ["cancel", "Cancel"],
+  ]);
+});
+
+test("native close request handler prevents duplicates and resets after cancel", async () => {
+  const decision = deferred();
+  let requests = 0;
+  let closes = 0;
+  const controller = {
+    allowNativeClose() { return false; },
+    requestQuit() {
+      requests += 1;
+      return requests === 1 ? decision.promise : Promise.resolve({ allowClose: false, canceled: true });
+    },
+  };
+  const handler = createNativeCloseRequestHandler(controller, {
+    async close() { closes += 1; },
+  });
+  const first = { prevented: 0, preventDefault() { this.prevented += 1; } };
+  const duplicate = { prevented: 0, preventDefault() { this.prevented += 1; } };
+
+  const firstRequest = handler(first);
+  const duplicateRequest = handler(duplicate);
+  assert.equal(first.prevented, 1);
+  assert.equal(duplicate.prevented, 1);
+  assert.equal(requests, 1);
+  decision.resolve({ allowClose: false, canceled: true });
+  await Promise.all([firstRequest, duplicateRequest]);
+  assert.equal(closes, 0);
+
+  const later = { prevented: 0, preventDefault() { this.prevented += 1; } };
+  await handler(later);
+  assert.equal(later.prevented, 1);
+  assert.equal(requests, 2);
+});
+
+test("native close request handler consumes one authorization and asks again later", async () => {
+  let requests = 0;
+  let closes = 0;
+  let authorized = false;
+  let handler;
+  const controller = {
+    allowNativeClose() {
+      if (!authorized) return false;
+      authorized = false;
+      return true;
+    },
+    requestQuit() {
+      requests += 1;
+      if (requests === 1) {
+        authorized = true;
+        return Promise.resolve({ allowClose: true, choice: "close" });
+      }
+      return Promise.resolve({ allowClose: false, canceled: true });
+    },
+  };
+  const recursive = { prevented: 0, preventDefault() { this.prevented += 1; } };
+  handler = createNativeCloseRequestHandler(controller, {
+    async close() {
+      closes += 1;
+      await handler(recursive);
+    },
+  });
+
+  const first = { prevented: 0, preventDefault() { this.prevented += 1; } };
+  await handler(first);
+  assert.equal(first.prevented, 1);
+  assert.equal(recursive.prevented, 0);
+  assert.equal(requests, 1);
+  assert.equal(closes, 1);
+
+  const later = { prevented: 0, preventDefault() { this.prevented += 1; } };
+  await handler(later);
+  assert.equal(later.prevented, 1);
+  assert.equal(requests, 2);
+});
+
+test("native close request handler revokes authorization when window close rejects", async () => {
+  let requests = 0;
+  let authorized = false;
+  let revocations = 0;
+  const controller = {
+    allowNativeClose() {
+      if (!authorized) return false;
+      authorized = false;
+      return true;
+    },
+    disallowNativeClose() {
+      authorized = false;
+      revocations += 1;
+    },
+    requestQuit() {
+      requests += 1;
+      authorized = true;
+      return Promise.resolve({ allowClose: true, choice: "close" });
+    },
+  };
+  const handler = createNativeCloseRequestHandler(controller, {
+    async close() { throw new Error("window close failed"); },
+  });
+
+  const first = await handler({ preventDefault() {} });
+  assert.equal(first.allowClose, false);
+  assert.match(first.error.message, /window close failed/);
+  assert.equal(revocations, 1);
+  const second = await handler({ preventDefault() {} });
+  assert.equal(second.allowClose, false);
+  assert.equal(requests, 2);
+});
+
 test("quit restore uses one consolidated dialog and flushAll exactly once", async () => {
   let dialogs = 0;
   let flushes = 0;
@@ -3163,11 +3333,9 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.saveDocument\(document\.id\)/);
   assert.match(template, /controller\.saveAs\(capture\.documentId\)/);
   assert.match(template, /onCloseRequested\s*\(/);
-  assert.match(template, /event\.preventDefault\s*\(\)/);
-  assert.match(template, /controller\.requestQuit\s*\(\)/);
-  assert.match(template, /controller\.allowNativeClose\s*\(\)/);
-  assert.match(template, /currentWindow\.close\s*\(\)/);
-  assert.match(template, /controller\.hasUnsavedOrRecoveryRisk\s*\(\)/);
+  assert.match(template, /MDEdit\.createNativeCloseRequestHandler\(controller, currentWindow\)/);
+  assert.match(template, /addEventListener\("beforeunload", \(e\) => \{\s*e\.preventDefault\(\);\s*e\.returnValue = "";/);
+  assert.doesNotMatch(template, /beforeunload[\s\S]{0,150}hasUnsavedOrRecoveryRisk/);
 });
 
 test("browser builds resolve editors by active document without a mutable editor owner", () => {
