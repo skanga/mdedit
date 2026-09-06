@@ -1,4 +1,6 @@
 const { test, expect } = require("@playwright/test");
+const fs = require("node:fs");
+const path = require("node:path");
 
 test.use({ trace: "off" });
 
@@ -243,8 +245,12 @@ test("50 recovered 5 MiB documents activate within the p95 budget", async ({ pag
       .map(({ name, value }) => [name, value])),
   };
   console.log("Tab activation metrics:", JSON.stringify(metrics));
+  const serializedMetrics = JSON.stringify(metrics, null, 2);
+  const metricsPath = path.resolve("test-results/tab-activation-metrics.json");
+  fs.mkdirSync(path.dirname(metricsPath), { recursive: true });
+  fs.writeFileSync(metricsPath, serializedMetrics, "utf8");
   await testInfo.attach("tab-activation-metrics", {
-    body: Buffer.from(JSON.stringify(metrics, null, 2)),
+    body: Buffer.from(serializedMetrics),
     contentType: "application/json",
   });
   expect(metrics.samples).toBe(200);

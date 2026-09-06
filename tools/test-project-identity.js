@@ -152,7 +152,7 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
   assert.match(workflow, /name: mdedit-windows-portable/);
   assert.match(workflow, /if-no-files-found: error/);
   assert.match(releaseJob, /^  release:\s*$/m);
-  assert.match(releaseJob, /needs: build/);
+  assert.match(releaseJob, /needs: \[build, performance\]/);
   assert.match(releaseJob, /if: startsWith\(github\.ref, 'refs\/tags\/v'\)/);
   assert.match(releaseJob, /github\.event_name == 'push'/);
   assert.match(releaseJob, /permissions:\s*\n\s*contents: write/);
@@ -189,6 +189,73 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
   assert.match(releaseJob, /gh release upload "\$GITHUB_REF_NAME"/);
   assert.match(releaseJob, /--generate-notes/);
   assert.match(releaseJob, /--clobber/);
+});
+
+test("CI verifies desktop, browser, and explicit performance builds", () => {
+  const workflow = readText(".github/workflows/desktop.yml");
+  const cargoTest = "cargo test --manifest-path src-tauri/Cargo.toml";
+  const bundle = "npx tauri build ${{ matrix.args }}";
+
+  assert.ok(workflow.indexOf("run: npm test") < workflow.indexOf(cargoTest));
+  assert.ok(workflow.indexOf(cargoTest) < workflow.indexOf(bundle));
+  assert.match(workflow, /browser-tests:\n[\s\S]*?runs-on: ubuntu-latest/);
+  assert.match(workflow, /npx playwright install --with-deps chromium/);
+  assert.match(workflow, /run: npm run test:browser/);
+  assert.match(workflow, /performance:\n[\s\S]*?run: npm run test:performance/);
+  assert.match(workflow, /performance:\n[\s\S]*?github\.event_name == 'workflow_dispatch'/);
+  assert.match(workflow, /performance:\n[\s\S]*?startsWith\(github\.ref, 'refs\/tags\/v'\)/);
+  assert.match(workflow, /name: tab-activation-metrics/);
+  assert.match(workflow, /path: test-results\/tab-activation-metrics\.json/);
+  const performanceTest = readText("tests/browser/performance.spec.js");
+  assert.match(performanceTest, /path\.resolve\("test-results\/tab-activation-metrics\.json"\)/);
+  assert.match(performanceTest, /fs\.writeFileSync\(metricsPath, serializedMetrics, "utf8"\)/);
+});
+
+test("README documents the multi-document workflow", () => {
+  const readme = readText("README.md");
+
+  for (const pattern of [
+    /new tab/i,
+    /switch(?:ing)? tabs/i,
+    /Save All/,
+    /dirty indicator/i,
+    /restor/i,
+    /external change/i,
+    /Reload from Disk/,
+    /Keep Editing/,
+    /Save As/,
+    /Save All & Quit/,
+    /Quit and Restore Next Time/,
+    /Discard All & Quit/,
+    /Ctrl\+Tab/,
+    /Ctrl\+Shift\+Tab/,
+    /Ctrl\+W/,
+  ]) {
+    assert.match(readme, pattern);
+  }
+});
+
+test("the tabbed editor smoke checklist covers every release platform and failure path", () => {
+  const checklist = readText("docs/testing/tabbed-editor-smoke-checklist.md");
+
+  for (const heading of ["## Windows", "## macOS", "## Linux"]) {
+    assert.match(checklist, new RegExp(`^${heading}$`, "m"));
+  }
+  for (const pattern of [
+    /MDedit version/i,
+    /operating-system version/i,
+    /result/i,
+    /recovery-data location/i,
+    /startup file association/i,
+    /second-instance open/i,
+    /normal quit/i,
+    /forced termination/i,
+    /external edit/i,
+    /file deletion/i,
+    /recovery-directory failure/i,
+  ]) {
+    assert.match(checklist, pattern);
+  }
 });
 
 test("the desktop UI identity is consistent across template and generated builds", () => {
@@ -256,6 +323,27 @@ test("the desktop UI identity is consistent across template and generated builds
     assert.equal(helpSource.includes("custom build enquiry"), false);
     for (const key of legacyStorageKeys) assert.equal(html.includes(key), false);
   }
+});
+
+test("generated builds contain the tabbed session modules and accessible tab strip", () => {
+  for (const file of ["index.html", "index-lite.html"]) {
+    const html = readText(file);
+    assert.match(html, /id="document-tabs" role="tablist"/);
+    assert.match(html, /class SessionModel/);
+    assert.match(html, /class RecoveryScheduler/);
+    assert.match(html, /Quit and Restore Next Time/);
+  }
+});
+
+test("the native capability description includes recovery and multi-document access", () => {
+  const capability = readJson("src-tauri/capabilities/default.json");
+  assert.match(capability.description, /multi-document/i);
+  assert.match(capability.description, /recovery/i);
+  assert.deepEqual(capability.permissions, [
+    "core:default",
+    "dialog:default",
+    { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
+  ]);
 });
 
 test("the lite build marks its attribution banner", () => {

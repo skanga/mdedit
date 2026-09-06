@@ -5,12 +5,37 @@ MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It c
 ## Features
 
 - Native **Open**, **Save**, and **Save As** for Markdown documents.
+- A tabbed workspace with independent editing state for every open document.
 - Synchronized **Edit**, **Split**, and **Preview** modes.
 - GitHub-flavored Markdown, task lists, tables, footnotes, and callouts.
 - Syntax highlighting, Mermaid diagrams, and KaTeX math.
 - Find and replace, table of contents, reader controls, and light/dark themes.
 - HTML, PNG, PDF, CSV, and SVG exports.
 - Draft restoration and Markdown file associations.
+
+## Working with documents
+
+Select **+** to create a new tab, or select **Open** to choose one or several files. Select a tab to make it active; the editor, preview, view mode, selection, scroll position, find state, exports, and Save commands follow the active document. You can also switch tabs with `Ctrl+Tab` and `Ctrl+Shift+Tab`.
+
+An unsaved change shows a dirty indicator on that document's tab. **Save** writes the active document, while **Save As** writes it to a new location. **Save All & Quit** in the close-application prompt saves every dirty document in tab order and asks for a destination for each untitled document. If a save is canceled or fails, MDedit stays open and leaves the remaining documents unchanged.
+
+MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload from Disk**, **Keep Editing**, and **Save As**. A deleted source remains open and can be saved to a new location.
+
+Closing the application always asks for confirmation. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
+
+### Keyboard shortcuts
+
+On macOS, use `Command` instead of `Ctrl` for Save, Save As, Open, Find, and close-document shortcuts. Tab switching always uses `Ctrl`.
+
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+S` | Save the active document |
+| `Ctrl+Shift+S` | Save As for the active document |
+| `Ctrl+O` | Open one or several documents |
+| `Ctrl+F` | Find and replace in the active document |
+| `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch to the next / previous tab |
+| `Alt+Shift+Left` / `Alt+Shift+Right` | Move the active tab |
+| `Ctrl+W` | Close the active document |
 
 ## Download
 

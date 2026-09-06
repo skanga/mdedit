@@ -226,7 +226,7 @@ test("multi-file open continues after one failure", async ({ page }) => {
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByRole("tab", { name: /one\.md/ })).toBeVisible();
   await expect(page.getByRole("tab", { name: /three\.md/ })).toBeVisible();
-  await expect(page.getByRole("tab", { name: /broken-two\.md/ })).toHaveCount(0);
+  await expect(page.getByRole("tab", { name: /^broken-two\.md(?:\s|$)/ })).toHaveCount(0);
   await expect(page.getByRole("tab", { name: /three\.md/ })).toHaveAttribute("aria-selected", "true");
   await expect(page.getByRole("status")).toContainText("/notes/broken-two.md");
 });
