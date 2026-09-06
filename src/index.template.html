@@ -1484,20 +1484,28 @@
   }
 
   async function openBrowserFiles(files, handles = []) {
-    const accepted = [];
-    const acceptedHandles = [];
-    Array.from(files || []).forEach((file, index) => {
-      if (!isSupportedFile(file)) return;
-      accepted.push(file);
-      acceptedHandles.push(handles[index] || null);
-    });
-    const result = await controller.openBrowserFiles(accepted);
-    const failedFiles = new Set(result.failed.map(({ file }) => file));
-    let openedIndex = 0;
-    accepted.forEach((file, index) => {
-      if (failedFiles.has(file)) return;
-      const document = result.opened[openedIndex++];
-      if (document && acceptedHandles[index]) browserFileHandles.set(document.id, acceptedHandles[index]);
+    const acceptedBatch = (async () => {
+      const suppliedFiles = Array.from((await files) || []);
+      const suppliedHandles = Array.from((await handles) || []);
+      const accepted = [];
+      const sourceKeys = [];
+      suppliedFiles.forEach((file, index) => {
+        if (!isSupportedFile(file)) return;
+        accepted.push(file);
+        sourceKeys.push(suppliedHandles[index] || file);
+      });
+      return { accepted, sourceKeys };
+    })();
+    const result = await controller.openBrowserFiles(
+      acceptedBatch.then((batch) => batch.accepted),
+      acceptedBatch.then((batch) => batch.sourceKeys),
+    );
+    const { sourceKeys } = await acceptedBatch;
+    result.results.forEach((outcome, index) => {
+      const handle = sourceKeys[index];
+      if (outcome.document && handle && handle !== outcome.file) {
+        browserFileHandles.set(outcome.id, handle);
+      }
     });
     syncActiveSurface();
     const active = controller.activeDocument();
@@ -1516,16 +1524,24 @@
       return;
     }
     if (window.showOpenFilePicker) {
+      let handles;
       try {
-        const handles = await window.showOpenFilePicker({
+        handles = await window.showOpenFilePicker({
           multiple: true,
           types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] } }],
           excludeAcceptAllOption: false,
         });
-        const files = [];
-        for (const handle of handles) files.push(await handle.getFile());
-        await openBrowserFiles(files, handles);
-      } catch (e) { /* user cancelled */ }
+      } catch (error) {
+        if (error && error.name === "AbortError") return;
+        setStatus("Could not open files — " + (error.message || "unknown error"));
+        return;
+      }
+      if (!handles || !handles.length) return;
+      await MDEdit.openLaunchFiles(
+        handles,
+        openBrowserFiles,
+        (error) => setStatus("Could not open that file — " + (error.message || "unknown error")),
+      );
     } else {
       $("file-input").click();
     }
@@ -1838,6 +1854,7 @@
       metaKey: event.metaKey,
       altKey: event.altKey,
       shiftKey: event.shiftKey,
+      repeat: event.repeat,
       isMac,
     });
   }
@@ -1858,7 +1875,10 @@
     else if (command === "previous-tab") controller.activateAdjacentDocument(-1, shortcutFocusOptions(event));
     else if (command === "move-tab-left") controller.moveActiveDocument(-1);
     else if (command === "move-tab-right") controller.moveActiveDocument(1);
-    else if (command === "close-tab") await controller.closeDocument(active.id);
+    else if (command === "close-tab") {
+      const result = await controller.closeDocument(active.id);
+      if (result && result.closed) browserFileHandles.delete(active.id);
+    }
     syncActiveSurface();
   }
 
@@ -2376,11 +2396,10 @@
   if ("launchQueue" in window && typeof LaunchParams !== "undefined" && "files" in LaunchParams.prototype) {
     launchQueue.setConsumer(async (params) => {
       if (!params.files || !params.files.length) return;
-      const readyController = await controllerReady;
-      await readyController.restore();
+      await controllerReady;
       return MDEdit.openLaunchFiles(
         params.files,
-        openBrowserFiles,
+        (files, sourceKeys) => openBrowserFiles(files, sourceKeys),
         (error) => setStatus("Could not open that file — " + (error.message || "unknown error")),
       );
     });
@@ -2478,6 +2497,7 @@
     dialogDocuments: $("dialog-documents"),
     dialogActions: $("dialog-actions"),
     statusElement: statusEl,
+    isMac,
     captureSharedWorkspace,
     applySharedWorkspace,
     onActivate(documentId, options) {
@@ -2485,7 +2505,8 @@
       syncActiveSurface();
     },
     async onClose(documentId) {
-      await controller.closeDocument(documentId);
+      const result = await controller.closeDocument(documentId);
+      if (result && result.closed) browserFileHandles.delete(documentId);
       syncActiveSurface();
     },
     onCommand(command, event) {
@@ -2653,17 +2674,19 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
 
   (async () => {
     await nativeCloseGuardReady;
+    let pendingOpen = null;
+    if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
+      const paths = await nativeApp.takePendingFiles().catch(() => []);
+      if (paths.length) pendingOpen = controller.openPaths(paths, { replaceStartupPlaceholder: true });
+    }
     await controller.restore();
+    if (pendingOpen) await pendingOpen;
     let active = controller.activeDocument();
-    if (active && !active.content && !active.dirty && controller.session.documents.size === 1) {
+    if (active && !active.canonicalPath && !active.content && !active.dirty && controller.session.documents.size === 1) {
       controller.onEditorInput(active.id, WELCOME);
       const welcomeCapture = controller.captureActiveDocument();
       const welcomeSha256 = await hashText(WELCOME);
       controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
-    }
-    if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
-      const paths = await nativeApp.takePendingFiles().catch(() => []);
-      if (paths.length) await controller.openPaths(paths);
     }
     active = controller.activeDocument();
     if (active) controller.activateDocument(active.id);

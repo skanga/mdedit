@@ -312,6 +312,8 @@
       this._previewCacheBytes = 0;
       this._reservedCanonicalPaths = new Map();
       this._browserFileIdentities = new WeakMap();
+      this._browserSourcesByDocument = new Map();
+      this._startupPlaceholderId = null;
       this._documentOperation = null;
       this._nativeCloseAllowed = false;
 
@@ -707,41 +709,55 @@
       }
     }
 
-    openPaths(paths) {
+    openPaths(paths, options = {}) {
       if (this._disposed) {
         return Promise.resolve(this._disposedOpenResult(Array.isArray(paths) ? paths : []));
       }
       if (!Array.isArray(paths)) throw new TypeError("paths must be an array");
       const copiedPaths = [...paths];
+      const replaceStartupPlaceholder = options.replaceStartupPlaceholder === true;
       return this._scheduleOperation(
-        (token) => this._openPathsNow(copiedPaths, token),
+        (token) => this._openPathsNow(copiedPaths, token, { replaceStartupPlaceholder }),
         (resolve) => resolve(this._disposedOpenResult(copiedPaths)),
       );
     }
 
-    openBrowserFiles(files) {
-      const copiedFiles = files === null || files === undefined ? [] : Array.from(files);
+    openBrowserFiles(files, sourceKeys = []) {
+      const batch = (async () => {
+        const resolvedFiles = await files;
+        const copiedFiles = resolvedFiles === null || resolvedFiles === undefined ? [] : Array.from(resolvedFiles);
+        const resolvedSourceKeys = await sourceKeys;
+        return {
+          files: copiedFiles,
+          sourceKeys: resolvedSourceKeys === null || resolvedSourceKeys === undefined
+            ? [] : Array.from(resolvedSourceKeys),
+        };
+      })();
       if (this._disposed) {
-        return Promise.resolve({
-          opened: [],
-          failed: copiedFiles.map((file) => ({ file, error: new Error("session controller is disposed") })),
-        });
+        return batch.then(({ files: copiedFiles }) => this._disposedBrowserOpenResult(copiedFiles));
       }
       return this._scheduleOperation(
-        (token) => this._openBrowserFilesNow(copiedFiles, token),
-        (resolve) => resolve({
-          opened: [],
-          failed: copiedFiles.map((file) => ({ file, error: new Error("session controller is disposed") })),
-        }),
+        (token) => this._openBrowserFilesNow(batch, token),
+        (resolve) => batch.then(
+          ({ files: copiedFiles }) => resolve(this._disposedBrowserOpenResult(copiedFiles)),
+          (reason) => resolve({ opened: [], failed: [{ file: null, error: normalizeError(reason) }], results: [] }),
+        ),
       );
     }
 
-    async _openBrowserFilesNow(files, token = this._lifecycleToken) {
+    async _openBrowserFilesNow(batch, token = this._lifecycleToken) {
+      const { files, sourceKeys } = await batch;
       const opened = [];
       const openedIds = new Set();
       const failed = [];
+      const failedSources = new Set();
+      const results = [];
 
-      for (const file of files) {
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        const suppliedSource = sourceKeys[index];
+        const sourceKey = suppliedSource && (typeof suppliedSource === "object" || typeof suppliedSource === "function")
+          ? suppliedSource : file;
         try {
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           if (!file || typeof file !== "object" || typeof file.text !== "function") {
@@ -751,11 +767,13 @@
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
           const sha256 = await this.hashText(content);
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          let canonicalPath = this._browserFileIdentities.get(file);
+          let canonicalPath = this._browserFileIdentities.get(sourceKey);
           if (!canonicalPath) {
             canonicalPath = `browser-file:${this.idFactory()}`;
-            this._browserFileIdentities.set(file, canonicalPath);
+            this._browserFileIdentities.set(sourceKey, canonicalPath);
           }
+          const session = this._ensureSession();
+          const existing = Boolean(session.findByCanonicalPath(canonicalPath));
           const document = this._openReadResultNow({
             browserFile: true,
             path: null,
@@ -763,21 +781,75 @@
             displayName: typeof file.name === "string" && file.name ? file.name : "untitled.md",
             content,
             sha256,
-          }, token);
+          }, token, { replaceStartupPlaceholder: true });
+          this._rememberBrowserSource(document.id, sourceKey);
+          results.push({ file, sourceKey, document, id: document.id, existing, error: null });
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
             opened.push(document);
           }
         } catch (reason) {
           const error = normalizeError(reason);
-          failed.push({ file, error });
+          results.push({ file, sourceKey, document: null, id: null, existing: false, error });
+          if (!failedSources.has(sourceKey)) {
+            failedSources.add(sourceKey);
+            failed.push({ file, error });
+          }
           this._showOpenError(file && file.name ? file.name : "browser file", error);
         }
       }
-      return { opened, failed };
+      return { opened, failed, results };
     }
 
-    async _openPathsNow(paths, token = this._lifecycleToken) {
+    _disposedBrowserOpenResult(files) {
+      const error = new Error("session controller is disposed");
+      const seen = new Set();
+      return {
+        opened: [],
+        failed: files.filter((file) => {
+          if (seen.has(file)) return false;
+          seen.add(file);
+          return true;
+        }).map((file) => ({ file, error })),
+        results: files.map((file) => ({
+          file, sourceKey: file, document: null, id: null, existing: false, error,
+        })),
+      };
+    }
+
+    _rememberBrowserSource(documentId, sourceKey) {
+      let sources = this._browserSourcesByDocument.get(documentId);
+      if (!sources) {
+        sources = new Set();
+        this._browserSourcesByDocument.set(documentId, sources);
+      }
+      sources.add(sourceKey);
+    }
+
+    _forgetBrowserSources(documentId) {
+      const sources = this._browserSourcesByDocument.get(documentId);
+      if (!sources) return;
+      for (const source of sources) this._browserFileIdentities.delete(source);
+      this._browserSourcesByDocument.delete(documentId);
+    }
+
+    _discardStartupPlaceholder() {
+      const id = this._startupPlaceholderId;
+      const session = this.session;
+      const document = id && session && session.documents.get(id);
+      if (!(document instanceof DocumentModel) || session.documents.size !== 1
+          || document.dirty || document.canonicalPath !== null || document.path !== null) return false;
+      session.remove(id);
+      this._startupPlaceholderId = null;
+      this._pendingRecoveryDeletions.add(id);
+      this._invalidatePreview(id);
+      this._latestRenderTokens.delete(id);
+      if (typeof this.scheduler.forget === "function") this.scheduler.forget(id);
+      if (typeof this.view.removeEditor === "function") this.view.removeEditor(id);
+      return true;
+    }
+
+    async _openPathsNow(paths, token = this._lifecycleToken, { replaceStartupPlaceholder = false } = {}) {
       const opened = [];
       const openedIds = new Set();
       const failed = [];
@@ -793,7 +865,7 @@
             failed.push({ path, error: new Error("session controller is disposed") });
             continue;
           }
-          const document = this._openReadResultNow(result, token);
+          const document = this._openReadResultNow(result, token, { replaceStartupPlaceholder });
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
             opened.push(document);
@@ -918,7 +990,7 @@
       return this._scheduleOperation((token) => this._openReadResultNow(result, token));
     }
 
-    _openReadResultNow(result, token = this._lifecycleToken) {
+    _openReadResultNow(result, token = this._lifecycleToken, { replaceStartupPlaceholder = false } = {}) {
       if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
       const session = this._ensureSession();
       const existing = session.findByCanonicalPath(result.canonicalPath);
@@ -931,6 +1003,7 @@
         this.activateDocument(reserved.id);
         return reserved;
       }
+      if (replaceStartupPlaceholder) this._discardStartupPlaceholder();
       const outgoing = this.activeDocument();
       this._captureAndFlushOutgoing(outgoing);
       const document = this._documentFromReadResult(result);
@@ -1936,6 +2009,8 @@
       this._pendingRecoveryDeletions.add(documentId);
       this._invalidatePreview(documentId);
       this._latestRenderTokens.delete(documentId);
+      this._forgetBrowserSources(documentId);
+      if (this._startupPlaceholderId === documentId) this._startupPlaceholderId = null;
       if (typeof this.scheduler.forget === "function") this.scheduler.forget(documentId);
       if (typeof this.view.removeEditor === "function") this.view.removeEditor(documentId);
       let active;
@@ -2343,7 +2418,9 @@
     _createFreshSession(token = this._lifecycleToken) {
       if (!this._isLifecycleActive(token)) return null;
       this.session = new SessionModel({ idFactory: this.idFactory });
-      return this._createUntitledNow(token);
+      const document = this._createUntitledNow(token);
+      this._startupPlaceholderId = document.id;
+      return document;
     }
 
     _assignEmptySession(token = this._lifecycleToken) {
@@ -2580,7 +2657,7 @@
     _handleFileOpened(event) {
       const path = typeof event === "string" ? event : event && event.payload;
       if (this._disposed || typeof path !== "string" || path.length === 0) return Promise.resolve();
-      return this.openPaths([path]);
+      return this.openPaths([path], { replaceStartupPlaceholder: true });
     }
 
     dispose() {
@@ -2591,6 +2668,9 @@
       this._loadQueue = [];
       this._loadPriority = [];
       this._loadingIds.clear();
+      this._browserSourcesByDocument.clear();
+      this._browserFileIdentities = new WeakMap();
+      this._startupPlaceholderId = null;
       while (this._pendingOperations.length > 0) {
         this._pendingOperations.shift().dispose();
       }

@@ -567,6 +567,93 @@ test("browser file identity dedupes the same object but not distinct same-name f
   assert.equal(controller.activeDocument(), second.opened[0]);
 });
 
+test("browser file outcomes remain aligned across duplicate inputs", async () => {
+  const shared = { name: "same.md", async text() { return "shared"; } };
+  const third = { name: "third.md", async text() { return "third"; } };
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const result = await controller.openBrowserFiles([shared, shared, third]);
+
+  assert.equal(result.results.length, 3);
+  assert.equal(result.results[0].file, shared);
+  assert.equal(result.results[1].file, shared);
+  assert.equal(result.results[2].file, third);
+  assert.equal(result.results[0].document, result.results[1].document);
+  assert.equal(result.results[0].id, result.results[1].id);
+  assert.equal(result.results[2].document, result.opened[1]);
+  assert.deepEqual(result.results.map(({ existing }) => existing), [false, true, false]);
+  assert.deepEqual(result.opened, [result.results[0].document, result.results[2].document]);
+  assert.equal(result.failed.length, 0);
+});
+
+test("stable browser source handles dedupe new File objects and are forgotten on close", async () => {
+  const handle = { name: "same.md" };
+  const firstFile = { name: "same.md", async text() { return "first"; } };
+  const secondFile = { name: "same.md", async text() { return "second"; } };
+  const thirdFile = { name: "same.md", async text() { return "third"; } };
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const first = await controller.openBrowserFiles([firstFile], [handle]);
+  const second = await controller.openBrowserFiles([secondFile], [handle]);
+  assert.equal(second.results[0].document, first.results[0].document);
+  assert.equal(second.results[0].existing, true);
+  assert.equal(controller.session.documents.size, 1);
+  assert.equal(controller.activeDocument(), first.results[0].document);
+
+  const closedId = first.results[0].id;
+  assert.equal((await controller.closeDocument(closedId)).closed, true);
+  const third = await controller.openBrowserFiles([thirdFile], [handle]);
+  assert.notEqual(third.results[0].id, closedId);
+  assert.equal(third.results[0].existing, false);
+});
+
+test("a delayed first browser batch joins restore and leaves no startup placeholder", async () => {
+  const read = deferred();
+  const file = { name: "launch.md", text() { return read.promise; } };
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const opening = controller.openBrowserFiles([file]);
+  await settle();
+  read.resolve("launched");
+  const result = await opening;
+  await controller.restore();
+
+  assert.deepEqual(controller.session.tabOrder, [result.results[0].id]);
+  assert.equal(controller.activeDocument().displayName, "launch.md");
+  assert.equal(controller.activeDocument().content, "launched");
+  assert.doesNotMatch(controller.activeDocument().displayName, /^Untitled/);
+});
+
+test("the first late browser launch atomically replaces only the fresh startup placeholder", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  const placeholderId = controller.activeDocument().id;
+
+  const file = { name: "late.md", async text() { return "late"; } };
+  const result = await controller.openBrowserFiles([file]);
+
+  assert.deepEqual(controller.session.tabOrder, [result.results[0].id]);
+  assert.notEqual(result.results[0].id, placeholderId);
+  assert.equal(controller.activeDocument().displayName, "late.md");
+});
+
+test("a restored document is retained when a browser launch is added", async () => {
+  const fixture = makeDependencies();
+  fixture.dependencies.io.loadRecoveryManifest = async () => JSON.stringify(manifest(["saved"], "saved"));
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+
+  const file = { name: "launch.md", async text() { return "launch"; } };
+  const result = await controller.openBrowserFiles([file]);
+
+  assert.deepEqual(controller.session.tabOrder, ["saved", result.results[0].id]);
+  assert.equal(controller.activeDocument(), result.results[0].document);
+});
+
 test("no manifest imports the legacy pathless draft as dirty and removes it after durability", async () => {
   const fixture = makeDependencies();
   fixture.legacyStorage.setItem(LEGACY_DRAFT_KEY, JSON.stringify({ name: "old.md", text: "legacy" }));
@@ -3921,12 +4008,16 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.activateAdjacentDocument\s*\(/);
   assert.match(template, /controller\.moveActiveDocument\s*\(/);
   assert.match(template, /controller\.openBrowserFiles\s*\(/);
+  assert.match(template, /controller\.openBrowserFiles\([\s\S]*sourceKeys/);
+  assert.match(template, /result\.results/);
   assert.doesNotMatch(template, /openFromFile/);
-  assert.match(template, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*await readyController\.restore\(\)[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/);
+  assert.match(template, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/);
+  assert.doesNotMatch(template, /launchQueue\.setConsumer[\s\S]*await readyController\.restore\(\)/);
+  assert.match(template, /showOpenFilePicker[\s\S]*openLaunchFiles\(\s*handles,[\s\S]*openBrowserFiles/);
   assert.match(template, /nativeApp\.takePendingFiles\s*\(/);
   assert.doesNotMatch(template, /core\.invoke\("take_pending_files"/);
   assert.equal((template.match(/await nativeApp\.takePendingFiles\s*\(/g) || []).length, 1);
-  assert.ok(template.indexOf("await controller.restore()") < template.indexOf("nativeApp.takePendingFiles()"));
+  assert.ok(template.indexOf("nativeApp.takePendingFiles()") < template.indexOf("await controller.restore()"));
   assert.match(template, /addEventListener\("beforeunload", \(e\) => \{\s*e\.preventDefault\(\);\s*e\.returnValue = "";/);
   assert.doesNotMatch(template, /beforeunload[\s\S]{0,150}hasUnsavedOrRecoveryRisk/);
 });
@@ -3949,8 +4040,12 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /id="file-input"[^>]*\bmultiple\b/, filename);
     assert.match(html, /addEventListener\("change", async \(e\)/, filename);
     assert.match(html, /openBrowserFiles\s*\(/, filename);
+    assert.match(html, /result\.results/, filename);
+    assert.match(html, /sourceKeys/, filename);
     assert.doesNotMatch(html, /openFromFile/, filename);
     assert.match(html, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/, filename);
+    assert.doesNotMatch(html, /launchQueue\.setConsumer[\s\S]*await readyController\.restore\(\)/, filename);
+    assert.match(html, /showOpenFilePicker[\s\S]*openLaunchFiles\(\s*handles/, filename);
     assert.match(html, /dataTransfer\.items/, filename);
     assert.match(html, /isSupportedFile/, filename);
     assert.match(html, /commandForKey\s*\(/, filename);

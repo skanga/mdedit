@@ -307,15 +307,21 @@ test("openLaunchFiles awaits handles in order, reports individual failures, and 
     { async getFile() { calls.push("c"); return thirdRead; } },
   ];
   const opened = [];
+  let callbackCalls = 0;
   const opening = openLaunchFiles(
     handles,
-    async (files, successfulHandles) => {
+    async (filesPromise, successfulHandlesPromise) => {
+      callbackCalls += 1;
+      const files = await filesPromise;
+      const successfulHandles = await successfulHandlesPromise;
       opened.push([files, successfulHandles]);
       return { opened: files, failed: [] };
     },
     (error, _handle, index) => errors.push([index, error.message]),
   );
 
+  assert.equal(callbackCalls, 1);
+  assert.equal(opened.length, 0);
   await Promise.resolve();
   assert.deepEqual(calls, ["a"]);
   resolveFirst(firstFile);
@@ -337,11 +343,12 @@ test("commandForKey maps only the exact tab-management shortcuts", () => {
     [{ key: "Tab", ctrlKey: true, shiftKey: true }, "previous-tab"],
     [{ key: "ArrowLeft", altKey: true, shiftKey: true }, "move-tab-left"],
     [{ key: "ArrowRight", altKey: true, shiftKey: true }, "move-tab-right"],
-    [{ key: "w", ctrlKey: true }, "close-tab"],
-    [{ key: "w", ctrlKey: true, isMac: true }, "close-tab"],
+    [{ key: "w", ctrlKey: true, isMac: false }, "close-tab"],
     [{ key: "W", metaKey: true, isMac: true }, "close-tab"],
   ];
   for (const [event, expected] of fixture) assert.equal(commandForKey(event), expected);
+  assert.equal(commandForKey({ key: "w", metaKey: true }, { isMac: true }), "close-tab");
+  assert.equal(commandForKey({ key: "w", ctrlKey: true, isMac: true }, { isMac: false }), "close-tab");
 
   for (const event of [
     { key: "Tab", metaKey: true, isMac: true },
@@ -349,7 +356,12 @@ test("commandForKey maps only the exact tab-management shortcuts", () => {
     { key: "ArrowLeft", altKey: true },
     { key: "ArrowRight", altKey: true, shiftKey: true, ctrlKey: true },
     { key: "w", metaKey: true, isMac: false },
+    { key: "w", ctrlKey: true, isMac: true },
     { key: "w", ctrlKey: true, shiftKey: true },
+    { key: "w", ctrlKey: true, metaKey: true },
+    { key: "w", ctrlKey: true, repeat: true },
+    { key: "Tab", ctrlKey: true, repeat: true },
+    { key: "ArrowLeft", altKey: true, shiftKey: true, repeat: true },
     { key: "q", ctrlKey: true },
   ]) assert.equal(commandForKey(event), null, JSON.stringify(event));
 });
@@ -579,6 +591,28 @@ test("tab-strip shortcuts emit one command and prevent browser handling", () => 
   }
 });
 
+test("mac tab-strip close is Meta-only and repeated commands remain unhandled", () => {
+  const calls = [];
+  const { elements, view } = makeFixture({
+    isMac: true,
+    onCommand: (command) => calls.push(command),
+  });
+  view.renderTabs([doc("one")], "one");
+  const tab = find(elements.tabList.children[0], (element) => element.getAttribute("role") === "tab");
+  const control = { type: "keydown", key: "w", ctrlKey: true, bubbles: true };
+  const command = { type: "keydown", key: "w", metaKey: true, bubbles: true };
+  const repeat = { type: "keydown", key: "w", metaKey: true, repeat: true, bubbles: true };
+
+  tab.dispatchEvent(control);
+  tab.dispatchEvent(command);
+  tab.dispatchEvent(repeat);
+
+  assert.deepEqual(calls, ["close-tab"]);
+  assert.equal(control.defaultPrevented, undefined);
+  assert.equal(command.defaultPrevented, true);
+  assert.equal(repeat.defaultPrevented, undefined);
+});
+
 test("active, close, dirty, conflict, and recovery announcements share the live region without duplicates", () => {
   const { elements, view } = makeFixture();
   const documents = [doc("one", { displayName: "One.md" }), doc("two", { displayName: "Two.md" })];
@@ -599,9 +633,18 @@ test("active, close, dirty, conflict, and recovery announcements share the live 
 
   view.announceCloseOutcome({ closed: true }, "One.md");
   assert.equal(elements.statusElement.textContent, "Closed One.md");
-  const closeWrites = elements.statusElement.textContentWrites;
-  view.announceCloseOutcome({ closed: true }, "One.md");
-  assert.equal(elements.statusElement.textContentWrites, closeWrites);
+});
+
+test("identical consecutive close outcomes produce distinct live-region updates", async () => {
+  const { elements, view } = makeFixture();
+  view.announceCloseOutcome({ closed: true }, "same.md");
+  const firstWrites = elements.statusElement.textContentWrites;
+
+  assert.equal(view.announceCloseOutcome({ closed: true }, "same.md"), true);
+  assert.ok(elements.statusElement.textContentWrites > firstWrites);
+  await Promise.resolve();
+  assert.equal(elements.statusElement.textContent, "Closed same.md");
+  assert.ok(elements.statusElement.textContentWrites >= firstWrites + 2);
 });
 
 test("controller-shaped status payloads announce combined layers and omit clean recovery noise", () => {

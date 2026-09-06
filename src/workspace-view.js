@@ -80,8 +80,9 @@
     };
   }
 
-  function commandForKey(event) {
+  function commandForKey(event, options = {}) {
     if (!event || typeof event.key !== "string") return null;
+    if (event.repeat) return null;
     const key = event.key.toLowerCase();
     const ctrl = Boolean(event.ctrlKey);
     const meta = Boolean(event.metaKey);
@@ -93,34 +94,42 @@
     }
     if (alt && shift && !ctrl && !meta && key === "arrowleft") return "move-tab-left";
     if (alt && shift && !ctrl && !meta && key === "arrowright") return "move-tab-right";
-    const platformClose = (ctrl && !meta) || (event.isMac === true && meta && !ctrl);
+    const isMac = Object.prototype.hasOwnProperty.call(options, "isMac")
+      ? Boolean(options.isMac) : event.isMac === true;
+    const platformClose = isMac ? (meta && !ctrl) : (ctrl && !meta);
     if (platformClose && !alt && !shift && key === "w") return "close-tab";
     return null;
   }
 
-  async function openLaunchFiles(handles, openFiles, reportError = () => {}) {
+  function openLaunchFiles(handles, openFiles, reportError = () => {}) {
     if (typeof openFiles !== "function") throw new TypeError("openFiles callback is required");
-    const files = [];
-    const successfulHandles = [];
-    const orderedHandles = handles === null || handles === undefined ? [] : Array.from(handles);
-    for (let index = 0; index < orderedHandles.length; index += 1) {
-      const handle = orderedHandles[index];
-      try {
-        if (!handle || typeof handle.getFile !== "function") throw new TypeError("launch file handle is invalid");
-        const file = await handle.getFile();
-        if (!file) throw new Error("launch file handle returned no file");
-        files.push(file);
-        successfulHandles.push(handle);
-      } catch (reason) {
-        const error = reason instanceof Error ? reason : new Error(String(reason));
+    const batch = (async () => {
+      const files = [];
+      const successfulHandles = [];
+      const orderedHandles = handles === null || handles === undefined ? [] : Array.from(handles);
+      for (let index = 0; index < orderedHandles.length; index += 1) {
+        const handle = orderedHandles[index];
         try {
-          Promise.resolve(reportError(error, handle, index)).catch(() => {});
-        } catch (_) {
-          // Reporting one handle failure must not block later launch files.
+          if (!handle || typeof handle.getFile !== "function") throw new TypeError("launch file handle is invalid");
+          const file = await handle.getFile();
+          if (!file) throw new Error("launch file handle returned no file");
+          files.push(file);
+          successfulHandles.push(handle);
+        } catch (reason) {
+          const error = reason instanceof Error ? reason : new Error(String(reason));
+          try {
+            Promise.resolve(reportError(error, handle, index)).catch(() => {});
+          } catch (_) {
+            // Reporting one handle failure must not block later launch files.
+          }
         }
       }
-    }
-    return openFiles(files, successfulHandles);
+      return { files, successfulHandles };
+    })();
+    return openFiles(
+      batch.then((result) => result.files),
+      batch.then((result) => result.successfulHandles),
+    );
   }
 
   function requireElement(value, name) {
@@ -203,6 +212,8 @@
       this._activeDocumentId = null;
       this._dialogState = null;
       this._disposed = false;
+      this._announcementToken = 0;
+      this.isMac = Boolean(options.isMac);
 
       this._handleTabClick = (event) => this._onTabClick(event);
       this._handleTabKeydown = (event) => this._onTabKeydown(event);
@@ -478,7 +489,7 @@
       else if (result.canceled) message = `Close canceled for ${displayName}`;
       else if (result.stale) message = `${displayName} was not closed because it changed during save`;
       else message = `${displayName} was not closed`;
-      return this._announce(message);
+      return this._announce(message, { allowRepeat: true });
     }
 
     focusActiveEditor() {
@@ -631,7 +642,7 @@
     _onTabKeydown(event) {
       const target = eventActionTarget(event.target, "data-action");
       if (!target || target.getAttribute("role") !== "tab") return;
-      const command = commandForKey(event);
+      const command = commandForKey(event, { isMac: this.isMac });
       if (command) {
         if (typeof event.preventDefault === "function") event.preventDefault();
         if (typeof event.stopPropagation === "function") event.stopPropagation();
@@ -738,8 +749,17 @@
       record.recovery.textContent = visibleFailure ? runtime.message : "";
     }
 
-    _announce(message) {
-      if (!message || !this.statusElement || this.statusElement.textContent === message) return false;
+    _announce(message, options = {}) {
+      if (!message || !this.statusElement) return false;
+      const token = ++this._announcementToken;
+      if (this.statusElement.textContent === message) {
+        if (!options.allowRepeat) return false;
+        this.statusElement.textContent = "";
+        Promise.resolve().then(() => {
+          if (!this._disposed && this._announcementToken === token) this.statusElement.textContent = message;
+        });
+        return true;
+      }
       this.statusElement.textContent = message;
       return true;
     }
