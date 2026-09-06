@@ -1702,6 +1702,13 @@
       return this._runDocumentOperation(`save:${documentId}`, () => this._saveDocumentNow(documentId));
     }
 
+    saveBrowserDocument(documentId, operations = {}) {
+      return this._runDocumentOperation(
+        `save:${documentId}`,
+        () => this._saveBrowserDocumentNow(documentId, operations),
+      );
+    }
+
     saveAs(documentId, options = {}) {
       if (documentId && typeof documentId === "object") {
         options = documentId;
@@ -1783,6 +1790,117 @@
         }
         throw error;
       }
+    }
+
+    async _saveBrowserDocumentNow(documentId, operations) {
+      const document = this._requireLoadedDocument(documentId);
+      if (!operations || typeof operations !== "object" || Array.isArray(operations)) {
+        throw new TypeError("browser save operations are required");
+      }
+      if (typeof operations.read !== "function") throw new TypeError("browser save read is required");
+      if (typeof operations.write !== "function") throw new TypeError("browser save write is required");
+      const capture = this._captureDocument(document);
+      const resolveAction = (action) => this._resolveBrowserConflictNow(capture, action, operations);
+      if (capture.fileStatus === "externally-changed") {
+        return this._presentSaveConflict(capture, null, { resolveAction });
+      }
+
+      const contentSha256 = await this.hashText(capture.content);
+      let current;
+      try {
+        current = await this._readBrowserSaveSource(operations.read);
+      } catch (reason) {
+        return this._presentSaveConflict(capture, {
+          status: "read-error",
+          error: normalizeError(reason),
+        }, { resolveAction });
+      }
+      if (current.sha256 !== capture.expectedDiskSha256) {
+        return this._presentSaveConflict(capture, {
+          status: "conflict",
+          actualSha256: current.sha256,
+        }, { resolveAction });
+      }
+
+      this._setDocumentStatus(documentId, {
+        status: "saving",
+        message: `Saving ${capture.displayName}`,
+        editRevision: capture.editRevision,
+      });
+      try {
+        // File System Access has no atomic compare-and-swap write. This fresh
+        // read immediately before createWritable closes the detectable gap;
+        // the source can still change during the browser-managed write itself.
+        await operations.write(capture.content);
+        if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
+        const baselineChanged = this.recordCapturedSave(capture, {
+          contentSha256,
+          diskSha256: contentSha256,
+        }, { persist: false });
+        await this._checkpointAfterDocumentChange(capture, baselineChanged, "browser-save-checkpoint");
+        if (this._ownsOperationCapture(capture)) {
+          this._setDocumentStatus(documentId, {
+            status: "saved",
+            message: `Saved ${document.displayName}`,
+            dirty: document.dirty,
+            fileStatus: document.fileStatus,
+            recoveryStatus: document.recoveryStatus,
+          });
+        }
+        return { saved: true, documentId };
+      } catch (reason) {
+        const error = normalizeError(reason);
+        if (this._ownsOperationCapture(capture)) {
+          this._setDocumentStatus(documentId, {
+            status: "failed",
+            message: `Could not save ${capture.displayName}: ${error.message}`,
+          });
+        }
+        throw error;
+      }
+    }
+
+    async _readBrowserSaveSource(read) {
+      const result = await read();
+      if (!result || typeof result !== "object" || typeof result.content !== "string") {
+        throw new TypeError("browser save read returned an invalid result");
+      }
+      const content = result.content.replace(/\r\n/g, "\n");
+      const sha256 = typeof result.sha256 === "string" && result.sha256
+        ? result.sha256 : await this.hashText(content);
+      return { ...result, content, sha256 };
+    }
+
+    async _resolveBrowserConflictNow(capture, action, operations) {
+      const document = this._requireLoadedDocument(capture.documentId);
+      if (action === "save-as") {
+        if (typeof operations.saveAs !== "function") throw new Error("browser Save As is unavailable");
+        return operations.saveAs(capture);
+      }
+      if (action !== "reload") throw new Error("unknown conflict action");
+      if (document.dirty && !(await this._confirmReload(document))) {
+        return { resolved: false, canceled: true, documentId: document.id };
+      }
+
+      const current = await this._readBrowserSaveSource(operations.read);
+      if (!this._ownsOperationCapture(capture) || document.editRevision !== capture.editRevision) {
+        return { resolved: false, stale: true, documentId: document.id };
+      }
+      document.applyContent(current.content);
+      document.updateMetadata({ fileStatus: "normal" });
+      const reloadCapture = this._captureDocument(document);
+      const baselineChanged = this.recordCapturedSave(reloadCapture, {
+        contentSha256: current.sha256,
+        diskSha256: current.sha256,
+      }, { persist: false });
+      await this._checkpointAfterDocumentChange(reloadCapture, baselineChanged, "browser-reload-checkpoint");
+      if (this._ownsOperationCapture(reloadCapture)) {
+        const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
+        if (editor && editor.value !== document.content) editor.value = document.content;
+        this._renderSession();
+        this._renderDocumentView(document);
+      }
+      return { resolved: true, reloaded: true, documentId: document.id };
     }
 
     async _continueMissingSave(capture) {
@@ -1935,7 +2053,7 @@
       return { savedIds, remainingIds, canceled, error };
     }
 
-    async _presentSaveConflict(capture, result, { showConflict = true } = {}) {
+    async _presentSaveConflict(capture, result, { showConflict = true, resolveAction = null } = {}) {
       if (!this._ownsOperationCapture(capture)) return { saved: false, conflict: true, stale: true };
       capture.document.updateMetadata({ fileStatus: "externally-changed" });
       this._scheduleRecoveryRevision(capture.document);
@@ -1950,7 +2068,9 @@
       let action = null;
       if (showConflict) action = await this._showConflictChoice(capture.document);
       if (action && action !== "keep-editing") {
-        const resolved = await this._resolveConflictNow(capture.documentId, action);
+        const resolved = resolveAction
+          ? await resolveAction(action)
+          : await this._resolveConflictNow(capture.documentId, action);
         if (action === "save-as" && resolved && resolved.saved) {
           return { ...resolved, conflictResolved: true, action };
         }

@@ -1612,6 +1612,12 @@
     await writable.close();
   }
 
+  async function readBrowserHandle(handle) {
+    const file = await handle.getFile();
+    const content = String(await file.text()).replace(/\r\n/g, "\n");
+    return { file, content, sha256: await hashText(content) };
+  }
+
   async function save() {
     const document = controller.activeDocument();
     if (!document) return;
@@ -1633,17 +1639,20 @@
         if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
           if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("denied");
         }
-        await writeToHandle(fileHandle, capture.content);
-        const contentSha256 = await hashText(capture.content);
-        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
+        const result = await controller.saveBrowserDocument(document.id, {
+          read: () => readBrowserHandle(fileHandle),
+          write: (content) => writeToHandle(fileHandle, content),
+          saveAs: (conflictCapture) => saveAs(conflictCapture),
+        });
         syncActiveSurface();
-        setStatus("Saved to " + capture.displayName, false, capture.documentId);
-        return;
+        if (result && result.saved) setStatus("Saved to " + capture.displayName, false, capture.documentId);
+        return result;
       } catch (e) {
-        setStatus("Couldn't write to the original file — choose where to save it", false, capture.documentId);
+        setStatus("Couldn't save " + capture.displayName + " — " + e.message, false, capture.documentId);
+        return null;
       }
     }
-    await saveAs(capture);
+    return saveAs(capture);
   }
 
   // Directory of the document as the shell knows it ("" when unknown):
@@ -1683,20 +1692,25 @@
         try {
           await writeToHandle(handle, capture.content);
           try { currentFile = await handle.getFile(); } catch (_) { /* handle identity is sufficient */ }
+          document.updateMetadata({ displayName: handle.name });
           await controller.commitBrowserSourceReservation(source.reservation, currentFile);
         } catch (error) {
           await controller.releaseBrowserSourceReservation(source.reservation).catch(() => {});
           throw error;
         }
         browserFileHandles.set(capture.documentId, handle);
-        document.updateMetadata({ displayName: handle.name });
         const contentSha256 = await hashText(capture.content);
         controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + handle.name, false, document.id);
-      } catch (e) { /* user cancelled */ }
+        return { saved: true, documentId: capture.documentId, handle };
+      } catch (e) {
+        if (e && e.name === "AbortError") return { saved: false, canceled: true, documentId: capture.documentId };
+        setStatus("Couldn't save " + capture.displayName + " — " + e.message, false, capture.documentId);
+        return { saved: false, error: e, documentId: capture.documentId };
+      }
     } else {
-      await downloadAsSave(capture);
+      return downloadAsSave(capture);
     }
   }
 

@@ -3560,6 +3560,133 @@ test("save conflict exposes exactly the safe actions and keep-editing preserves 
   assert.equal(document.dirty, true);
 });
 
+test("browser save detects an external change before writing and Keep Editing preserves the editor", async () => {
+  let conflictArgs;
+  let writes = 0;
+  const fixture = makeDependencies({
+    dialogs: {
+      async showConflict(document, actions) { conflictArgs = [document, actions]; return "keep-editing"; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const opened = await controller.openBrowserFiles([{ name: "browser.md", async text() { return "disk-original"; } }]);
+  const document = opened.results[0].document;
+  controller.onEditorInput(document.id, "editor-version");
+
+  const result = await controller.saveBrowserDocument(document.id, {
+    async read() { return { content: "disk-external", sha256: "sha:disk-external" }; },
+    async write() { writes += 1; },
+  });
+
+  assert.equal(result.conflict, true);
+  assert.equal(writes, 0);
+  assert.equal(conflictArgs[0].displayName, "browser.md");
+  assert.deepEqual(conflictArgs[1], ["reload", "keep-editing", "save-as"]);
+  assert.equal(document.content, "editor-version");
+  assert.equal(document.expectedDiskSha256, "sha:disk-original");
+  assert.equal(document.fileStatus, "externally-changed");
+  assert.equal(document.dirty, true);
+});
+
+test("browser conflict Reload reads the latest disk version and records its fingerprint", async () => {
+  const reads = [
+    { content: "disk-external", sha256: "sha:disk-external" },
+    { content: "disk-latest", sha256: "sha:disk-latest" },
+  ];
+  const fixture = makeDependencies({
+    dialogs: {
+      async showConflict() { return "reload"; },
+      async confirmReload() { return true; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const opened = await controller.openBrowserFiles([{ name: "browser.md", async text() { return "disk-original"; } }]);
+  const document = opened.results[0].document;
+  controller.onEditorInput(document.id, "editor-version");
+
+  const result = await controller.saveBrowserDocument(document.id, {
+    async read() { return reads.shift(); },
+    async write() { throw new Error("must not overwrite the original"); },
+  });
+
+  assert.equal(result.conflict, true);
+  assert.equal(result.resolved.reloaded, true);
+  assert.equal(document.content, "disk-latest");
+  assert.equal(document.savedContentSha256, "sha:disk-latest");
+  assert.equal(document.expectedDiskSha256, "sha:disk-latest");
+  assert.equal(document.fileStatus, "normal");
+  assert.equal(document.dirty, false);
+});
+
+test("browser conflict Save Editor Version As receives only the captured editor content", async () => {
+  let savedCapture;
+  let originalWrites = 0;
+  const fixture = makeDependencies({ dialogs: { async showConflict() { return "save-as"; } } });
+  const controller = new SessionController(fixture.dependencies);
+  const opened = await controller.openBrowserFiles([{ name: "browser.md", async text() { return "disk-original"; } }]);
+  const document = opened.results[0].document;
+  controller.onEditorInput(document.id, "editor-version");
+
+  const result = await controller.saveBrowserDocument(document.id, {
+    async read() { return { content: "disk-external", sha256: "sha:disk-external" }; },
+    async write() { originalWrites += 1; },
+    async saveAs(capture) { savedCapture = capture; return { saved: true, destination: "copy.md" }; },
+  });
+
+  assert.equal(originalWrites, 0);
+  assert.equal(savedCapture.content, "editor-version");
+  assert.equal(savedCapture.content.includes("disk-original"), false);
+  assert.equal(result.conflictResolved, true);
+});
+
+test("unchanged browser save records only a successfully closed write", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const opened = await controller.openBrowserFiles([{ name: "browser.md", async text() { return "disk-original"; } }]);
+  const document = opened.results[0].document;
+  controller.onEditorInput(document.id, "editor-version");
+  const writes = [];
+
+  const result = await controller.saveBrowserDocument(document.id, {
+    async read() { return { content: "disk-original", sha256: "sha:disk-original" }; },
+    async write(content) { writes.push(content); },
+  });
+
+  assert.equal(result.saved, true);
+  assert.deepEqual(writes, ["editor-version"]);
+  assert.equal(document.savedContentSha256, "sha:editor-version");
+  assert.equal(document.expectedDiskSha256, "sha:editor-version");
+  assert.equal(document.dirty, false);
+});
+
+test("browser read and write failures never advance the saved fingerprint", async (t) => {
+  for (const phase of ["read", "write"]) {
+    await t.test(phase, async () => {
+      const fixture = makeDependencies({ dialogs: { async showConflict() { return "keep-editing"; } } });
+      const controller = new SessionController(fixture.dependencies);
+      const opened = await controller.openBrowserFiles([{ name: "browser.md", async text() { return "disk-original"; } }]);
+      const document = opened.results[0].document;
+      controller.onEditorInput(document.id, "editor-version");
+      const operations = phase === "read" ? {
+        async read() { throw new Error("read denied"); },
+        async write() { throw new Error("must not write"); },
+      } : {
+        async read() { return { content: "disk-original", sha256: "sha:disk-original" }; },
+        async write() { throw new Error("write failed"); },
+      };
+
+      if (phase === "read") {
+        const result = await controller.saveBrowserDocument(document.id, operations);
+        assert.equal(result.conflict, true);
+      } else {
+        await assert.rejects(controller.saveBrowserDocument(document.id, operations), /write failed/);
+      }
+      assert.equal(document.savedContentSha256, "sha:disk-original");
+      assert.equal(document.expectedDiskSha256, "sha:disk-original");
+      assert.equal(document.dirty, true);
+    });
+  }
+});
+
 test("reload conflict replaces the confirmed captured revision with the current disk version", async () => {
   const fixture = makeDependencies({
     io: {
@@ -4214,7 +4341,8 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.activateDocument\s*\(/);
   assert.doesNotMatch(template, /\blet\s+(?:fileHandle|nativePath|dirty)\b/);
   assert.ok(template.indexOf("listenFileOpened(handler)") < template.indexOf("await controller.restore()"));
-  assert.match(template, /writeToHandle\(fileHandle, capture\.content\)/);
+  assert.match(template, /controller\.saveBrowserDocument\(document\.id/);
+  assert.match(template, /readBrowserHandle\(fileHandle\)/);
   assert.match(template, /controller\.saveDocument\(document\.id\)/);
   assert.match(template, /controller\.saveAs\(capture\.documentId\)/);
   assert.match(template, /onCloseRequested\s*\(/);
@@ -4270,8 +4398,10 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /commandForKey\s*\(/, filename);
     assert.equal((html.match(/await nativeApp\.takePendingFiles\s*\(/g) || []).length, 1, filename);
     assert.match(html, /downloadAsSave\(capture\)[\s\S]{0,300}recordCapturedSave\(capture/, filename);
-    assert.match(html, /await saveAs\(capture\)/, filename);
+    assert.match(html, /return saveAs\(capture\)/, filename);
     assert.match(html, /async function saveAs\(capture\)/, filename);
+    assert.match(html, /controller\.saveBrowserDocument\(document\.id/, filename);
+    assert.match(html, /readBrowserHandle\(fileHandle\)/, filename);
   }
 });
 

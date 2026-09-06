@@ -274,3 +274,71 @@ test("conflict actions preserve both versions", async ({ page }) => {
     expectedSha256: null,
   }));
 });
+
+test("browser handle saves detect external changes and keep both versions available", async ({ page }) => {
+  await page.addInitScript(() => {
+    const state = {
+      original: "disk-original",
+      copy: "copy-existing",
+      writes: { original: [], copy: [] },
+    };
+    const makeHandle = (key, name) => ({
+      key,
+      name,
+      async isSameEntry(other) { return Boolean(other && other.key === key); },
+      async queryPermission() { return "granted"; },
+      async getFile() {
+        return new File([state[key]], name, { type: "text/markdown" });
+      },
+      async createWritable() {
+        let pending = null;
+        return {
+          async write(content) { pending = String(content); },
+          async close() {
+            state.writes[key].push(pending);
+            state[key] = pending;
+          },
+        };
+      },
+    });
+    const original = makeHandle("original", "browser.md");
+    const copy = makeHandle("copy", "browser-copy.md");
+    window.__browserHandleTest = { state, original, copy };
+    window.showOpenFilePicker = async () => [original];
+    window.showSaveFilePicker = async () => copy;
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("tab", { name: /browser\.md/ })).toBeVisible();
+  await activeEditor(page).fill("editor-version");
+  await page.evaluate(() => { window.__browserHandleTest.state.original = "disk-external"; });
+
+  await page.getByRole("button", { name: /^Save/ }).click();
+  await expect(page.getByRole("dialog")).toContainText("browser.md");
+  expect(await page.evaluate(() => window.__browserHandleTest.state.writes.original)).toEqual([]);
+  await page.getByRole("button", { name: "Keep Editing" }).click();
+  await expect(activeEditor(page)).toHaveValue("editor-version");
+
+  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Reload Disk Version" }).click();
+  await page.getByRole("button", { name: "Discard and Reload" }).click();
+  await expect(activeEditor(page)).toHaveValue("disk-external");
+
+  await activeEditor(page).evaluate((editor) => {
+    editor.value = "editor-copy";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.evaluate(() => { window.__browserHandleTest.state.original = "disk-external-again"; });
+  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.getByRole("button", { name: "Save Editor Version As" }).click();
+  await expect(page.getByRole("tab", { name: /browser-copy\.md/ })).toBeVisible();
+  await expect(activeEditor(page)).toHaveValue("editor-copy");
+  expect(await page.evaluate(() => window.__browserHandleTest.state.writes)).toEqual({
+    original: [],
+    copy: ["editor-copy"],
+  });
+
+  await page.getByRole("button", { name: /^Save/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__browserHandleTest.state.writes.copy.length)).toBe(2);
+  expect(await page.evaluate(() => window.__browserHandleTest.state.writes.copy)).toEqual(["editor-copy", "editor-copy"]);
+});
