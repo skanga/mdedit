@@ -1539,7 +1539,7 @@
         setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
       } catch (e) {
-        setStatus("Couldn't write to the original file — choose where to save it");
+        setStatus("Couldn't write to the original file — choose where to save it", false, capture.documentId);
       }
     }
     const fileHandle = browserFileHandles.get(document.id);
@@ -1555,20 +1555,20 @@
         setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
       } catch (e) {
-        setStatus("Couldn't write to the original file — choose where to save it");
+        setStatus("Couldn't write to the original file — choose where to save it", false, capture.documentId);
       }
     }
-    await saveAs();
+    await saveAs(capture);
   }
 
   // Directory of the document as the shell knows it ("" when unknown):
   // Save-As and exports anchor their dialogs there instead of the app's cwd.
   const nativeDir = (document = controller.activeDocument()) => (document && document.path ? document.path.replace(/[^/\\]*$/, "") : "");
 
-  async function saveAs() {
-    const document = controller.activeDocument();
-    if (!document) return;
-    const capture = controller.captureActiveDocument();
+  async function saveAs(capture) {
+    capture = capture || controller.captureActiveDocument();
+    const document = capture.document;
+    if (!document || !controller.session.documents.has(capture.documentId)) return;
     if (nativeApp) {
       try {
         const path = await nativeApp.saveAs({ defaultDir: nativeDir(document), suggestedName: capture.displayName || "untitled.md", data: capture.content });
@@ -1583,7 +1583,7 @@
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
       } catch (e) {
-        setStatus("Couldn't save: " + e.message);
+        setStatus("Couldn't save: " + e.message, false, capture.documentId);
       }
       return;
     }
@@ -2380,6 +2380,7 @@
     });
   }
 
+  const browserRecoveryEnvironment = nativeApp ? null : MDEdit.createBrowserRecoveryEnvironment(window);
   const sessionIo = nativeApp ? {
     ...nativeApp,
     listenFileOpened(handler) {
@@ -2387,7 +2388,7 @@
       return window.__TAURI__.event.listen("file-opened", handler);
     },
   } : {
-    ...MDEdit.createBrowserRecoveryIo(localStorage),
+    ...browserRecoveryEnvironment.io,
     async readDocument() { throw new Error("native document reads are unavailable"); },
   };
 
@@ -2445,9 +2446,8 @@
       }
     },
     onStatus(documentId, status, error) {
-      const model = controller && controller.session && controller.session.documents.get(documentId);
-      if (model instanceof MDEdit.DocumentModel) model.recoveryStatus = status;
-      workspaceView.setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
+      if (controller) controller.onRecoveryStatus(documentId, status, error);
+      else workspaceView.setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
     },
   });
 
@@ -2459,8 +2459,14 @@
       showOpenError(path, error) { setStatus("Could not open " + path + " — " + error.message); },
     },
     legacyStorage: {
-      getItem(key) { try { return localStorage.getItem(key); } catch (_) { return null; } },
-      removeItem(key) { localStorage.removeItem(key); },
+      getItem(key) {
+        if (browserRecoveryEnvironment) return browserRecoveryEnvironment.legacyStorage.getItem(key);
+        try { return window.localStorage.getItem(key); } catch (_) { return null; }
+      },
+      removeItem(key) {
+        if (browserRecoveryEnvironment) browserRecoveryEnvironment.legacyStorage.removeItem(key);
+        else window.localStorage.removeItem(key);
+      },
     },
     hashText,
     idFactory: () => window.crypto.randomUUID(),
@@ -2485,6 +2491,9 @@
       },
     },
   });
+  if (browserRecoveryEnvironment && browserRecoveryEnvironment.error) {
+    setStatus("Recovery storage is unavailable — edits will only be kept for this page", false);
+  }
 
   const WELCOME = `# Welcome to MDedit
 

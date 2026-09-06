@@ -10,6 +10,7 @@ const {
   SessionController,
   LEGACY_DRAFT_KEY,
   createBrowserRecoveryIo,
+  createBrowserRecoveryEnvironment,
 } = require("../src/session-controller.js");
 const { RecoveryScheduler } = require("../src/recovery-scheduler.js");
 
@@ -266,10 +267,10 @@ test("browser recovery IO stores versioned JSON documents and manifest durably",
   const storage = memoryStorage();
   const io = createBrowserRecoveryIo(storage);
 
-  await io.writeRecoveryDocument("doc/a", 3, '{"documentId":"doc/a"}');
+  await io.writeRecoveryDocument("doc/a", 3, '{"documentId":"doc/a","snapshotRevision":3}');
   await io.writeRecoveryManifest(9, '{"generation":9}');
 
-  assert.equal(await io.loadRecoveryDocument("doc/a", 3), '{"documentId":"doc/a"}');
+  assert.equal(await io.loadRecoveryDocument("doc/a", 3), '{"documentId":"doc/a","snapshotRevision":3}');
   assert.equal(await io.loadRecoveryManifest(), '{"generation":9}');
   assert.match(await io.recoveryDirectory(), /localStorage.*v1/i);
   assert.ok([...storage.values.keys()].every((key) => key.startsWith("mdedit-recovery-v1:")));
@@ -283,8 +284,18 @@ test("browser recovery IO propagates storage quota failures", async () => {
   storage.setItem = () => { throw new Error("quota exceeded"); };
   const io = createBrowserRecoveryIo(storage);
 
-  await assert.rejects(io.writeRecoveryDocument("a", 1, "{}"), /quota exceeded/);
-  await assert.rejects(io.writeRecoveryManifest(1, "{}"), /quota exceeded/);
+  await assert.rejects(io.writeRecoveryDocument("a", 1, '{"documentId":"a","snapshotRevision":1}'), /quota exceeded/);
+  await assert.rejects(io.writeRecoveryManifest(1, '{"generation":1}'), /quota exceeded/);
+});
+
+test("browser recovery environment survives a SecurityError localStorage getter", async () => {
+  const root = {};
+  Object.defineProperty(root, "localStorage", { get() { throw new Error("SecurityError"); } });
+  const environment = createBrowserRecoveryEnvironment(root);
+  assert.equal(environment.persistent, false);
+  assert.match(environment.error.message, /SecurityError/);
+  await environment.io.writeRecoveryDocument("a", 1, JSON.stringify({ documentId: "a", snapshotRevision: 1 }));
+  assert.match(await environment.io.loadRecoveryDocument("a", 1), /"snapshotRevision":1/);
 });
 
 test("browser manifest pointer keeps the last valid generation after a failed publish", async () => {
@@ -293,12 +304,35 @@ test("browser manifest pointer keeps the last valid generation after a failed pu
   await io.writeRecoveryManifest(1, '{"generation":1}');
   const setItem = storage.setItem;
   storage.setItem = (key, value) => {
-    if (key.endsWith("manifest-current") && value === "2") throw new Error("pointer quota");
+    if (key.endsWith("manifest:current") && String(value).includes('"generation":2')) throw new Error("pointer quota");
     setItem.call(storage, key, value);
   };
 
   await assert.rejects(io.writeRecoveryManifest(2, '{"generation":2}'), /pointer quota/);
   assert.equal(await io.loadRecoveryManifest(), '{"generation":1}');
+});
+
+test("browser recovery keeps only current and previous snapshots after 100 revisions", async () => {
+  const storage = memoryStorage();
+  const io = createBrowserRecoveryIo(storage);
+  for (let revision = 0; revision < 100; revision += 1) {
+    await io.writeRecoveryDocument("a", revision, JSON.stringify({ documentId: "a", snapshotRevision: revision }));
+  }
+  const documentKeys = [...storage.values.keys()].filter((key) => key.includes("document:a:"));
+  assert.ok(documentKeys.length <= 2, documentKeys.join(","));
+  assert.match(await io.loadRecoveryDocument("a", 99), /"snapshotRevision":99/);
+  assert.match(await io.loadRecoveryDocument("a", 98), /"snapshotRevision":98/);
+  assert.equal(await io.loadRecoveryDocument("a", 97), null);
+});
+
+test("browser recovery falls back to previous when the current slot is corrupt", async () => {
+  const storage = memoryStorage();
+  const io = createBrowserRecoveryIo(storage);
+  await io.writeRecoveryDocument("a", 1, JSON.stringify({ documentId: "a", snapshotRevision: 1 }));
+  await io.writeRecoveryDocument("a", 2, JSON.stringify({ documentId: "a", snapshotRevision: 2 }));
+  const current = [...storage.values.keys()].find((key) => key.endsWith("document:a:current"));
+  storage.setItem(current, "broken json");
+  assert.match(await io.loadRecoveryDocument("a", 1), /"snapshotRevision":1/);
 });
 
 test("browser legacy migration reloads the latest later edit from the versioned store", async () => {
@@ -1562,6 +1596,48 @@ test("editor input is routed to the addressed document only", async () => {
   assert.deepEqual(fixture.calls.scheduler.at(-1), ["changed", a.id, 1]);
 });
 
+test("rapid editor input schedules recovery without immediately persisting a manifest", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  fixture.calls.manifestWrites.length = 0;
+  fixture.calls.scheduler.length = 0;
+  for (let index = 0; index < 100; index += 1) controller.onEditorInput(document.id, `edit ${index}`);
+  await settle();
+  assert.equal(fixture.calls.manifestWrites.length, 0);
+  assert.equal(fixture.calls.scheduler.filter(([kind]) => kind === "flush").length, 0);
+  assert.equal(fixture.calls.scheduler.filter(([kind]) => kind === "changed").length, 100);
+  controller.onRecoveryStatus(document.id, "clean");
+  await settle();
+  assert.equal(fixture.calls.manifestWrites.length, 1);
+});
+
+test("manifest publication uses the immutable candidate captured before delayed flush", async () => {
+  const gate = deferred();
+  const fixture = makeDependencies({ scheduler: { async flush(id) { if (id === "generated-1") await gate.promise; } } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  fixture.calls.manifestWrites.length = 0;
+  const persisting = controller.persistManifest();
+  await settle();
+  const b = controller.session.createUntitled();
+  controller._presentActivatedDocument(b);
+  controller.onEditorInput(a.id, "later");
+  gate.resolve();
+  await persisting;
+  await settle();
+  for (const [, raw] of fixture.calls.manifestWrites) {
+    const value = JSON.parse(raw);
+    const aTab = value.tabs.find((tab) => tab.documentId === a.id);
+    if (aTab) assert.notEqual(aTab.snapshotRevision, 0, "obsolete unflushed candidate was published");
+  }
+  assert.equal(controller.activeDocument(), b);
+});
+
 test("a deferred render cannot replace the preview after another document activates", async () => {
   const pending = deferred();
   const fixture = makeDependencies({
@@ -2109,7 +2185,7 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /controller\.runCapturedExport\("diagram " \+ n \+ " as SVG"/, filename);
     assert.match(html, /controller\.runCapturedExport\("table " \+ n \+ " as CSV"/, filename);
     assert.match(html, /canPrintCapture\(capture, previewOwner\)/, filename);
-    assert.match(html, /createBrowserRecoveryIo\(localStorage\)/, filename);
+    assert.match(html, /createBrowserRecoveryEnvironment\(window\)/, filename);
     assert.match(html, /model\.snapshotRevision !== revision/, filename);
     assert.match(html, /renderForExport/, filename);
     assert.match(html, /capture\.renderedHtml/, filename);
@@ -2117,6 +2193,8 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /addEventListener\("change", async \(e\)/, filename);
     assert.match(html, /for \(const file of e\.target\.files \|\| \[\]\)[\s\S]{0,120}await openFromFile/, filename);
     assert.match(html, /downloadAsSave\(capture\)[\s\S]{0,300}recordCapturedSave\(capture/, filename);
+    assert.match(html, /await saveAs\(capture\)/, filename);
+    assert.match(html, /async function saveAs\(capture\)/, filename);
   }
 });
 

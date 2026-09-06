@@ -70,25 +70,57 @@
     for (const method of ["getItem", "setItem", "removeItem", "key"]) {
       requireFunction(storage[method], `storage.${method}`);
     }
-    const manifestPointerKey = `${BROWSER_RECOVERY_PREFIX}manifest-current`;
     const documentPrefix = (documentId) => `${BROWSER_RECOVERY_PREFIX}document:${encodeURIComponent(documentId)}:`;
-    const documentKey = (documentId, revision) => `${documentPrefix(documentId)}${revision}`;
-    const manifestKey = (generation) => `${BROWSER_RECOVERY_PREFIX}manifest:${generation}`;
+    const slots = (prefix) => ({ current: `${prefix}current`, previous: `${prefix}previous`, temp: `${prefix}temp` });
+    const valid = (raw, predicate) => {
+      if (typeof raw !== "string") return null;
+      try { const value = JSON.parse(raw); return predicate(value) ? raw : null; } catch (_) { return null; }
+    };
+    const rotate = (keys, json) => {
+      JSON.parse(json);
+      storage.setItem(keys.temp, json);
+      try {
+        const current = storage.getItem(keys.current);
+        if (current !== null) storage.setItem(keys.previous, current);
+        storage.setItem(keys.current, json);
+      } finally {
+        storage.removeItem(keys.temp);
+      }
+    };
+    const cleanup = (prefix, keep) => {
+      const keys = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (typeof key === "string" && key.startsWith(prefix) && !keep.has(key)) keys.push(key);
+      }
+      for (const key of keys) storage.removeItem(key);
+    };
+    const manifestSlots = slots(`${BROWSER_RECOVERY_PREFIX}manifest:`);
     return {
       listenFileOpened() { return () => {}; },
       async loadRecoveryManifest() {
-        const generation = storage.getItem(manifestPointerKey);
-        return generation === null ? null : storage.getItem(manifestKey(generation));
+        return valid(storage.getItem(manifestSlots.current), (value) => Number.isSafeInteger(value.generation))
+          || valid(storage.getItem(manifestSlots.previous), (value) => Number.isSafeInteger(value.generation));
       },
       async loadRecoveryDocument(documentId, revision) {
-        return storage.getItem(documentKey(documentId, revision));
+        const keys = slots(documentPrefix(documentId));
+        const matches = (value) => value.documentId === documentId && value.snapshotRevision === revision;
+        return valid(storage.getItem(keys.current), matches) || valid(storage.getItem(keys.previous), matches);
       },
       async writeRecoveryDocument(documentId, revision, json) {
-        storage.setItem(documentKey(documentId, revision), String(json));
+        const keys = slots(documentPrefix(documentId));
+        const text = String(json);
+        const value = JSON.parse(text);
+        if (value.documentId !== documentId || value.snapshotRevision !== revision) throw new Error("recovery snapshot identity mismatch");
+        rotate(keys, text);
+        cleanup(documentPrefix(documentId), new Set([keys.current, keys.previous]));
       },
       async writeRecoveryManifest(generation, json) {
-        storage.setItem(manifestKey(generation), String(json));
-        storage.setItem(manifestPointerKey, String(generation));
+        const text = String(json);
+        const value = JSON.parse(text);
+        if (value.generation !== generation) throw new Error("recovery manifest generation mismatch");
+        rotate(manifestSlots, text);
+        cleanup(`${BROWSER_RECOVERY_PREFIX}manifest`, new Set([manifestSlots.current, manifestSlots.previous]));
       },
       async deleteRecoveryDocument(documentId) {
         const prefix = documentPrefix(documentId);
@@ -100,6 +132,37 @@
         for (const key of keys) storage.removeItem(key);
       },
       async recoveryDirectory() { return "localStorage://mdedit-recovery-v1"; },
+    };
+  }
+
+  function createMemoryStorage() {
+    const values = new Map();
+    return {
+      get length() { return values.size; },
+      key(index) { return [...values.keys()][index] ?? null; },
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(String(key), String(value)); },
+      removeItem(key) { values.delete(key); },
+    };
+  }
+
+  function createBrowserRecoveryEnvironment(browserRoot) {
+    let storage;
+    let error = null;
+    try {
+      storage = browserRoot.localStorage;
+      const probe = `${BROWSER_RECOVERY_PREFIX}probe`;
+      storage.setItem(probe, "1");
+      storage.removeItem(probe);
+    } catch (reason) {
+      error = normalizeError(reason);
+      storage = createMemoryStorage();
+    }
+    return {
+      io: createBrowserRecoveryIo(storage),
+      legacyStorage: storage,
+      persistent: error === null,
+      error,
     };
   }
 
@@ -155,6 +218,8 @@
       this._operationChain = Promise.resolve();
       this._queuedOperationCount = 0;
       this._manifestWrites = Promise.resolve();
+      this._recoveryManifestQueued = false;
+      this._pendingManifestCandidates = new Set();
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
@@ -829,17 +894,6 @@
 
       this._invalidatePreview(documentId);
       this.scheduler.changed(documentId, document.snapshotRevision);
-      if (this._restoreState === "restored") {
-        this._persistManifestNow().catch((reason) => {
-          if (!this.session || this.session.documents.get(documentId) !== document) return;
-          this._showRecoveryError(reason, {
-            phase: "edit-checkpoint",
-            documentId,
-            displayName: document.displayName,
-            snapshotRevision: document.snapshotRevision,
-          });
-        });
-      }
       this._setDocumentStatus(documentId, {
         dirty: document.dirty,
         fileStatus: document.fileStatus,
@@ -854,6 +908,26 @@
         });
       }
       return true;
+    }
+
+    onRecoveryStatus(documentId, status, error) {
+      const document = this.session && this.session.documents.get(documentId);
+      if (document instanceof DocumentModel) document.recoveryStatus = status;
+      this._setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
+      const covered = document instanceof DocumentModel && [...this._pendingManifestCandidates].some(
+        (candidate) => (candidate.get(documentId) ?? -1) >= document.snapshotRevision,
+      );
+      if (status === "clean" && this._restoreState === "restored" && !covered) this._queueRecoveryManifest();
+    }
+
+    _queueRecoveryManifest() {
+      if (this._recoveryManifestQueued || this._disposed) return;
+      this._recoveryManifestQueued = true;
+      Promise.resolve().then(() => {
+        this._recoveryManifestQueued = false;
+        if (this._disposed || this._restoreState !== "restored") return;
+        this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, { phase: "recovery-checkpoint" }));
+      });
     }
 
     renderDocument(documentId = this.session && this.session.activeDocumentId) {
@@ -1084,24 +1158,44 @@
     _persistManifestNow(token = this._lifecycleToken) {
       if (!this._isLifecycleActive(token)) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
+      const candidateSession = this.session;
+      const candidate = JSON.parse(JSON.stringify(candidateSession.toManifest()));
+      const capturedDocuments = candidate.tabs.map((tab) => ({
+        document: candidateSession.documents.get(tab.documentId),
+        documentId: tab.documentId,
+        snapshotRevision: tab.snapshotRevision,
+      }));
+      const coverage = new Map(capturedDocuments.map((capture) => [capture.documentId, capture.snapshotRevision]));
+      this._pendingManifestCandidates.add(coverage);
+      const json = JSON.stringify(candidate);
       const write = this._manifestWrites.catch(() => {}).then(
         async () => {
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          for (const document of this.session.documents.values()) {
-            if (!(document instanceof DocumentModel)) continue;
-            this.scheduler.changed(document.id, document.snapshotRevision);
-            await this.scheduler.flush(document.id, document.snapshotRevision);
-            document.persistedRevision = Math.max(document.persistedRevision, document.snapshotRevision);
+          for (const capture of capturedDocuments) {
+            if (!(capture.document instanceof DocumentModel)) continue;
+            this.scheduler.changed(capture.documentId, capture.snapshotRevision);
+            await this.scheduler.flush(capture.documentId, capture.snapshotRevision);
+            if (this.session.documents.get(capture.documentId) === capture.document
+                && capture.document.snapshotRevision === capture.snapshotRevision) {
+              capture.document.persistedRevision = Math.max(capture.document.persistedRevision, capture.snapshotRevision);
+            }
           }
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          const value = this.session.toManifest();
-          const generation = value.generation;
-          const json = JSON.stringify(value);
-          return this.io.writeRecoveryManifest(generation, json);
+          const obsolete = this.session !== candidateSession
+            || capturedDocuments.some((capture) => this.session.documents.get(capture.documentId) !== capture.document
+              || capture.document.snapshotRevision !== capture.snapshotRevision)
+            || JSON.stringify(this.session.toManifest()) !== json;
+          if (obsolete) {
+            this._queueRecoveryManifest();
+            return false;
+          }
+          await this.io.writeRecoveryManifest(candidate.generation, json);
+          return true;
         },
       );
-      this._manifestWrites = write;
-      return write;
+      const trackedWrite = write.finally(() => this._pendingManifestCandidates.delete(coverage));
+      this._manifestWrites = trackedWrite;
+      return trackedWrite;
     }
 
     _ensureSession() {
@@ -1386,5 +1480,6 @@
     LEGACY_DRAFT_KEY,
     BROWSER_RECOVERY_PREFIX,
     createBrowserRecoveryIo,
+    createBrowserRecoveryEnvironment,
   };
 });
