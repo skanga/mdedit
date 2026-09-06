@@ -194,9 +194,11 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
 test("CI verifies desktop, browser, and explicit performance builds", () => {
   const workflow = readText(".github/workflows/desktop.yml");
   const cargoTest = "cargo test --manifest-path src-tauri/Cargo.toml";
+  const linuxSystemDeps = "sudo apt-get install -y libwebkit2gtk-4.1-dev";
   const bundle = "npx tauri build ${{ matrix.args }}";
 
   assert.ok(workflow.indexOf("run: npm test") < workflow.indexOf(cargoTest));
+  assert.ok(workflow.indexOf(linuxSystemDeps) < workflow.indexOf(cargoTest));
   assert.ok(workflow.indexOf(cargoTest) < workflow.indexOf(bundle));
   assert.match(workflow, /browser-tests:\n[\s\S]*?runs-on: ubuntu-latest/);
   assert.match(workflow, /npx playwright install --with-deps chromium/);
