@@ -1501,6 +1501,74 @@ test("a deferred export keeps its starting document identity after a tab switch"
   assert.match(fixture.calls.statuses.at(-1)[1].message, /Untitled 1/);
 });
 
+test("captured block export completion remains attached to its starting document", async () => {
+  const pending = deferred();
+  let capture;
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  a.displayName = "alpha.md";
+  controller.onEditorInput(a.id, "alpha content");
+  const exporting = controller.runCapturedExport("table 2 as CSV", async (starting, isCurrent) => {
+    capture = starting;
+    await pending.promise;
+    assert.equal(isCurrent(), true);
+    return { message: `Exported ${starting.displayName}-table-2.csv` };
+  });
+  const b = controller.createUntitled();
+  pending.resolve();
+  await exporting;
+
+  assert.equal(capture.documentId, a.id);
+  assert.equal(capture.editRevision, a.editRevision);
+  assert.equal(capture.displayName, "alpha.md");
+  assert.equal(capture.content, "alpha content");
+  assert.equal(fixture.calls.statuses.at(-1)[0], a.id);
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /alpha\.md-table-2\.csv/);
+  assert.equal(controller.activeDocument(), b);
+});
+
+test("a stale captured export failure is still reported to its starting document", async () => {
+  const pending = deferred();
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const exporting = controller.runCapturedExport("diagram 1 as SVG", async () => pending.promise);
+  controller.onEditorInput(a.id, "new revision");
+  pending.reject(new Error("stale preview"));
+
+  await assert.rejects(exporting, /stale preview/);
+  assert.equal(fixture.calls.statuses.at(-1)[0], a.id);
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /stale preview/);
+});
+
+test("document capture guards distinguish tab switches from revision staleness", () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const capture = controller.captureActiveDocument();
+  const b = controller.createUntitled();
+
+  assert.equal(controller.isDocumentCaptureCurrent(capture), true);
+  assert.equal(controller.isDocumentCaptureCurrent(capture, { requireActive: true }), false);
+  controller.onEditorInput(a.id, "changed after capture");
+  assert.equal(controller.isDocumentCaptureCurrent(capture), false);
+  assert.equal(controller.activeDocument(), b);
+});
+
+test("PDF print guard rejects a captured document after a tab switch or preview replacement", () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const capture = controller.captureActiveDocument({ format: "pdf" });
+  const owner = { documentId: a.id, editRevision: a.editRevision };
+
+  assert.equal(controller.canPrintCapture(capture, owner), true);
+  assert.equal(controller.canPrintCapture(capture, { ...owner, documentId: "other" }), false);
+  controller.createUntitled();
+  assert.equal(controller.canPrintCapture(capture, owner), false);
+});
+
 test("activation captures, flushes, switches, restores, persists, then renders without waiting for recovery", async () => {
   const flushGate = deferred();
   const events = [];
@@ -1728,6 +1796,19 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.doesNotMatch(template, /\blet\s+(?:fileHandle|nativePath|dirty)\b/);
   assert.ok(template.indexOf("listenFileOpened(handler)") < template.indexOf("await controller.restore()"));
   assert.match(template, /writeToHandle\(fileHandle, capture\.content\)/);
+});
+
+test("browser builds resolve editors by active document without a mutable editor owner", () => {
+  for (const filename of ["src/index.template.html", "index.html", "index-lite.html"]) {
+    const html = fs.readFileSync(path.join(__dirname, "..", filename), "utf8");
+    assert.doesNotMatch(html, /\blet\s+editor\b/, filename);
+    assert.doesNotMatch(html, /\beditor\s*=\s*(?:event|e)\.target/, filename);
+    assert.match(html, /function activeEditor\(\)[\s\S]*controller\.activeDocument\(\)[\s\S]*workspaceView\.editorFor\(active\.id\)/, filename);
+    assert.match(html, /function isActiveEditorEvent\(event\)/, filename);
+    assert.match(html, /controller\.runCapturedExport\("diagram " \+ n \+ " as SVG"/, filename);
+    assert.match(html, /controller\.runCapturedExport\("table " \+ n \+ " as CSV"/, filename);
+    assert.match(html, /canPrintCapture\(capture, previewOwner\)/, filename);
+  }
 });
 
 test("DocumentModel workspace replacement is validated and detached", () => {

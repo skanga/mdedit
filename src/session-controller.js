@@ -720,6 +720,50 @@
       return this.session.documents.get(this.session.activeDocumentId) || null;
     }
 
+    captureActiveDocument(extra = {}) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      const document = this.activeDocument();
+      if (!(document instanceof DocumentModel)) throw new Error("there is no loaded active document");
+      if (!extra || typeof extra !== "object" || Array.isArray(extra)) {
+        throw new TypeError("capture metadata must be an object");
+      }
+      return Object.freeze({
+        ...extra,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        path: document.path,
+        canonicalPath: document.canonicalPath,
+        document,
+      });
+    }
+
+    isDocumentCaptureCurrent(capture, { requireActive = false } = {}) {
+      if (!capture || typeof capture !== "object") return false;
+      if (!this._ownsOperationCapture(capture)) return false;
+      return capture.document.editRevision === capture.editRevision
+        && (!requireActive || this.session.activeDocumentId === capture.documentId);
+    }
+
+    canPrintCapture(capture, previewOwner) {
+      return this.isDocumentCaptureCurrent(capture, { requireActive: true })
+        && Boolean(previewOwner)
+        && previewOwner.documentId === capture.documentId
+        && previewOwner.editRevision === capture.editRevision;
+    }
+
+    runCapturedExport(label, operation) {
+      if (typeof label !== "string" || label.length === 0) {
+        return Promise.reject(new TypeError("export label is required"));
+      }
+      if (typeof operation !== "function") {
+        return Promise.reject(new TypeError("export operation must be a function"));
+      }
+      const capture = this.captureActiveDocument();
+      return this._runCapturedExport(capture, label, operation);
+    }
+
     onEditorInput(documentId, content) {
       if (this._disposed) throw new Error("session controller is disposed");
       if (!this.session) throw new Error("session has not been created");
@@ -806,34 +850,34 @@
 
     async exportActive(format) {
       if (this._disposed) throw new Error("session controller is disposed");
-      const document = this.activeDocument();
-      if (!(document instanceof DocumentModel)) throw new Error("there is no loaded active document");
       if (!this.exporter) throw new Error("exporter is unavailable");
       if (typeof format !== "string" || format.length === 0) throw new TypeError("export format is required");
 
-      const capture = Object.freeze({
-        format,
-        documentId: document.id,
-        editRevision: document.editRevision,
-        content: document.content,
-        displayName: document.displayName,
-        path: document.path,
-        canonicalPath: document.canonicalPath,
-        document,
-      });
+      const capture = this.captureActiveDocument({ format });
+      const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
+      if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
+      return this._runCapturedExport(
+        capture,
+        capture.displayName,
+        () => exportDocument.call(this.exporter, capture),
+      );
+    }
+
+    async _runCapturedExport(capture, label, operation) {
       this._setDocumentStatus(capture.documentId, {
         status: "exporting",
-        message: `Exporting ${capture.displayName}`,
+        message: `Exporting ${label}`,
         editRevision: capture.editRevision,
       });
       try {
-        const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
-        if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
-        const result = await exportDocument.call(this.exporter, capture);
-        if (this._ownsOperationCapture(capture)) {
+        const result = await operation(
+          capture,
+          (options) => this.isDocumentCaptureCurrent(capture, options),
+        );
+        if (this.isDocumentCaptureCurrent(capture)) {
           const message = result && typeof result.message === "string"
             ? result.message
-            : `Exported ${capture.displayName}`;
+            : `Exported ${label}`;
           this._setDocumentStatus(capture.documentId, {
             status: "exported",
             message,
@@ -846,7 +890,7 @@
         if (this._ownsOperationCapture(capture)) {
           this._setDocumentStatus(capture.documentId, {
             status: "failed",
-            message: `Could not export ${capture.displayName}: ${error.message}`,
+            message: `Could not export ${label}: ${error.message}`,
             editRevision: capture.editRevision,
           });
         }

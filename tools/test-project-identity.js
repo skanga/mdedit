@@ -236,7 +236,8 @@ test("the desktop UI identity is consistent across template and generated builds
       true,
     );
     assert.match(html, /\.md, \.markdown or any text file — it stays on your device/);
-    assert.match(html, /setStatus\("Draft restored"\);/);
+    assert.match(html, /legacyStorage:\s*{/);
+    assert.doesNotMatch(html, /function loadDraft\(/);
     assert.match(joinedHtmlStrings, /Drop a <code>\.md<\/code> file anywhere in the window, or use Open\. Save writes directly to the current file; Save as creates a new copy\./);
     assert.match(html, /# Welcome to MDedit/);
     assert.match(html, /A fast, private desktop Markdown editor — \*\*your documents stay on your device\*\*\./);

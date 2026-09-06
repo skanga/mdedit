@@ -6866,6 +6866,50 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return this.session.documents.get(this.session.activeDocumentId) || null;
     }
 
+    captureActiveDocument(extra = {}) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      const document = this.activeDocument();
+      if (!(document instanceof DocumentModel)) throw new Error("there is no loaded active document");
+      if (!extra || typeof extra !== "object" || Array.isArray(extra)) {
+        throw new TypeError("capture metadata must be an object");
+      }
+      return Object.freeze({
+        ...extra,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        path: document.path,
+        canonicalPath: document.canonicalPath,
+        document,
+      });
+    }
+
+    isDocumentCaptureCurrent(capture, { requireActive = false } = {}) {
+      if (!capture || typeof capture !== "object") return false;
+      if (!this._ownsOperationCapture(capture)) return false;
+      return capture.document.editRevision === capture.editRevision
+        && (!requireActive || this.session.activeDocumentId === capture.documentId);
+    }
+
+    canPrintCapture(capture, previewOwner) {
+      return this.isDocumentCaptureCurrent(capture, { requireActive: true })
+        && Boolean(previewOwner)
+        && previewOwner.documentId === capture.documentId
+        && previewOwner.editRevision === capture.editRevision;
+    }
+
+    runCapturedExport(label, operation) {
+      if (typeof label !== "string" || label.length === 0) {
+        return Promise.reject(new TypeError("export label is required"));
+      }
+      if (typeof operation !== "function") {
+        return Promise.reject(new TypeError("export operation must be a function"));
+      }
+      const capture = this.captureActiveDocument();
+      return this._runCapturedExport(capture, label, operation);
+    }
+
     onEditorInput(documentId, content) {
       if (this._disposed) throw new Error("session controller is disposed");
       if (!this.session) throw new Error("session has not been created");
@@ -6952,34 +6996,34 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
     async exportActive(format) {
       if (this._disposed) throw new Error("session controller is disposed");
-      const document = this.activeDocument();
-      if (!(document instanceof DocumentModel)) throw new Error("there is no loaded active document");
       if (!this.exporter) throw new Error("exporter is unavailable");
       if (typeof format !== "string" || format.length === 0) throw new TypeError("export format is required");
 
-      const capture = Object.freeze({
-        format,
-        documentId: document.id,
-        editRevision: document.editRevision,
-        content: document.content,
-        displayName: document.displayName,
-        path: document.path,
-        canonicalPath: document.canonicalPath,
-        document,
-      });
+      const capture = this.captureActiveDocument({ format });
+      const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
+      if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
+      return this._runCapturedExport(
+        capture,
+        capture.displayName,
+        () => exportDocument.call(this.exporter, capture),
+      );
+    }
+
+    async _runCapturedExport(capture, label, operation) {
       this._setDocumentStatus(capture.documentId, {
         status: "exporting",
-        message: `Exporting ${capture.displayName}`,
+        message: `Exporting ${label}`,
         editRevision: capture.editRevision,
       });
       try {
-        const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
-        if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
-        const result = await exportDocument.call(this.exporter, capture);
-        if (this._ownsOperationCapture(capture)) {
+        const result = await operation(
+          capture,
+          (options) => this.isDocumentCaptureCurrent(capture, options),
+        );
+        if (this.isDocumentCaptureCurrent(capture)) {
           const message = result && typeof result.message === "string"
             ? result.message
-            : `Exported ${capture.displayName}`;
+            : `Exported ${label}`;
           this._setDocumentStatus(capture.documentId, {
             status: "exported",
             message,
@@ -6992,7 +7036,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         if (this._ownsOperationCapture(capture)) {
           this._setDocumentStatus(capture.documentId, {
             status: "failed",
-            message: `Could not export ${capture.displayName}: ${error.message}`,
+            message: `Could not export ${label}: ${error.message}`,
             editRevision: capture.editRevision,
           });
         }
@@ -8115,10 +8159,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  let editor = $("editor");
   const preview = $("preview"), previewPane = $("preview-pane");
   const filenameEl = $("filename"), dirtyDot = $("dirty-dot"), statusEl = $("status");
-  const DRAFT_KEY = "mdedit-draft-v1";
   const THEME_KEY = "mdedit-theme";
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   $("save-kbd").textContent = isMac ? "⌘S" : "Ctrl+S";
@@ -8127,6 +8169,19 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   let workspaceView = null;
   const browserFileHandles = new Map();
   let statusTimer = null;
+
+  function activeEditor() {
+    const active = controller && controller.activeDocument();
+    return active && workspaceView ? workspaceView.editorFor(active.id) : null;
+  }
+
+  function isActiveEditorEvent(event) {
+    const active = controller && controller.activeDocument();
+    const surface = event && event.target;
+    return Boolean(active && surface && surface.matches("textarea[data-document-id]")
+      && surface.dataset.documentId === active.id
+      && workspaceView && workspaceView.editorFor(active.id) === surface);
+  }
 
   /* ── Markdown rendering ─────────────────────── */
   /* The lite build ships without KaTeX and Mermaid, so every use of them is
@@ -8327,6 +8382,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   /* Code highlighting + mermaid diagrams */
   let mermaidSeq = 0;
   let mermaidPending = Promise.resolve();   // awaited by the PDF export
+  let previewOwner = null;
   function initMermaid() {
     if (!HAS_DIAGRAMS) return;
     mermaid.initialize({
@@ -8395,32 +8451,43 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   function downloadDiagramSvg(svg, n) {
-    const clone = svg.cloneNode(true);
-    clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
-    clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
-    // mermaid emits width="100%" and sizes itself with CSS; a standalone file
-    // needs real pixel dimensions, which the viewBox gives us intrinsically.
-    const box = svg.getBoundingClientRect();
-    const vb = (clone.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
-    const w = vb.length === 4 && vb[2] ? vb[2] : box.width;
-    const h = vb.length === 4 && vb[3] ? vb[3] : box.height;
-    clone.setAttribute("width", Math.round(w));
-    clone.setAttribute("height", Math.round(h));
-    clone.style.maxWidth = "";
-    const text = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
-    saveBlob(new Blob([text], { type: "image/svg+xml;charset=utf-8" }), baseName() + "-diagram-" + n + ".svg");
-    setStatus("Exported diagram " + n + " as SVG");
+    const exporting = controller.runCapturedExport("diagram " + n + " as SVG", async (capture, isCurrent) => {
+      const clone = svg.cloneNode(true);
+      clone.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+      clone.setAttribute("xmlns:xlink", "http://www.w3.org/1999/xlink");
+      // mermaid emits width="100%" and sizes itself with CSS; a standalone file
+      // needs real pixel dimensions, which the viewBox gives us intrinsically.
+      const box = svg.getBoundingClientRect();
+      const vb = (clone.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
+      const w = vb.length === 4 && vb[2] ? vb[2] : box.width;
+      const h = vb.length === 4 && vb[3] ? vb[3] : box.height;
+      clone.setAttribute("width", Math.round(w));
+      clone.setAttribute("height", Math.round(h));
+      clone.style.maxWidth = "";
+      const text = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
+      if (!isCurrent()) throw new Error("the document changed before its diagram could be saved");
+      const name = baseName(capture) + "-diagram-" + n + ".svg";
+      await saveBlob(new Blob([text], { type: "image/svg+xml;charset=utf-8" }), name, capture, isCurrent);
+      return { message: "Exported " + name };
+    });
+    exporting.catch(() => {});
+    return exporting;
   }
 
   const csvCell = (s) => (/[",\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s);
   function downloadTableCsv(table, n) {
-    const rows = [...table.querySelectorAll("tr")].map((tr) =>
-      [...tr.querySelectorAll("th, td")].map((c) => csvCell(c.textContent.trim())).join(",")
-    );
-    // the BOM makes Excel read it as UTF-8 rather than mangling accents
-    saveBlob(new Blob(["﻿" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" }),
-      baseName() + "-table-" + n + ".csv");
-    setStatus("Exported table " + n + " as CSV (" + rows.length + " rows)");
+    const exporting = controller.runCapturedExport("table " + n + " as CSV", async (capture, isCurrent) => {
+      const rows = [...table.querySelectorAll("tr")].map((tr) =>
+        [...tr.querySelectorAll("th, td")].map((c) => csvCell(c.textContent.trim())).join(",")
+      );
+      if (!isCurrent()) throw new Error("the document changed before its table could be saved");
+      const name = baseName(capture) + "-table-" + n + ".csv";
+      // the BOM makes Excel read it as UTF-8 rather than mangling accents
+      await saveBlob(new Blob(["﻿" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" }), name, capture, isCurrent);
+      return { message: "Exported " + name + " (" + rows.length + " rows)" };
+    });
+    exporting.catch(() => {});
+    return exporting;
   }
 
   async function copyCode(code, btn) {
@@ -8486,7 +8553,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     tocEl.innerHTML = html;
   }
 
-  function render(content = editor.value, isCurrent = () => true) {
+  function render(content, isCurrent = () => true) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
     preview.innerHTML = DOMPurify.sanitize(marked.parse(src));
     if (HAS_MATH) injectMath(math);
@@ -8502,13 +8569,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     updateStats(content);
   }
 
-  let renderTimer = null;
-  function scheduleRender() {
-    clearTimeout(renderTimer);
-    renderTimer = setTimeout(render, 120);
-  }
-
-  function updateStats(text = editor.value) {
+  function updateStats(text) {
     const words = (text.trim().match(/\S+/g) || []).length;
     $("stat-words").textContent = words + " word" + (words === 1 ? "" : "s");
     $("stat-chars").textContent = text.length + " chars";
@@ -8526,34 +8587,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   function setDirty(v) {
     const active = controller && controller.activeDocument();
-    if (active && v && active.content !== editor.value) controller.onEditorInput(active.id, editor.value);
+    const surface = activeEditor();
+    if (active && surface && v && active.content !== surface.value) controller.onEditorInput(active.id, surface.value);
     if (active) active.dirty = Boolean(v);
     dirtyDot.classList.toggle("on", v);
-  }
-
-  /* ── Draft persistence (localStorage) ───────── */
-  let draftTimer = null;
-  function saveDraft() {
-    if (controller) return;
-    clearTimeout(draftTimer);
-    draftTimer = setTimeout(() => {
-      try {
-        localStorage.setItem(DRAFT_KEY, JSON.stringify({ name: filenameEl.value, text: editor.value }));
-      } catch (e) { /* storage unavailable — fine */ }
-    }, 400);
-  }
-  function loadDraft() {
-    if (controller) return false;
-    try {
-      const raw = localStorage.getItem(DRAFT_KEY);
-      if (!raw) return false;
-      const d = JSON.parse(raw);
-      if (typeof d.text !== "string" || !d.text.trim()) return false;
-      editor.value = d.text;
-      filenameEl.value = d.name || "untitled.md";
-      setStatus("Draft restored");
-      return true;
-    } catch (e) { return false; }
   }
 
   /* ── File loading ───────────────────────────── */
@@ -8688,15 +8725,18 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     }
   }
 
-  async function saveBlob(blob, name, capture) {
+  async function saveBlob(blob, name, capture, isCurrent = () => true) {
     if (nativeApp) {
-      try {
-        const path = await nativeApp.saveAs({ defaultDir: nativeDir(capture && capture.document), suggestedName: name, data: new Uint8Array(await blob.arrayBuffer()) });
-        if (path) setStatus("Saved " + name, false, capture && capture.documentId);
-      } catch (e) {
-        setStatus("Couldn't save: " + e.message);
-      }
-      return;
+      const data = new Uint8Array(await blob.arrayBuffer());
+      if (!isCurrent()) throw new Error("the document changed before the export could be saved");
+      const path = await nativeApp.chooseSavePath({
+        defaultDir: nativeDir(capture),
+        suggestedName: name,
+      });
+      if (!path) return false;
+      if (!isCurrent()) throw new Error("the document changed before the export could be saved");
+      await nativeApp.writeFile(path, data);
+      return true;
     }
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -8705,9 +8745,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     a.click();
     a.remove();
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    return true;
   }
 
-  const baseName = (capture) => ((capture && capture.displayName) || (controller.activeDocument() && controller.activeDocument().displayName) || "untitled.md").replace(/\.[^.]+$/, "") || "untitled";
+  const baseName = (capture) => ((capture && capture.displayName) || "untitled.md").replace(/\.[^.]+$/, "") || "untitled";
 
   async function download(capture) {
     capture = capture || captureActiveDocument("md");
@@ -8815,9 +8856,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function exportPdf(capture) {
     capture = capture || captureActiveDocument("pdf");
     const wasDark = theme === "dark";
-    if (wasDark) {
-      setTheme("light", false);
-      await mermaidPending;
+    if (wasDark) setTheme("light", false);
+    await controller.renderDocument(capture.documentId);
+    if (!controller.canPrintCapture(capture, previewOwner)) {
+      if (wasDark) setTheme("dark", false);
+      throw new Error("PDF export canceled because the active document changed before printing");
     }
     setStatus('Choose "Save as PDF" as the destination in the print dialog', true, capture.documentId);
     if (wasDark) window.addEventListener("afterprint", () => setTheme("dark", false), { once: true });
@@ -8873,28 +8916,29 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
   const INDENT = "  ";
-  function replaceRange(start, end, text) {
-    editor.setSelectionRange(start, end);
+  function replaceRange(surface, start, end, text) {
+    surface.focus();
+    surface.setSelectionRange(start, end);
     let ok = false;
     try { ok = document.execCommand("insertText", false, text); } catch (err) { ok = false; }
     if (!ok) {                       // no native undo here, but never lose the edit
-      editor.setRangeText(text, start, end, "end");
-      editor.dispatchEvent(new Event("input", { bubbles: true }));
+      surface.setRangeText(text, start, end, "end");
+      surface.dispatchEvent(new Event("input", { bubbles: true }));
     }
   }
 
   // the full lines touched by the current selection
-  function selectedLines() {
-    const v = editor.value;
-    const start = v.lastIndexOf("\n", editor.selectionStart - 1) + 1;
-    let end = v.indexOf("\n", editor.selectionEnd);
+  function selectedLines(surface) {
+    const v = surface.value;
+    const start = v.lastIndexOf("\n", surface.selectionStart - 1) + 1;
+    let end = v.indexOf("\n", surface.selectionEnd);
     if (end === -1) end = v.length;
     return { start, end, text: v.slice(start, end) };
   }
 
-  function shiftLines(outdent) {
-    const { start, end, text } = selectedLines();
-    const from = editor.selectionStart, to = editor.selectionEnd;
+  function shiftLines(surface, outdent) {
+    const { start, end, text } = selectedLines(surface);
+    const from = surface.selectionStart, to = surface.selectionEnd;
     let firstDelta = 0, totalDelta = 0;
     const out = text.split("\n").map((line, i) => {
       let delta;
@@ -8912,29 +8956,29 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     }).join("\n");
 
     if (out === text) return;
-    replaceRange(start, end, out);
-    editor.setSelectionRange(Math.max(start, from + firstDelta), Math.max(start, to + totalDelta));
+    replaceRange(surface, start, end, out);
+    surface.setSelectionRange(Math.max(start, from + firstDelta), Math.max(start, to + totalDelta));
   }
 
   $("editor-surfaces").addEventListener("keydown", (e) => {
-    if (!e.target || !e.target.matches("textarea[data-document-id]")) return;
-    editor = e.target;
+    if (!isActiveEditorEvent(e)) return;
+    const surface = e.target;
     if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
     e.preventDefault();
-    const spansLines = editor.value.slice(editor.selectionStart, editor.selectionEnd).includes("\n");
-    if (e.shiftKey) shiftLines(true);          // Shift+Tab always outdents
-    else if (spansLines) shiftLines(false);    // indent every line of a block
-    else replaceRange(editor.selectionStart, editor.selectionEnd, INDENT);
+    const spansLines = surface.value.slice(surface.selectionStart, surface.selectionEnd).includes("\n");
+    if (e.shiftKey) shiftLines(surface, true);          // Shift+Tab always outdents
+    else if (spansLines) shiftLines(surface, false);    // indent every line of a block
+    else replaceRange(surface, surface.selectionStart, surface.selectionEnd, INDENT);
   });
 
   // proportional scroll sync: editor → preview
   $("editor-surfaces").addEventListener("scroll", (event) => {
-    if (!event.target || !event.target.matches("textarea[data-document-id]")) return;
-    editor = event.target;
+    if (!isActiveEditorEvent(event)) return;
+    const surface = event.target;
     if (document.body.dataset.view !== "split") return;
-    const eMax = editor.scrollHeight - editor.clientHeight;
+    const eMax = surface.scrollHeight - surface.clientHeight;
     const pMax = previewPane.scrollHeight - previewPane.clientHeight;
-    if (eMax > 0 && pMax > 0) previewPane.scrollTop = (editor.scrollTop / eMax) * pMax;
+    if (eMax > 0 && pMax > 0) previewPane.scrollTop = (surface.scrollTop / eMax) * pMax;
   }, true);
 
   filenameEl.addEventListener("change", () => {
@@ -9050,7 +9094,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       setView(btn.dataset.mode);
       const active = controller && controller.activeDocument();
       if (active) active.updateWorkspace({ ...active.workspace, viewMode: btn.dataset.mode });
-      if (btn.dataset.mode !== "preview") editor.focus();
+      const surface = activeEditor();
+      if (btn.dataset.mode !== "preview" && surface) surface.focus();
     });
   });
   // A side-by-side split is unreadable on a phone, and reading is the common case there.
@@ -9209,8 +9254,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   // Are we already between inline $ delimiters on this line?
-  function insideMath() {
-    const v = editor.value.slice(0, editor.selectionStart);
+  function insideMath(surface) {
+    const v = surface.value.slice(0, surface.selectionStart);
     const line = v.slice(v.lastIndexOf("\n") + 1);
     let count = 0;
     for (let i = 0; i < line.length; i++) {
@@ -9220,15 +9265,17 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   function insertEquation(tpl) {
+    const surface = activeEditor();
+    if (!surface) return;
     let text = tpl;
-    if (!insideMath()) text = "$" + text.trim() + "$";
+    if (!insideMath(surface)) text = "$" + text.trim() + "$";
     const caret = text.indexOf(CARET);
     text = text.replace(CARET, "");
-    const at = editor.selectionStart;
-    editor.focus();
-    replaceRange(editor.selectionStart, editor.selectionEnd, text);   // undo-safe
+    const at = surface.selectionStart;
+    surface.focus();
+    replaceRange(surface, surface.selectionStart, surface.selectionEnd, text);   // undo-safe
     const pos = at + (caret === -1 ? text.length : caret);
-    editor.setSelectionRange(pos, pos);
+    surface.setSelectionRange(pos, pos);
     setDirty(true);
   }
 
@@ -9254,10 +9301,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   let matches = [], matchIdx = -1;
 
   function runFind(keepIndex) {
+    const surface = activeEditor();
     const q = findInput.value;
     matches = [];
-    if (q) {
-      const hay = editor.value.toLowerCase(), needle = q.toLowerCase();
+    if (surface && q) {
+      const hay = surface.value.toLowerCase(), needle = q.toLowerCase();
       let i = hay.indexOf(needle);
       while (i !== -1) { matches.push(i); i = hay.indexOf(needle, i + needle.length); }
     }
@@ -9270,16 +9318,18 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     c.classList.toggle("none", !!findInput.value && !matches.length);
   }
   function revealMatch() {
+    const surface = activeEditor();
+    if (!surface) return;
     if (matchIdx < 0 || !matches.length) return;
     const start = matches[matchIdx], end = start + findInput.value.length;
-    editor.focus();
-    editor.setSelectionRange(start, end);
+    surface.focus();
+    surface.setSelectionRange(start, end);
     // approximate, but enough to bring a match on screen in a wrapped textarea
-    const line = editor.value.slice(0, start).split("\n").length - 1;
-    const lh = parseFloat(getComputedStyle(editor).lineHeight) || 20;
+    const line = surface.value.slice(0, start).split("\n").length - 1;
+    const lh = parseFloat(getComputedStyle(surface).lineHeight) || 20;
     const top = line * lh;
-    if (top < editor.scrollTop || top > editor.scrollTop + editor.clientHeight - lh * 2) {
-      editor.scrollTop = Math.max(0, top - editor.clientHeight / 3);
+    if (top < surface.scrollTop || top > surface.scrollTop + surface.clientHeight - lh * 2) {
+      surface.scrollTop = Math.max(0, top - surface.clientHeight / 3);
     }
     paintCount();
   }
@@ -9291,29 +9341,35 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   function afterEdit() { setDirty(true); }
 
   function replaceCurrent() {
+    const surface = activeEditor();
+    if (!surface) return;
     if (matchIdx < 0 || !matches.length) return;
     const start = matches[matchIdx];
-    replaceRange(start, start + findInput.value.length, replaceInput.value);
+    replaceRange(surface, start, start + findInput.value.length, replaceInput.value);
     afterEdit();
     runFind(true);
     revealMatch();
   }
   function replaceAll() {
+    const surface = activeEditor();
+    if (!surface) return;
     if (!matches.length) return;
     const q = findInput.value, r = replaceInput.value, n = matches.length;
     let out = "", last = 0;
-    for (const m of matches) { out += editor.value.slice(last, m) + r; last = m + q.length; }
-    out += editor.value.slice(last);
-    replaceRange(0, editor.value.length, out);   // one undo step for the lot
+    for (const m of matches) { out += surface.value.slice(last, m) + r; last = m + q.length; }
+    out += surface.value.slice(last);
+    replaceRange(surface, 0, surface.value.length, out);   // one undo step for the lot
     afterEdit();
     runFind(false);
     setStatus("Replaced " + n + " occurrence" + (n === 1 ? "" : "s"));
   }
 
   function openFind() {
+    const surface = activeEditor();
+    if (!surface) return;
     if (document.body.dataset.view === "preview") setView("split");
     document.body.classList.add("find-open");
-    const sel = editor.value.slice(editor.selectionStart, editor.selectionEnd);
+    const sel = surface.value.slice(surface.selectionStart, surface.selectionEnd);
     if (sel && !sel.includes("\n")) findInput.value = sel;
     findInput.focus();
     findInput.select();
@@ -9321,7 +9377,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
   function closeFind() {
     document.body.classList.remove("find-open");
-    editor.focus();
+    const surface = activeEditor();
+    if (surface) surface.focus();
   }
 
   findInput.addEventListener("input", () => { runFind(false); revealMatch(); });
@@ -9339,8 +9396,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   $("find-all").addEventListener("click", replaceAll);
   $("find-close").addEventListener("click", closeFind);
   $("editor-surfaces").addEventListener("keydown", (e) => {
-    if (!e.target || !e.target.matches("textarea[data-document-id]")) return;
-    editor = e.target;
+    if (!isActiveEditorEvent(e)) return;
     if (e.key === "Escape" && document.body.classList.contains("find-open")) closeFind();
   });
 
@@ -9380,18 +9436,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   function captureActiveDocument(format) {
-    const document = controller.activeDocument();
-    if (!document) throw new Error("there is no active document");
-    return {
-      format,
-      documentId: document.id,
-      editRevision: document.editRevision,
-      content: document.content,
-      displayName: document.displayName,
-      path: document.path,
-      canonicalPath: document.canonicalPath,
-      document,
-    };
+    return controller.captureActiveDocument({ format });
   }
 
   function captureSharedWorkspace() {
@@ -9422,8 +9467,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   function syncActiveSurface() {
     const active = controller && controller.activeDocument();
     if (!active || !workspaceView) return null;
-    const activeEditor = workspaceView.editorFor(active.id);
-    if (activeEditor) editor = activeEditor;
     filenameEl.value = active.displayName;
     filenameEl.style.width = Math.min(260, Math.max(60, (active.displayName.length + 2) * 8)) + "px";
     dirtyDot.classList.toggle("on", Boolean(active.dirty));
@@ -9491,10 +9534,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   });
   workspaceView.renderDocument = () => { syncActiveSurface(); };
   workspaceView.clearPreview = () => {
+    previewOwner = null;
     preview.replaceChildren();
     tocEl.replaceChildren();
   };
   workspaceView.setPreview = (html, capture) => {
+    previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
     preview.innerHTML = html;
     wireCachedPreviewTools();
     buildToc();
@@ -9539,6 +9584,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         return {
           async commit(_sameCapture, isCurrent) {
             if (!isCurrent()) return null;
+            previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
             render(capture.content, isCurrent);
             await mermaidPending;
             return isCurrent() ? preview.innerHTML : null;
