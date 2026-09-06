@@ -223,6 +223,11 @@
       return true;
     }
 
+    updateWorkspace(workspace) {
+      this.workspace = normalizeWorkspace(workspace, this.content.length);
+      return cloneWorkspace(this.workspace);
+    }
+
     reconcileDirty(contentSha256, editRevision) {
       requireString(contentSha256, "content sha256");
       requireNonNegativeInteger(editRevision, "edit revision");

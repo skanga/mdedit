@@ -429,6 +429,35 @@ test("captureWorkspace and applyWorkspace clamp state and focus the active edito
   assert.equal(view.applyWorkspace("absent", {}), false);
 });
 
+test("workspace adapters capture and apply shared preview, view, TOC, and find state", () => {
+  const applied = [];
+  const shared = {
+    previewScrollTop: 41,
+    viewMode: "preview",
+    tocOpen: true,
+    find: { open: true, query: "needle", replacement: "thread", matchIndex: 2 },
+  };
+  const { view } = makeFixture({
+    captureSharedWorkspace: () => shared,
+    applySharedWorkspace: (workspace) => applied.push(workspace),
+  });
+  const editor = view.ensureEditor(doc("one", { content: "abcd" }));
+  editor.setSelectionRange(1, 3);
+  editor.scrollTop = 12;
+  view.activateEditor("one");
+
+  const captured = view.captureWorkspace("one");
+  shared.find.query = "mutated";
+  view.applyWorkspace("one", captured);
+
+  assert.equal(captured.previewScrollTop, 41);
+  assert.equal(captured.find.query, "needle");
+  assert.equal(applied.length, 1);
+  assert.notEqual(applied[0], captured);
+  assert.notEqual(applied[0].find, captured.find);
+  assert.equal(applied[0].find.query, "needle");
+});
+
 test("delegated tab, close, add, and keyboard events emit intents without mutating models", () => {
   const calls = [];
   const one = doc("one");

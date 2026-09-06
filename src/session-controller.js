@@ -8,6 +8,8 @@
 
   const LEGACY_DRAFT_KEY = "mdedit-draft-v1";
   const DEFAULT_INACTIVE_LOAD_CONCURRENCY = 4;
+  const DEFAULT_PREVIEW_CACHE_MAX_ENTRIES = 5;
+  const DEFAULT_PREVIEW_CACHE_MAX_BYTES = 20 * 1024 * 1024;
 
   let DocumentModel;
   let SessionModel;
@@ -55,6 +57,13 @@
     };
   }
 
+  function utf8ByteLength(value) {
+    const text = String(value);
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(text).byteLength;
+    if (typeof Buffer !== "undefined") return Buffer.byteLength(text, "utf8");
+    return unescape(encodeURIComponent(text)).length;
+  }
+
   class SessionController {
     constructor({
       io,
@@ -67,6 +76,9 @@
       inactiveLoadConcurrency = DEFAULT_INACTIVE_LOAD_CONCURRENCY,
       renderer,
       exporter,
+      requestAnimationFrame,
+      previewCacheMaxEntries = DEFAULT_PREVIEW_CACHE_MAX_ENTRIES,
+      previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -78,10 +90,21 @@
       if (!Number.isSafeInteger(inactiveLoadConcurrency) || inactiveLoadConcurrency < 1) {
         throw new TypeError("inactiveLoadConcurrency must be a positive safe integer");
       }
+      if (!Number.isSafeInteger(previewCacheMaxEntries) || previewCacheMaxEntries < 1) {
+        throw new TypeError("previewCacheMaxEntries must be a positive safe integer");
+      }
+      if (!Number.isSafeInteger(previewCacheMaxBytes) || previewCacheMaxBytes < 1) {
+        throw new TypeError("previewCacheMaxBytes must be a positive safe integer");
+      }
 
       this.inactiveLoadConcurrency = inactiveLoadConcurrency;
       this.renderer = renderer;
       this.exporter = exporter;
+      this.requestAnimationFrame = typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (callback) => callback();
+      this.previewCacheMaxEntries = previewCacheMaxEntries;
+      this.previewCacheMaxBytes = previewCacheMaxBytes;
       this.session = null;
 
       this._started = false;
@@ -103,6 +126,11 @@
       this._loadQueue = [];
       this._loadingIds = new Set();
       this._loadPriority = [];
+      this._viewToken = 0;
+      this._renderToken = 0;
+      this._latestRenderTokens = new Map();
+      this._previewCache = new Map();
+      this._previewCacheBytes = 0;
 
       this.start().catch(() => {});
     }
@@ -623,10 +651,11 @@
         this.activateDocument(existing.id);
         return existing;
       }
+      const outgoing = this.activeDocument();
+      this._captureAndFlushOutgoing(outgoing);
       const document = this._documentFromReadResult(result);
       session.add(document);
-      this._renderSession();
-      this._renderDocument(document);
+      this._presentActivatedDocument(document);
       return document;
     }
 
@@ -656,14 +685,15 @@
       const document = this._documentFromReadResult(result);
       candidate.add(document);
       this._commitLocalSession(candidate);
-      this._renderSession();
-      this._renderDocument(document);
+      this._presentActivatedDocument(document);
       return document;
     }
 
     activateDocument(id) {
       if (this._disposed) throw new Error("session controller is disposed");
       if (!this.session) throw new Error("session has not been created");
+      const outgoing = this.activeDocument();
+      if (outgoing && outgoing.id !== id) this._captureAndFlushOutgoing(outgoing);
       const document = this.session.activate(id);
       if (!(document instanceof DocumentModel)) {
         const queuedIndex = this._loadQueue.indexOf(id);
@@ -676,8 +706,7 @@
           this._loadPriority.unshift(id);
         }
       }
-      this._renderSession();
-      this._renderDocument(document);
+      this._presentActivatedDocument(document);
       return document;
     }
 
@@ -691,14 +720,167 @@
       return this.session.documents.get(this.session.activeDocumentId) || null;
     }
 
+    onEditorInput(documentId, content) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel)) throw new Error("unknown or unloaded document id");
+      const changed = document.applyContent(content);
+      if (!changed) return false;
+
+      this._invalidatePreview(documentId);
+      this.scheduler.changed(documentId, document.editRevision);
+      this._setDocumentStatus(documentId, {
+        dirty: document.dirty,
+        fileStatus: document.fileStatus,
+        recoveryStatus: document.recoveryStatus,
+      });
+      if (this.session.activeDocumentId === documentId) {
+        this.renderDocument(documentId).catch((reason) => {
+          this._setDocumentStatus(documentId, {
+            status: "failed",
+            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+          });
+        });
+      }
+      return true;
+    }
+
+    renderDocument(documentId = this.session && this.session.activeDocumentId) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (!this.session) return Promise.reject(new Error("session has not been created"));
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel)) return Promise.resolve(null);
+      if (!this.renderer) return Promise.resolve(null);
+
+      const token = ++this._renderToken;
+      const optionsKey = this._rendererOptionsKey();
+      const capture = Object.freeze({
+        token,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        optionsKey,
+        document,
+      });
+      this._latestRenderTokens.set(document.id, token);
+      const cacheKey = this._previewCacheKey(capture);
+      const cached = this._previewCache.get(cacheKey);
+      if (cached) {
+        this._touchPreviewCache(cacheKey, cached);
+        if (this._canCommitRender(capture)) this._setPreview(cached.html, capture);
+        return Promise.resolve(cached.html);
+      }
+
+      if (this.session.activeDocumentId === document.id && typeof this.view.clearPreview === "function") {
+        this.view.clearPreview(capture);
+      }
+      let rendering;
+      try {
+        const render = typeof this.renderer === "function" ? this.renderer : this.renderer.render;
+        if (typeof render !== "function") throw new TypeError("renderer must be a function or provide render");
+        rendering = render.call(this.renderer, capture);
+      } catch (reason) {
+        return Promise.reject(reason);
+      }
+      return Promise.resolve(rendering).then((result) => {
+        if (result && typeof result === "object" && typeof result.commit === "function") {
+          if (!this._canCommitRender(capture)) return null;
+          return Promise.resolve(result.commit(capture, () => this._canCommitRender(capture))).then((html) => {
+            if (!this._isCurrentRender(capture) || typeof html !== "string") return null;
+            this._storePreview(cacheKey, document.id, html);
+            return html;
+          });
+        }
+        const html = result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "html")
+          ? result.html
+          : result;
+        if (typeof html !== "string") throw new TypeError("renderer result must be HTML text");
+        if (!this._isCurrentRender(capture)) return null;
+        this._storePreview(cacheKey, document.id, html);
+        if (this._canCommitRender(capture)) this._setPreview(html, capture);
+        return html;
+      });
+    }
+
+    async exportActive(format) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      const document = this.activeDocument();
+      if (!(document instanceof DocumentModel)) throw new Error("there is no loaded active document");
+      if (!this.exporter) throw new Error("exporter is unavailable");
+      if (typeof format !== "string" || format.length === 0) throw new TypeError("export format is required");
+
+      const capture = Object.freeze({
+        format,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        path: document.path,
+        canonicalPath: document.canonicalPath,
+        document,
+      });
+      this._setDocumentStatus(capture.documentId, {
+        status: "exporting",
+        message: `Exporting ${capture.displayName}`,
+        editRevision: capture.editRevision,
+      });
+      try {
+        const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
+        if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
+        const result = await exportDocument.call(this.exporter, capture);
+        if (this._ownsOperationCapture(capture)) {
+          const message = result && typeof result.message === "string"
+            ? result.message
+            : `Exported ${capture.displayName}`;
+          this._setDocumentStatus(capture.documentId, {
+            status: "exported",
+            message,
+            editRevision: capture.editRevision,
+          });
+        }
+        return result;
+      } catch (reason) {
+        const error = normalizeError(reason);
+        if (this._ownsOperationCapture(capture)) {
+          this._setDocumentStatus(capture.documentId, {
+            status: "failed",
+            message: `Could not export ${capture.displayName}: ${error.message}`,
+            editRevision: capture.editRevision,
+          });
+        }
+        throw error;
+      }
+    }
+
+    closeDocument(documentId) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const document = this.session.documents.get(documentId);
+      if (!document) throw new Error("unknown document id");
+      if (document.dirty) return false;
+      if (this.session.activeDocumentId === documentId) this._captureAndFlushOutgoing(document);
+      const { nextActiveId } = this.session.remove(documentId);
+      this._invalidatePreview(documentId);
+      this._latestRenderTokens.delete(documentId);
+      if (typeof this.scheduler.forget === "function") this.scheduler.forget(documentId);
+      if (typeof this.view.removeEditor === "function") this.view.removeEditor(documentId);
+      if (nextActiveId === null) {
+        this._createUntitledNow();
+      } else {
+        this._presentActivatedDocument(this.session.documents.get(nextActiveId));
+      }
+      return true;
+    }
+
     createUntitled() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (this._restoreState === "idle" && !this._localSessionEstablished) {
         const candidate = new SessionModel({ idFactory: this.idFactory });
         const document = candidate.createUntitled();
         this._commitLocalSession(candidate);
-        this._renderSession();
-        this._renderDocument(document);
+        this._presentActivatedDocument(document);
         return document;
       }
       if (this._canMutateSynchronously()) return this._createUntitledNow(this._lifecycleToken);
@@ -709,9 +891,11 @@
 
     _createUntitledNow(token = this._lifecycleToken) {
       if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-      const document = this._ensureSession().createUntitled();
-      this._renderSession();
-      this._renderDocument(document);
+      const session = this._ensureSession();
+      const outgoing = this.activeDocument();
+      this._captureAndFlushOutgoing(outgoing);
+      const document = session.createUntitled();
+      this._presentActivatedDocument(document);
       return document;
     }
 
@@ -769,6 +953,159 @@
       return this.session;
     }
 
+    _captureAndFlushOutgoing(document) {
+      if (!(document instanceof DocumentModel)) return;
+      if (typeof this.view.captureWorkspace === "function") {
+        try {
+          const captured = this.view.captureWorkspace(document.id);
+          document.updateWorkspace({
+            ...document.workspace,
+            ...(captured || {}),
+            find: {
+              ...document.workspace.find,
+              ...((captured && captured.find) || {}),
+            },
+          });
+        } catch (reason) {
+          this._setDocumentStatus(document.id, {
+            status: "failed",
+            message: `Could not capture ${document.displayName} workspace: ${normalizeError(reason).message}`,
+          });
+        }
+      }
+
+      let flushing;
+      try {
+        flushing = this.scheduler.flush(document.id, document.editRevision);
+      } catch (reason) {
+        flushing = Promise.reject(reason);
+      }
+      Promise.resolve(flushing).catch((reason) => {
+        const error = normalizeError(reason);
+        if (!this.session || this.session.documents.get(document.id) !== document) return;
+        this._setDocumentStatus(document.id, {
+          recoveryStatus: "failed",
+          message: `Recovery flush failed for ${document.displayName}: ${error.message}`,
+        });
+        this._showRecoveryError(error, {
+          phase: "activation-flush",
+          documentId: document.id,
+          displayName: document.displayName,
+          snapshotRevision: document.snapshotRevision,
+        });
+      });
+    }
+
+    _presentActivatedDocument(document) {
+      if (this._disposed || !document) return;
+      const id = document.id;
+      const viewToken = ++this._viewToken;
+      this._renderSession();
+      if (document instanceof DocumentModel && typeof this.view.ensureEditor === "function") {
+        const editor = this.view.ensureEditor(document);
+        if (editor && typeof editor.value === "string" && editor.value !== document.content) {
+          editor.value = document.content;
+        }
+      }
+      if (typeof this.view.activateEditor === "function") this.view.activateEditor(id);
+      this._renderDocumentView(document);
+      this.requestAnimationFrame(() => {
+        if (this._disposed || viewToken !== this._viewToken || !this.session
+            || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
+        if (document instanceof DocumentModel && typeof this.view.applyWorkspace === "function") {
+          this.view.applyWorkspace(id, document.workspace);
+        }
+        if (typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
+      });
+      if (this._restoreState === "restored" && this._queuedOperationCount === 0) {
+        this._persistManifestNow().catch((reason) => {
+          if (!this.session || this.session.documents.get(id) !== document) return;
+          this._showRecoveryError(reason, {
+            phase: "manifest-selection",
+            documentId: id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        });
+      }
+      this.renderDocument(id).catch((reason) => {
+        if (!this.session || this.session.documents.get(id) !== document) return;
+        this._setDocumentStatus(id, {
+          status: "failed",
+          message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+        });
+      });
+    }
+
+    _rendererOptionsKey() {
+      if (!this.renderer) return "";
+      const value = typeof this.renderer.optionsKey === "function"
+        ? this.renderer.optionsKey()
+        : this.renderer.optionsKey;
+      return value === undefined || value === null ? "" : String(value);
+    }
+
+    _previewCacheKey(capture) {
+      return `${capture.documentId}\u0000${capture.editRevision}\u0000${capture.optionsKey}`;
+    }
+
+    _isCurrentRender(capture) {
+      if (this._disposed || !this.session) return false;
+      const document = this.session.documents.get(capture.documentId);
+      return document === capture.document
+        && document.editRevision === capture.editRevision
+        && this._latestRenderTokens.get(capture.documentId) === capture.token;
+    }
+
+    _canCommitRender(capture) {
+      return this._isCurrentRender(capture)
+        && this.session.activeDocumentId === capture.documentId;
+    }
+
+    _ownsOperationCapture(capture) {
+      return !this._disposed && this.session
+        && this.session.documents.get(capture.documentId) === capture.document;
+    }
+
+    _setPreview(html, capture) {
+      if (typeof this.view.setPreview === "function") this.view.setPreview(html, capture);
+      else if (typeof this.view.renderPreview === "function") this.view.renderPreview(html, capture);
+    }
+
+    _setDocumentStatus(documentId, status) {
+      if (typeof this.view.setDocumentStatus === "function") this.view.setDocumentStatus(documentId, status);
+    }
+
+    _touchPreviewCache(key, entry) {
+      this._previewCache.delete(key);
+      this._previewCache.set(key, entry);
+    }
+
+    _storePreview(key, documentId, html) {
+      const bytes = utf8ByteLength(html);
+      const old = this._previewCache.get(key);
+      if (old) this._previewCacheBytes -= old.bytes;
+      this._previewCache.delete(key);
+      if (bytes > this.previewCacheMaxBytes) return;
+      this._previewCache.set(key, { documentId, html, bytes });
+      this._previewCacheBytes += bytes;
+      while (this._previewCache.size > this.previewCacheMaxEntries
+          || this._previewCacheBytes > this.previewCacheMaxBytes) {
+        const oldestKey = this._previewCache.keys().next().value;
+        const oldest = this._previewCache.get(oldestKey);
+        this._previewCache.delete(oldestKey);
+        this._previewCacheBytes -= oldest.bytes;
+      }
+    }
+
+    _invalidatePreview(documentId) {
+      for (const [key, entry] of this._previewCache) {
+        if (entry.documentId !== documentId) continue;
+        this._previewCache.delete(key);
+        this._previewCacheBytes -= entry.bytes;
+      }
+    }
+
     _renderSession() {
       if (this._disposed) return;
       if (typeof this.view.renderSession === "function") this.view.renderSession(this.session);
@@ -776,6 +1113,11 @@
     }
 
     _renderDocument(document) {
+      if (this._disposed) return;
+      this._renderDocumentView(document);
+    }
+
+    _renderDocumentView(document) {
       if (this._disposed) return;
       if (typeof this.view.renderDocument === "function") this.view.renderDocument(document, this.session);
       else if (typeof this.view.showDocument === "function") this.view.showDocument(document, this.session);

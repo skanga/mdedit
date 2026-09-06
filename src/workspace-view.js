@@ -145,6 +145,8 @@
       this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
       this.onAdd = callbackFrom(options, intents, ["onAdd", "add", "addDocument"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
+      this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
+      this.applySharedWorkspace = callbackFrom(options, intents, ["applySharedWorkspace"]);
 
       this._tabs = new Map();
       this._editors = new Map();
@@ -336,7 +338,11 @@
     }
 
     captureWorkspace(documentId = this._activeDocumentId) {
-      return captureEditorState(this.editorFor(documentId));
+      const shared = this.captureSharedWorkspace(documentId);
+      const source = shared && typeof shared === "object" ? shared : {};
+      const captured = { ...source, ...captureEditorState(this.editorFor(documentId)) };
+      if (source.find && typeof source.find === "object") captured.find = { ...source.find };
+      return captured;
     }
 
     applyWorkspace(documentId, workspace) {
@@ -360,6 +366,10 @@
         editor.selectionEnd = state.selectionEnd;
       }
       editor.scrollTop = state.editorScrollTop;
+      this.applySharedWorkspace({
+        ...source,
+        find: source.find && typeof source.find === "object" ? { ...source.find } : source.find,
+      }, documentId);
       return true;
     }
 

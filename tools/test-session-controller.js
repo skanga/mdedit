@@ -89,6 +89,10 @@ function makeDependencies(overrides = {}) {
     scheduler: [],
     openErrors: [],
     removedLegacy: [],
+    preview: [],
+    statuses: [],
+    activation: [],
+    frames: [],
   };
   let fileOpenedHandler = null;
   let id = 0;
@@ -142,6 +146,32 @@ function makeDependencies(overrides = {}) {
     renderDocument(document) {
       calls.renderedDocuments.push(document && document.id);
     },
+    captureWorkspace(documentId) {
+      calls.activation.push(["capture", documentId]);
+      return emptyWorkspace();
+    },
+    ensureEditor(document) {
+      calls.activation.push(["ensure", document.id]);
+      return { value: document.content };
+    },
+    activateEditor(documentId) {
+      calls.activation.push(["activate-editor", documentId]);
+    },
+    applyWorkspace(documentId, workspace) {
+      calls.activation.push(["apply", documentId, workspace]);
+    },
+    focusActiveEditor() {
+      calls.activation.push(["focus"]);
+    },
+    setPreview(html, capture) {
+      calls.preview.push([html, capture]);
+    },
+    clearPreview(capture) {
+      calls.preview.push([null, capture]);
+    },
+    setDocumentStatus(documentId, status) {
+      calls.statuses.push([documentId, status]);
+    },
     async showRecoveryError(details) {
       calls.recoveryErrors.push(details);
     },
@@ -180,6 +210,12 @@ function makeDependencies(overrides = {}) {
     inactiveLoadConcurrency: overrides.inactiveLoadConcurrency,
     renderer: overrides.renderer,
     exporter: overrides.exporter,
+    requestAnimationFrame: overrides.requestAnimationFrame || ((callback) => {
+      calls.frames.push(callback);
+      callback();
+    }),
+    previewCacheMaxEntries: overrides.previewCacheMaxEntries,
+    previewCacheMaxBytes: overrides.previewCacheMaxBytes,
   };
 
   return {
@@ -1406,4 +1442,313 @@ test("createUntitled delegates naming to SessionModel and updates session and ac
   assert.deepEqual(controller.session.tabOrder, [first.id, second.id]);
   assert.deepEqual(fixture.calls.renderedDocuments, [first.id, second.id]);
   assert.deepEqual(fixture.calls.renderedSessions, [[first.id], [first.id, second.id]]);
+});
+
+test("editor input is routed to the addressed document only", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+
+  controller.onEditorInput(a.id, "only a changed");
+
+  assert.equal(a.content, "only a changed");
+  assert.equal(a.editRevision, 1);
+  assert.equal(b.content, "");
+  assert.equal(b.editRevision, 0);
+  assert.deepEqual(fixture.calls.scheduler.at(-1), ["changed", a.id, 1]);
+});
+
+test("a deferred render cannot replace the preview after another document activates", async () => {
+  const pending = deferred();
+  const fixture = makeDependencies({
+    renderer: { render: async ({ documentId }) => documentId === "generated-1" ? pending.promise : "preview:b" },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const renderingA = controller.renderDocument(a.id);
+  const b = controller.createUntitled();
+  await controller.renderDocument(b.id);
+
+  pending.resolve("preview:a");
+  await renderingA;
+
+  assert.equal(controller.activeDocument(), b);
+  assert.equal(fixture.calls.preview.at(-1)[0], "preview:b");
+  assert.equal(fixture.calls.preview.some(([html]) => html === "preview:a"), false);
+});
+
+test("a deferred export keeps its starting document identity after a tab switch", async () => {
+  const pending = deferred();
+  const fixture = makeDependencies({
+    exporter: { export: async (capture) => {
+      assert.equal(capture.documentId, "generated-1");
+      assert.equal(capture.displayName, "Untitled 1");
+      return pending.promise;
+    } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  controller.onEditorInput(a.id, "export a");
+  const exporting = controller.exportActive("html");
+  const b = controller.createUntitled();
+
+  pending.resolve({ message: "Exported Untitled 1.html" });
+  await exporting;
+
+  assert.equal(controller.activeDocument(), b);
+  assert.equal(fixture.calls.statuses.at(-1)[0], a.id);
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /Untitled 1/);
+});
+
+test("activation captures, flushes, switches, restores, persists, then renders without waiting for recovery", async () => {
+  const flushGate = deferred();
+  const events = [];
+  const workspaceA = {
+    ...emptyWorkspace(),
+    selectionStart: 2,
+    selectionEnd: 5,
+    editorScrollTop: 17,
+    previewScrollTop: 23,
+    viewMode: "edit",
+    tocOpen: true,
+    find: { open: true, query: "a", replacement: "b", matchIndex: 1 },
+  };
+  let aId;
+  const fixture = makeDependencies({
+    scheduler: {
+      flush(id, revision) {
+        events.push(["flush", id, revision]);
+        return flushGate.promise;
+      },
+    },
+    view: {
+      captureWorkspace(id) { events.push(["capture", id]); return workspaceA; },
+      renderSession() { events.push(["render-session"]); },
+      renderDocument(document) { events.push(["show-document", document.id]); },
+      ensureEditor(document) { events.push(["ensure", document.id]); },
+      activateEditor(id) { events.push(["activate-editor", id]); },
+      applyWorkspace(id, workspace) { events.push(["apply", id, workspace.selectionStart]); },
+      focusActiveEditor() { events.push(["focus"]); },
+      clearPreview() { events.push(["clear-preview"]); },
+    },
+    requestAnimationFrame(callback) { events.push(["frame"]); callback(); },
+    renderer: { async render({ documentId }) { events.push(["render", documentId]); return `preview:${documentId}`; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  aId = a.id;
+  controller.onEditorInput(a.id, "abcdef");
+  events.length = 0;
+  const b = controller.createUntitled();
+  await settle();
+
+  assert.equal(controller.activeDocument(), b);
+  assert.deepEqual(a.workspace, workspaceA);
+  assert.deepEqual(events.slice(0, 6).map(([name]) => name), [
+    "capture", "flush", "render-session", "ensure", "activate-editor", "show-document",
+  ]);
+  assert.ok(events.findIndex(([name]) => name === "frame") < events.findIndex(([name]) => name === "render"));
+  assert.ok(events.some(([name, id]) => name === "render" && id === b.id));
+  assert.equal((await outcomeByImmediate(flushGate.promise)).status, "unsettled");
+  flushGate.resolve();
+});
+
+test("a failed outgoing recovery flush is reported to that document without rolling activation back", async () => {
+  const fixture = makeDependencies({
+    scheduler: { async flush() { throw new Error("disk full"); } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+  await settle();
+
+  assert.equal(controller.activeDocument(), b);
+  assert.equal(fixture.calls.statuses.at(-1)[0], a.id);
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /disk full/);
+  assert.equal(fixture.calls.recoveryErrors.at(-1).documentId, a.id);
+  assert.equal(fixture.calls.recoveryErrors.at(-1).phase, "activation-flush");
+});
+
+test("a render is stale after its captured document revision changes", async () => {
+  const pending = deferred();
+  let renders = 0;
+  const fixture = makeDependencies({ renderer: { render: async () => {
+    renders += 1;
+    if (renders === 2) return pending.promise;
+    return renders === 1 ? "initial preview" : "new preview";
+  } } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await settle();
+  a.applyContent("revision one");
+  const rendering = controller.renderDocument(a.id);
+  controller.onEditorInput(a.id, "revision two");
+  pending.resolve("old preview");
+  await rendering;
+  await settle();
+
+  assert.equal(fixture.calls.preview.some(([html]) => html === "old preview"), false);
+  assert.equal(fixture.calls.preview.at(-1)[0], "new preview");
+});
+
+test("only the newest concurrent render for one document can commit", async () => {
+  const first = deferred();
+  const second = deferred();
+  let calls = 0;
+  const fixture = makeDependencies({ renderer: { render: async () => (++calls === 1 ? first.promise : second.promise) } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const older = controller.renderDocument(a.id);
+  const newer = controller.renderDocument(a.id);
+  second.resolve("new preview");
+  await newer;
+  first.resolve("old preview");
+  await older;
+
+  assert.equal(fixture.calls.preview.at(-1)[0], "new preview");
+  assert.equal(fixture.calls.preview.some(([html]) => html === "old preview"), false);
+});
+
+test("deferred renderer commit and async completion guards follow active identity", async () => {
+  const completed = deferred();
+  const guards = [];
+  let commits = 0;
+  const fixture = makeDependencies({ renderer: { async render({ documentId }) {
+    if (documentId !== "generated-1") return "preview:b";
+    return {
+      async commit(_capture, isCurrent) {
+        commits += 1;
+        guards.push(isCurrent());
+        await completed.promise;
+        guards.push(isCurrent());
+        return "preview:a";
+      },
+    };
+  } } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await settle();
+  assert.equal(commits, 1);
+  const b = controller.createUntitled();
+  await settle();
+  completed.resolve();
+  await settle();
+
+  assert.equal(controller.activeDocument(), b);
+  assert.deepEqual(guards, [true, false]);
+  assert.equal(fixture.calls.preview.some(([html]) => html === "preview:a"), false);
+  assert.ok(a.id !== b.id);
+});
+
+test("export errors are reported to the starting document and do not switch tabs", async () => {
+  const pending = deferred();
+  const fixture = makeDependencies({ exporter: { export: async () => pending.promise } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const exporting = controller.exportActive("png");
+  const b = controller.createUntitled();
+  pending.reject(new Error("canvas failed"));
+
+  await assert.rejects(exporting, /canvas failed/);
+  assert.equal(controller.activeDocument(), b);
+  assert.equal(fixture.calls.statuses.at(-1)[0], a.id);
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /canvas failed/);
+});
+
+test("export completion is ignored when its starting document was closed", async () => {
+  const pending = deferred();
+  const fixture = makeDependencies({ exporter: { export: async () => pending.promise } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const exporting = controller.exportActive("html");
+  controller.closeDocument(a.id);
+  const statusesBeforeCompletion = fixture.calls.statuses.length;
+  pending.resolve({ message: "late export" });
+  await exporting;
+
+  assert.equal(fixture.calls.statuses.length, statusesBeforeCompletion);
+  assert.notEqual(controller.activeDocument() && controller.activeDocument().id, a.id);
+});
+
+test("preview cache evicts least-recently-used entries by count and invalidates edited documents", async () => {
+  let renders = 0;
+  const fixture = makeDependencies({
+    renderer: { render: async ({ documentId }) => `${documentId}:${++renders}` },
+    previewCacheMaxEntries: 2,
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await settle();
+  const b = controller.createUntitled();
+  await settle();
+  controller.activateDocument(a.id);
+  await settle(); // touch a
+  const c = controller.createUntitled();
+  await settle(); // evicts b
+  controller.activateDocument(b.id);
+  await settle();
+  assert.equal(renders, 4);
+
+  controller.activateDocument(a.id);
+  controller.onEditorInput(a.id, "edited");
+  await settle();
+  const afterEditRender = renders;
+  await controller.renderDocument(a.id);
+  assert.equal(renders, afterEditRender); // input render populated the new-revision cache
+});
+
+test("preview cache also evicts entries over the serialized byte budget", async () => {
+  let renders = 0;
+  const fixture = makeDependencies({
+    renderer: { render: async () => `${++renders}:123456789` },
+    previewCacheMaxEntries: 5,
+    previewCacheMaxBytes: 12,
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await settle();
+  controller.createUntitled();
+  await settle();
+  controller.activateDocument(a.id);
+  await settle();
+
+  assert.equal(renders, 3);
+});
+
+test("browser bootstrap delegates document ownership and active operations to the session controller", () => {
+  const template = fs.readFileSync(path.join(__dirname, "..", "src", "index.template.html"), "utf8");
+
+  assert.match(template, /new MDEdit\.WorkspaceView\s*\(/);
+  assert.match(template, /new MDEdit\.RecoveryScheduler\s*\(/);
+  assert.match(template, /new MDEdit\.SessionController\s*\(/);
+  assert.match(template, /controller\.onEditorInput\s*\(/);
+  assert.match(template, /controller\.exportActive\s*\(/);
+  assert.match(template, /controller\.activateDocument\s*\(/);
+  assert.doesNotMatch(template, /\blet\s+(?:fileHandle|nativePath|dirty)\b/);
+  assert.ok(template.indexOf("listenFileOpened(handler)") < template.indexOf("await controller.restore()"));
+  assert.match(template, /writeToHandle\(fileHandle, capture\.content\)/);
+});
+
+test("DocumentModel workspace replacement is validated and detached", () => {
+  const document = new DocumentModel({
+    id: "workspace-document",
+    displayName: "workspace.md",
+    content: "abcdef",
+    savedContentSha256: "sha:abcdef",
+  });
+  const input = {
+    ...emptyWorkspace(),
+    selectionStart: 2,
+    selectionEnd: 4,
+    find: { open: true, query: "b", replacement: "c", matchIndex: 0 },
+  };
+
+  document.updateWorkspace(input);
+  input.selectionStart = 6;
+  input.find.query = "changed";
+
+  assert.equal(document.workspace.selectionStart, 2);
+  assert.equal(document.workspace.find.query, "b");
+  assert.throws(() => document.updateWorkspace({ ...emptyWorkspace(), viewMode: "invalid" }), /view mode/i);
 });

@@ -1003,7 +1003,7 @@
 
 <div id="drop-overlay"><div class="card">Drop your markdown file<div class="sub">.md, .markdown or any text file — it stays on your device</div></div></div>
 
-<input type="file" id="file-input" accept=".md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain" style="display:none">
+<input type="file" id="file-input" accept=".md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain" multiple style="display:none">
 
 <script>/**
  * marked v14.1.4 - a markdown parser
@@ -2486,6 +2486,11 @@ return Pe}()
       return true;
     }
 
+    updateWorkspace(workspace) {
+      this.workspace = normalizeWorkspace(workspace, this.content.length);
+      return cloneWorkspace(this.workspace);
+    }
+
     reconcileDirty(contentSha256, editRevision) {
       requireString(contentSha256, "content sha256");
       requireNonNegativeInteger(editRevision, "edit revision");
@@ -3330,6 +3335,8 @@ return Pe}()
 
   const LEGACY_DRAFT_KEY = "mdedit-draft-v1";
   const DEFAULT_INACTIVE_LOAD_CONCURRENCY = 4;
+  const DEFAULT_PREVIEW_CACHE_MAX_ENTRIES = 5;
+  const DEFAULT_PREVIEW_CACHE_MAX_BYTES = 20 * 1024 * 1024;
 
   let DocumentModel;
   let SessionModel;
@@ -3377,6 +3384,13 @@ return Pe}()
     };
   }
 
+  function utf8ByteLength(value) {
+    const text = String(value);
+    if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(text).byteLength;
+    if (typeof Buffer !== "undefined") return Buffer.byteLength(text, "utf8");
+    return unescape(encodeURIComponent(text)).length;
+  }
+
   class SessionController {
     constructor({
       io,
@@ -3389,6 +3403,9 @@ return Pe}()
       inactiveLoadConcurrency = DEFAULT_INACTIVE_LOAD_CONCURRENCY,
       renderer,
       exporter,
+      requestAnimationFrame,
+      previewCacheMaxEntries = DEFAULT_PREVIEW_CACHE_MAX_ENTRIES,
+      previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -3400,10 +3417,21 @@ return Pe}()
       if (!Number.isSafeInteger(inactiveLoadConcurrency) || inactiveLoadConcurrency < 1) {
         throw new TypeError("inactiveLoadConcurrency must be a positive safe integer");
       }
+      if (!Number.isSafeInteger(previewCacheMaxEntries) || previewCacheMaxEntries < 1) {
+        throw new TypeError("previewCacheMaxEntries must be a positive safe integer");
+      }
+      if (!Number.isSafeInteger(previewCacheMaxBytes) || previewCacheMaxBytes < 1) {
+        throw new TypeError("previewCacheMaxBytes must be a positive safe integer");
+      }
 
       this.inactiveLoadConcurrency = inactiveLoadConcurrency;
       this.renderer = renderer;
       this.exporter = exporter;
+      this.requestAnimationFrame = typeof requestAnimationFrame === "function"
+        ? requestAnimationFrame
+        : (callback) => callback();
+      this.previewCacheMaxEntries = previewCacheMaxEntries;
+      this.previewCacheMaxBytes = previewCacheMaxBytes;
       this.session = null;
 
       this._started = false;
@@ -3425,6 +3453,11 @@ return Pe}()
       this._loadQueue = [];
       this._loadingIds = new Set();
       this._loadPriority = [];
+      this._viewToken = 0;
+      this._renderToken = 0;
+      this._latestRenderTokens = new Map();
+      this._previewCache = new Map();
+      this._previewCacheBytes = 0;
 
       this.start().catch(() => {});
     }
@@ -3945,10 +3978,11 @@ return Pe}()
         this.activateDocument(existing.id);
         return existing;
       }
+      const outgoing = this.activeDocument();
+      this._captureAndFlushOutgoing(outgoing);
       const document = this._documentFromReadResult(result);
       session.add(document);
-      this._renderSession();
-      this._renderDocument(document);
+      this._presentActivatedDocument(document);
       return document;
     }
 
@@ -3978,14 +4012,15 @@ return Pe}()
       const document = this._documentFromReadResult(result);
       candidate.add(document);
       this._commitLocalSession(candidate);
-      this._renderSession();
-      this._renderDocument(document);
+      this._presentActivatedDocument(document);
       return document;
     }
 
     activateDocument(id) {
       if (this._disposed) throw new Error("session controller is disposed");
       if (!this.session) throw new Error("session has not been created");
+      const outgoing = this.activeDocument();
+      if (outgoing && outgoing.id !== id) this._captureAndFlushOutgoing(outgoing);
       const document = this.session.activate(id);
       if (!(document instanceof DocumentModel)) {
         const queuedIndex = this._loadQueue.indexOf(id);
@@ -3998,8 +4033,7 @@ return Pe}()
           this._loadPriority.unshift(id);
         }
       }
-      this._renderSession();
-      this._renderDocument(document);
+      this._presentActivatedDocument(document);
       return document;
     }
 
@@ -4013,14 +4047,167 @@ return Pe}()
       return this.session.documents.get(this.session.activeDocumentId) || null;
     }
 
+    onEditorInput(documentId, content) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel)) throw new Error("unknown or unloaded document id");
+      const changed = document.applyContent(content);
+      if (!changed) return false;
+
+      this._invalidatePreview(documentId);
+      this.scheduler.changed(documentId, document.editRevision);
+      this._setDocumentStatus(documentId, {
+        dirty: document.dirty,
+        fileStatus: document.fileStatus,
+        recoveryStatus: document.recoveryStatus,
+      });
+      if (this.session.activeDocumentId === documentId) {
+        this.renderDocument(documentId).catch((reason) => {
+          this._setDocumentStatus(documentId, {
+            status: "failed",
+            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+          });
+        });
+      }
+      return true;
+    }
+
+    renderDocument(documentId = this.session && this.session.activeDocumentId) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (!this.session) return Promise.reject(new Error("session has not been created"));
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel)) return Promise.resolve(null);
+      if (!this.renderer) return Promise.resolve(null);
+
+      const token = ++this._renderToken;
+      const optionsKey = this._rendererOptionsKey();
+      const capture = Object.freeze({
+        token,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        optionsKey,
+        document,
+      });
+      this._latestRenderTokens.set(document.id, token);
+      const cacheKey = this._previewCacheKey(capture);
+      const cached = this._previewCache.get(cacheKey);
+      if (cached) {
+        this._touchPreviewCache(cacheKey, cached);
+        if (this._canCommitRender(capture)) this._setPreview(cached.html, capture);
+        return Promise.resolve(cached.html);
+      }
+
+      if (this.session.activeDocumentId === document.id && typeof this.view.clearPreview === "function") {
+        this.view.clearPreview(capture);
+      }
+      let rendering;
+      try {
+        const render = typeof this.renderer === "function" ? this.renderer : this.renderer.render;
+        if (typeof render !== "function") throw new TypeError("renderer must be a function or provide render");
+        rendering = render.call(this.renderer, capture);
+      } catch (reason) {
+        return Promise.reject(reason);
+      }
+      return Promise.resolve(rendering).then((result) => {
+        if (result && typeof result === "object" && typeof result.commit === "function") {
+          if (!this._canCommitRender(capture)) return null;
+          return Promise.resolve(result.commit(capture, () => this._canCommitRender(capture))).then((html) => {
+            if (!this._isCurrentRender(capture) || typeof html !== "string") return null;
+            this._storePreview(cacheKey, document.id, html);
+            return html;
+          });
+        }
+        const html = result && typeof result === "object" && Object.prototype.hasOwnProperty.call(result, "html")
+          ? result.html
+          : result;
+        if (typeof html !== "string") throw new TypeError("renderer result must be HTML text");
+        if (!this._isCurrentRender(capture)) return null;
+        this._storePreview(cacheKey, document.id, html);
+        if (this._canCommitRender(capture)) this._setPreview(html, capture);
+        return html;
+      });
+    }
+
+    async exportActive(format) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      const document = this.activeDocument();
+      if (!(document instanceof DocumentModel)) throw new Error("there is no loaded active document");
+      if (!this.exporter) throw new Error("exporter is unavailable");
+      if (typeof format !== "string" || format.length === 0) throw new TypeError("export format is required");
+
+      const capture = Object.freeze({
+        format,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        path: document.path,
+        canonicalPath: document.canonicalPath,
+        document,
+      });
+      this._setDocumentStatus(capture.documentId, {
+        status: "exporting",
+        message: `Exporting ${capture.displayName}`,
+        editRevision: capture.editRevision,
+      });
+      try {
+        const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
+        if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
+        const result = await exportDocument.call(this.exporter, capture);
+        if (this._ownsOperationCapture(capture)) {
+          const message = result && typeof result.message === "string"
+            ? result.message
+            : `Exported ${capture.displayName}`;
+          this._setDocumentStatus(capture.documentId, {
+            status: "exported",
+            message,
+            editRevision: capture.editRevision,
+          });
+        }
+        return result;
+      } catch (reason) {
+        const error = normalizeError(reason);
+        if (this._ownsOperationCapture(capture)) {
+          this._setDocumentStatus(capture.documentId, {
+            status: "failed",
+            message: `Could not export ${capture.displayName}: ${error.message}`,
+            editRevision: capture.editRevision,
+          });
+        }
+        throw error;
+      }
+    }
+
+    closeDocument(documentId) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const document = this.session.documents.get(documentId);
+      if (!document) throw new Error("unknown document id");
+      if (document.dirty) return false;
+      if (this.session.activeDocumentId === documentId) this._captureAndFlushOutgoing(document);
+      const { nextActiveId } = this.session.remove(documentId);
+      this._invalidatePreview(documentId);
+      this._latestRenderTokens.delete(documentId);
+      if (typeof this.scheduler.forget === "function") this.scheduler.forget(documentId);
+      if (typeof this.view.removeEditor === "function") this.view.removeEditor(documentId);
+      if (nextActiveId === null) {
+        this._createUntitledNow();
+      } else {
+        this._presentActivatedDocument(this.session.documents.get(nextActiveId));
+      }
+      return true;
+    }
+
     createUntitled() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (this._restoreState === "idle" && !this._localSessionEstablished) {
         const candidate = new SessionModel({ idFactory: this.idFactory });
         const document = candidate.createUntitled();
         this._commitLocalSession(candidate);
-        this._renderSession();
-        this._renderDocument(document);
+        this._presentActivatedDocument(document);
         return document;
       }
       if (this._canMutateSynchronously()) return this._createUntitledNow(this._lifecycleToken);
@@ -4031,9 +4218,11 @@ return Pe}()
 
     _createUntitledNow(token = this._lifecycleToken) {
       if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-      const document = this._ensureSession().createUntitled();
-      this._renderSession();
-      this._renderDocument(document);
+      const session = this._ensureSession();
+      const outgoing = this.activeDocument();
+      this._captureAndFlushOutgoing(outgoing);
+      const document = session.createUntitled();
+      this._presentActivatedDocument(document);
       return document;
     }
 
@@ -4091,6 +4280,159 @@ return Pe}()
       return this.session;
     }
 
+    _captureAndFlushOutgoing(document) {
+      if (!(document instanceof DocumentModel)) return;
+      if (typeof this.view.captureWorkspace === "function") {
+        try {
+          const captured = this.view.captureWorkspace(document.id);
+          document.updateWorkspace({
+            ...document.workspace,
+            ...(captured || {}),
+            find: {
+              ...document.workspace.find,
+              ...((captured && captured.find) || {}),
+            },
+          });
+        } catch (reason) {
+          this._setDocumentStatus(document.id, {
+            status: "failed",
+            message: `Could not capture ${document.displayName} workspace: ${normalizeError(reason).message}`,
+          });
+        }
+      }
+
+      let flushing;
+      try {
+        flushing = this.scheduler.flush(document.id, document.editRevision);
+      } catch (reason) {
+        flushing = Promise.reject(reason);
+      }
+      Promise.resolve(flushing).catch((reason) => {
+        const error = normalizeError(reason);
+        if (!this.session || this.session.documents.get(document.id) !== document) return;
+        this._setDocumentStatus(document.id, {
+          recoveryStatus: "failed",
+          message: `Recovery flush failed for ${document.displayName}: ${error.message}`,
+        });
+        this._showRecoveryError(error, {
+          phase: "activation-flush",
+          documentId: document.id,
+          displayName: document.displayName,
+          snapshotRevision: document.snapshotRevision,
+        });
+      });
+    }
+
+    _presentActivatedDocument(document) {
+      if (this._disposed || !document) return;
+      const id = document.id;
+      const viewToken = ++this._viewToken;
+      this._renderSession();
+      if (document instanceof DocumentModel && typeof this.view.ensureEditor === "function") {
+        const editor = this.view.ensureEditor(document);
+        if (editor && typeof editor.value === "string" && editor.value !== document.content) {
+          editor.value = document.content;
+        }
+      }
+      if (typeof this.view.activateEditor === "function") this.view.activateEditor(id);
+      this._renderDocumentView(document);
+      this.requestAnimationFrame(() => {
+        if (this._disposed || viewToken !== this._viewToken || !this.session
+            || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
+        if (document instanceof DocumentModel && typeof this.view.applyWorkspace === "function") {
+          this.view.applyWorkspace(id, document.workspace);
+        }
+        if (typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
+      });
+      if (this._restoreState === "restored" && this._queuedOperationCount === 0) {
+        this._persistManifestNow().catch((reason) => {
+          if (!this.session || this.session.documents.get(id) !== document) return;
+          this._showRecoveryError(reason, {
+            phase: "manifest-selection",
+            documentId: id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        });
+      }
+      this.renderDocument(id).catch((reason) => {
+        if (!this.session || this.session.documents.get(id) !== document) return;
+        this._setDocumentStatus(id, {
+          status: "failed",
+          message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+        });
+      });
+    }
+
+    _rendererOptionsKey() {
+      if (!this.renderer) return "";
+      const value = typeof this.renderer.optionsKey === "function"
+        ? this.renderer.optionsKey()
+        : this.renderer.optionsKey;
+      return value === undefined || value === null ? "" : String(value);
+    }
+
+    _previewCacheKey(capture) {
+      return `${capture.documentId}\u0000${capture.editRevision}\u0000${capture.optionsKey}`;
+    }
+
+    _isCurrentRender(capture) {
+      if (this._disposed || !this.session) return false;
+      const document = this.session.documents.get(capture.documentId);
+      return document === capture.document
+        && document.editRevision === capture.editRevision
+        && this._latestRenderTokens.get(capture.documentId) === capture.token;
+    }
+
+    _canCommitRender(capture) {
+      return this._isCurrentRender(capture)
+        && this.session.activeDocumentId === capture.documentId;
+    }
+
+    _ownsOperationCapture(capture) {
+      return !this._disposed && this.session
+        && this.session.documents.get(capture.documentId) === capture.document;
+    }
+
+    _setPreview(html, capture) {
+      if (typeof this.view.setPreview === "function") this.view.setPreview(html, capture);
+      else if (typeof this.view.renderPreview === "function") this.view.renderPreview(html, capture);
+    }
+
+    _setDocumentStatus(documentId, status) {
+      if (typeof this.view.setDocumentStatus === "function") this.view.setDocumentStatus(documentId, status);
+    }
+
+    _touchPreviewCache(key, entry) {
+      this._previewCache.delete(key);
+      this._previewCache.set(key, entry);
+    }
+
+    _storePreview(key, documentId, html) {
+      const bytes = utf8ByteLength(html);
+      const old = this._previewCache.get(key);
+      if (old) this._previewCacheBytes -= old.bytes;
+      this._previewCache.delete(key);
+      if (bytes > this.previewCacheMaxBytes) return;
+      this._previewCache.set(key, { documentId, html, bytes });
+      this._previewCacheBytes += bytes;
+      while (this._previewCache.size > this.previewCacheMaxEntries
+          || this._previewCacheBytes > this.previewCacheMaxBytes) {
+        const oldestKey = this._previewCache.keys().next().value;
+        const oldest = this._previewCache.get(oldestKey);
+        this._previewCache.delete(oldestKey);
+        this._previewCacheBytes -= oldest.bytes;
+      }
+    }
+
+    _invalidatePreview(documentId) {
+      for (const [key, entry] of this._previewCache) {
+        if (entry.documentId !== documentId) continue;
+        this._previewCache.delete(key);
+        this._previewCacheBytes -= entry.bytes;
+      }
+    }
+
     _renderSession() {
       if (this._disposed) return;
       if (typeof this.view.renderSession === "function") this.view.renderSession(this.session);
@@ -4098,6 +4440,11 @@ return Pe}()
     }
 
     _renderDocument(document) {
+      if (this._disposed) return;
+      this._renderDocumentView(document);
+    }
+
+    _renderDocumentView(document) {
       if (this._disposed) return;
       if (typeof this.view.renderDocument === "function") this.view.renderDocument(document, this.session);
       else if (typeof this.view.showDocument === "function") this.view.showDocument(document, this.session);
@@ -4334,6 +4681,8 @@ return Pe}()
       this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
       this.onAdd = callbackFrom(options, intents, ["onAdd", "add", "addDocument"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
+      this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
+      this.applySharedWorkspace = callbackFrom(options, intents, ["applySharedWorkspace"]);
 
       this._tabs = new Map();
       this._editors = new Map();
@@ -4525,7 +4874,11 @@ return Pe}()
     }
 
     captureWorkspace(documentId = this._activeDocumentId) {
-      return captureEditorState(this.editorFor(documentId));
+      const shared = this.captureSharedWorkspace(documentId);
+      const source = shared && typeof shared === "object" ? shared : {};
+      const captured = { ...source, ...captureEditorState(this.editorFor(documentId)) };
+      if (source.find && typeof source.find === "object") captured.find = { ...source.find };
+      return captured;
     }
 
     applyWorkspace(documentId, workspace) {
@@ -4549,6 +4902,10 @@ return Pe}()
         editor.selectionEnd = state.selectionEnd;
       }
       editor.scrollTop = state.editorScrollTop;
+      this.applySharedWorkspace({
+        ...source,
+        find: source.find && typeof source.find === "object" ? { ...source.find } : source.find,
+      }, documentId);
       return true;
     }
 
@@ -4939,16 +5296,17 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   "use strict";
 
   const $ = (id) => document.getElementById(id);
-  const editor = $("editor"), preview = $("preview"), previewPane = $("preview-pane");
+  let editor = $("editor");
+  const preview = $("preview"), previewPane = $("preview-pane");
   const filenameEl = $("filename"), dirtyDot = $("dirty-dot"), statusEl = $("status");
   const DRAFT_KEY = "mdedit-draft-v1";
   const THEME_KEY = "mdedit-theme";
   const isMac = /Mac|iPhone|iPad/.test(navigator.platform || "");
   $("save-kbd").textContent = isMac ? "⌘S" : "Ctrl+S";
 
-  let fileHandle = null;     // FileSystemFileHandle when opened via picker/drop (Chromium)
-  let nativePath = null;     // absolute path when opened via the desktop bridge
-  let dirty = false;
+  let controller = null;
+  let workspaceView = null;
+  const browserFileHandles = new Map();
   let statusTimer = null;
 
   /* ── Markdown rendering ─────────────────────── */
@@ -5159,7 +5517,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
     });
   }
-  async function renderMermaidJobs(jobs) {
+  async function renderMermaidJobs(jobs, isCurrent = () => true) {
     let n = 0;
     for (const { div, src } of jobs) {
       const id = "mmd-" + (++mermaidSeq);
@@ -5167,6 +5525,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       const index = n;
       try {
         const { svg } = await mermaid.render(id, src);
+        if (!isCurrent()) continue;
         div.innerHTML = svg;
         const el = div.querySelector("svg");
         if (el) div.appendChild(toolButton("SVG", "Download this diagram as SVG", () => downloadDiagramSvg(el, index)));
@@ -5176,11 +5535,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         const pre = document.createElement("pre");
         pre.className = "mermaid-err";
         pre.textContent = src + "\n\n⚠ " + ((e && e.message) || "Mermaid could not render this diagram");
-        div.replaceChildren(pre);
+        if (isCurrent()) div.replaceChildren(pre);
       }
     }
   }
-  function highlightAndDiagrams() {
+  function highlightAndDiagrams(isCurrent = () => true) {
     preview.querySelectorAll("pre > code").forEach((code) => {
       const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
       if (!lang || lang === "mermaid") return;
@@ -5200,7 +5559,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       code.parentElement.replaceWith(div);
       jobs.push({ div, src });
     });
-    if (jobs.length) mermaidPending = renderMermaidJobs(jobs);
+    mermaidPending = jobs.length ? renderMermaidJobs(jobs, isCurrent) : Promise.resolve();
   }
 
   /* Per-block downloads: a diagram as SVG, a table as CSV. */
@@ -5308,12 +5667,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     tocEl.innerHTML = html;
   }
 
-  function render() {
-    const { src, math } = HAS_MATH ? extractMath(editor.value) : { src: editor.value, math: [] };
+  function render(content = editor.value, isCurrent = () => true) {
+    const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
     preview.innerHTML = DOMPurify.sanitize(marked.parse(src));
     if (HAS_MATH) injectMath(math);
     transformCallouts();
-    highlightAndDiagrams();
+    highlightAndDiagrams(isCurrent);
     // mark task-list items so CSS can drop their bullets
     preview.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
       cb.closest("li").classList.add("task");
@@ -5321,7 +5680,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     addTableTools();
     addCodeTools();
     buildToc();
-    updateStats();
+    updateStats(content);
   }
 
   let renderTimer = null;
@@ -5330,8 +5689,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     renderTimer = setTimeout(render, 120);
   }
 
-  function updateStats() {
-    const text = editor.value;
+  function updateStats(text = editor.value) {
     const words = (text.trim().match(/\S+/g) || []).length;
     $("stat-words").textContent = words + " word" + (words === 1 ? "" : "s");
     $("stat-chars").textContent = text.length + " chars";
@@ -5339,20 +5697,25 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     $("stat-lines").textContent = lines + " line" + (lines === 1 ? "" : "s");
   }
 
-  function setStatus(msg, sticky) {
+  function setStatus(msg, sticky, documentId) {
+    const id = documentId || (controller && controller.activeDocument() && controller.activeDocument().id);
+    if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: sticky ? "writing" : "message", message: msg });
     statusEl.textContent = msg;
     clearTimeout(statusTimer);
     if (!sticky) statusTimer = setTimeout(() => { statusEl.textContent = ""; }, 4000);
   }
 
   function setDirty(v) {
-    dirty = v;
+    const active = controller && controller.activeDocument();
+    if (active && v && active.content !== editor.value) controller.onEditorInput(active.id, editor.value);
+    if (active) active.dirty = Boolean(v);
     dirtyDot.classList.toggle("on", v);
   }
 
   /* ── Draft persistence (localStorage) ───────── */
   let draftTimer = null;
   function saveDraft() {
+    if (controller) return;
     clearTimeout(draftTimer);
     draftTimer = setTimeout(() => {
       try {
@@ -5361,6 +5724,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     }, 400);
   }
   function loadDraft() {
+    if (controller) return false;
     try {
       const raw = localStorage.getItem(DRAFT_KEY);
       if (!raw) return false;
@@ -5374,84 +5738,81 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   /* ── File loading ───────────────────────────── */
-  function loadContent(text, name, handle, path) {
-    editor.value = text.replace(/\r\n/g, "\n");
-    filenameEl.value = name || "untitled.md";
-    fileHandle = handle || null;
-    nativePath = path || null;
-    setDirty(false);
-    render();
-    saveDraft();
-    editor.setSelectionRange(0, 0);
-    editor.scrollTop = 0;
-    previewPane.scrollTop = 0;
-    setStatus("Opened " + filenameEl.value + ((fileHandle || nativePath) ? " — Save writes back to the original file" : ""));
-  }
-
   async function openFromFile(file, handle) {
     const text = await file.text();
-    loadContent(text, file.name, handle);
-  }
-
-  async function openFromNativePath(path) {
-    try {
-      const text = await nativeApp.readFile(path);
-      loadContent(text, path.split(/[/\\]/).pop(), null, path);
-    } catch (e) {
-      setStatus("Couldn't read " + (path || "file"));
-    }
+    const document = await Promise.resolve(controller.createUntitled());
+    document.displayName = file.name || document.displayName;
+    controller.onEditorInput(document.id, text.replace(/\r\n/g, "\n"));
+    document.savedContentSha256 = await hashText(document.content);
+    document.dirty = false;
+    if (handle) browserFileHandles.set(document.id, handle);
+    controller.activateDocument(document.id);
+    syncActiveSurface();
+    setStatus("Opened " + document.displayName + (handle ? " — Save writes back to the original file" : ""), false, document.id);
   }
 
   async function openPicker() {
     if (nativeApp) {
-      const path = await nativeApp.pickFile();   // null on cancel
-      if (path) await openFromNativePath(path);
+      const paths = await nativeApp.pickFiles();
+      if (paths.length) await controller.openPaths(paths);
+      syncActiveSurface();
       return;
     }
     if (window.showOpenFilePicker) {
       try {
-        const [handle] = await window.showOpenFilePicker({
+        const handles = await window.showOpenFilePicker({
+          multiple: true,
           types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] } }],
           excludeAcceptAllOption: false,
         });
-        await openFromFile(await handle.getFile(), handle);
+        for (const handle of handles) await openFromFile(await handle.getFile(), handle);
       } catch (e) { /* user cancelled */ }
     } else {
       $("file-input").click();
     }
   }
   $("file-input").addEventListener("change", (e) => {
-    const f = e.target.files[0];
-    if (f) openFromFile(f, null);
+    for (const file of e.target.files || []) openFromFile(file, null);
     e.target.value = "";
   });
 
   /* ── Saving ─────────────────────────────────── */
-  async function writeToHandle(handle) {
+  async function writeToHandle(handle, content) {
     const writable = await handle.createWritable();
-    await writable.write(editor.value);
+    await writable.write(content);
     await writable.close();
   }
 
   async function save() {
-    if (nativePath) {
+    const document = controller.activeDocument();
+    if (!document) return;
+    const capture = { documentId: document.id, editRevision: document.editRevision, content: document.content, displayName: document.displayName };
+    if (nativeApp && document.path) {
       try {
-        await nativeApp.writeFile(nativePath, editor.value);
-        setDirty(false);
-        setStatus("Saved to " + filenameEl.value);
+        const result = typeof nativeApp.saveDocument === "function"
+          ? await nativeApp.saveDocument({ path: document.path, expectedSha256: document.expectedDiskSha256, content: capture.content })
+          : (await nativeApp.writeFile(document.path, capture.content), null);
+        if (result && result.status === "conflict") throw new Error("the file changed outside MDedit");
+        const contentSha256 = result && result.sha256 ? result.sha256 : await hashText(capture.content);
+        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        syncActiveSurface();
+        setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
       } catch (e) {
         setStatus("Couldn't write to the original file — choose where to save it");
       }
     }
+    const fileHandle = browserFileHandles.get(document.id);
     if (fileHandle) {
       try {
         if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
           if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("denied");
         }
-        await writeToHandle(fileHandle);
-        setDirty(false);
-        setStatus("Saved to " + filenameEl.value);
+        await writeToHandle(fileHandle, capture.content);
+        const contentSha256 = await hashText(capture.content);
+        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        syncActiveSurface();
+        setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
       } catch (e) {
         setStatus("Couldn't write to the original file — choose where to save it");
@@ -5462,18 +5823,27 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   // Directory of the document as the shell knows it ("" when unknown):
   // Save-As and exports anchor their dialogs there instead of the app's cwd.
-  const nativeDir = () => (nativePath ? nativePath.replace(/[^/\\]*$/, "") : "");
+  const nativeDir = (document = controller.activeDocument()) => (document && document.path ? document.path.replace(/[^/\\]*$/, "") : "");
 
   async function saveAs() {
+    const document = controller.activeDocument();
+    if (!document) return;
+    const capture = { documentId: document.id, editRevision: document.editRevision, content: document.content, displayName: document.displayName };
     if (nativeApp) {
       try {
-        const path = await nativeApp.saveAs({ defaultDir: nativeDir(), suggestedName: filenameEl.value || "untitled.md", data: editor.value });
+        const path = await nativeApp.saveAs({ defaultDir: nativeDir(document), suggestedName: capture.displayName || "untitled.md", data: capture.content });
         if (!path) return;    // user cancelled
-        fileHandle = null;
-        nativePath = path;    // subsequent Ctrl+S writes back here
-        filenameEl.value = path.split(/[/\\]/).pop();
-        setDirty(false);
-        setStatus("Saved to " + filenameEl.value);
+        if (!controller.session.documents.has(capture.documentId)) return;
+        browserFileHandles.delete(capture.documentId);
+        document.path = path;
+        document.canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
+          ? await nativeApp.canonicalizeDocumentPath(path) : path;
+        document.displayName = path.split(/[/\\]/).pop();
+        const contentSha256 = await hashText(capture.content);
+        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        controller.activateDocument(document.id);
+        syncActiveSurface();
+        setStatus("Saved to " + document.displayName, false, document.id);
       } catch (e) {
         setStatus("Couldn't save: " + e.message);
       }
@@ -5482,25 +5852,28 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (window.showSaveFilePicker) {
       try {
         const handle = await window.showSaveFilePicker({
-          suggestedName: filenameEl.value || "untitled.md",
+          suggestedName: capture.displayName || "untitled.md",
           types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
         });
-        await writeToHandle(handle);
-        fileHandle = handle;
-        filenameEl.value = handle.name;
-        setDirty(false);
-        setStatus("Saved to " + handle.name);
+        await writeToHandle(handle, capture.content);
+        browserFileHandles.set(capture.documentId, handle);
+        document.displayName = handle.name;
+        const contentSha256 = await hashText(capture.content);
+        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        controller.activateDocument(document.id);
+        syncActiveSurface();
+        setStatus("Saved to " + handle.name, false, document.id);
       } catch (e) { /* user cancelled */ }
     } else {
       download();
     }
   }
 
-  async function saveBlob(blob, name) {
+  async function saveBlob(blob, name, capture) {
     if (nativeApp) {
       try {
-        const path = await nativeApp.saveAs({ defaultDir: nativeDir(), suggestedName: name, data: new Uint8Array(await blob.arrayBuffer()) });
-        if (path) setStatus("Saved " + name);
+        const path = await nativeApp.saveAs({ defaultDir: nativeDir(capture && capture.document), suggestedName: name, data: new Uint8Array(await blob.arrayBuffer()) });
+        if (path) setStatus("Saved " + name, false, capture && capture.documentId);
       } catch (e) {
         setStatus("Couldn't save: " + e.message);
       }
@@ -5515,13 +5888,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     setTimeout(() => URL.revokeObjectURL(a.href), 2000);
   }
 
-  const baseName = () => (filenameEl.value || "untitled.md").replace(/\.[^.]+$/, "") || "untitled";
+  const baseName = (capture) => ((capture && capture.displayName) || (controller.activeDocument() && controller.activeDocument().displayName) || "untitled.md").replace(/\.[^.]+$/, "") || "untitled";
 
-  async function download() {
-    const name = filenameEl.value || "untitled.md";
-    await saveBlob(new Blob([editor.value], { type: "text/markdown;charset=utf-8" }), name);
-    if (!nativeApp) setStatus("Downloaded " + name);   // the native path reports "Saved …" itself
-    setDirty(false);
+  async function download(capture) {
+    capture = capture || captureActiveDocument("md");
+    const name = capture.displayName || "untitled.md";
+    await saveBlob(new Blob([capture.content], { type: "text/markdown;charset=utf-8" }), name, capture);
+    return { message: (nativeApp ? "Saved " : "Downloaded ") + name };
   }
 
   /* ── Exports ────────────────────────────────── */
@@ -5540,8 +5913,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     return clone;
   }
 
-  function exportHtml() {
-    const title = (preview.querySelector("h1") || {}).textContent || baseName();
+  async function exportHtml(capture) {
+    capture = capture || captureActiveDocument("html");
+    const title = (preview.querySelector("h1") || {}).textContent || baseName(capture);
     const doc =
       '<!DOCTYPE html>\n<html lang="en" data-theme="' + theme + '">\n<head>\n' +
       '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
@@ -5550,14 +5924,16 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       '</head>\n<body>\n<article id="preview" style="' + escapeHtml(preview.getAttribute("style") || "") + '">\n' +
       cleanPreviewClone().innerHTML +
       "\n</article>\n</body>\n</html>\n";
-    saveBlob(new Blob([doc], { type: "text/html;charset=utf-8" }), baseName() + ".html");
-    setStatus("Exported " + baseName() + ".html — self-contained, opens anywhere");
+    const name = baseName(capture) + ".html";
+    await saveBlob(new Blob([doc], { type: "text/html;charset=utf-8" }), name, capture);
+    return { message: "Exported " + name + " — self-contained, opens anywhere" };
   }
 
   /* PNG: serialize the preview into an SVG <foreignObject> and paint that onto a
      canvas. Everything happens in-page; remote images can't load inside an SVG
      used as an image, so they come out blank (data: URIs are fine). */
-  async function exportPng() {
+  async function exportPng(capture) {
+    capture = capture || captureActiveDocument("png");
     const P = 36;
     const holder = document.createElement("div");
     holder.style.cssText = "position:fixed;left:-20000px;top:0;";
@@ -5570,8 +5946,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       const height = Math.ceil(clone.getBoundingClientRect().height);
       const W = width + P * 2, H = height + P * 2;
       if (H > 16000) {
-        setStatus("This document is too tall for a PNG — use Print / Save as PDF instead");
-        return;
+        throw new Error("This document is too tall for a PNG — use Print / Save as PDF instead");
       }
       // There is no <html>/<body> inside a foreignObject, so the theme attribute and
       // the font/letter-spacing that normally come from <body> are set on the wrapper.
@@ -5606,10 +5981,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
       const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
       if (!blob) throw new Error("the image could not be encoded");
-      saveBlob(blob, baseName() + ".png");
-      setStatus("Exported " + baseName() + ".png (" + canvas.width + "×" + canvas.height + ")");
+      const name = baseName(capture) + ".png";
+      await saveBlob(blob, name, capture);
+      return { message: "Exported " + name + " (" + canvas.width + "×" + canvas.height + ")" };
     } catch (e) {
-      setStatus("PNG export failed — " + (e.message || "unknown error") + ". Try Print / Save as PDF.");
+      throw new Error("PNG export failed — " + (e.message || "unknown error") + ". Try Print / Save as PDF.");
     } finally {
       holder.remove();
     }
@@ -5617,27 +5993,23 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   /* PDF: the browser's own print-to-PDF, which yields real selectable text.
      Mermaid bakes theme colors into its SVG, so print from the light theme. */
-  async function exportPdf() {
+  async function exportPdf(capture) {
+    capture = capture || captureActiveDocument("pdf");
     const wasDark = theme === "dark";
     if (wasDark) {
       setTheme("light", false);
       await mermaidPending;
     }
-    setStatus('Choose "Save as PDF" as the destination in the print dialog', true);
+    setStatus('Choose "Save as PDF" as the destination in the print dialog', true, capture.documentId);
     if (wasDark) window.addEventListener("afterprint", () => setTheme("dark", false), { once: true });
     window.print();
+    return { message: `Print dialog opened for ${capture.displayName}` };
   }
 
   /* ── New document ───────────────────────────── */
   function newDoc() {
-    if (dirty && !confirm("Discard unsaved changes and start a new document?")) return;
-    fileHandle = null;
-    editor.value = "";
-    filenameEl.value = "untitled.md";
-    setDirty(false);
-    render();
-    try { localStorage.removeItem(DRAFT_KEY); } catch (e) {}
-    editor.focus();
+    controller.createUntitled();
+    syncActiveSurface();
   }
 
   /* ── Drag & drop ────────────────────────────── */
@@ -5657,38 +6029,26 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     e.preventDefault();
     dragDepth = 0;
     overlay.classList.remove("on");
-    const item = e.dataTransfer.items && e.dataTransfer.items[0];
-    if (!item || item.kind !== "file") return;
-    // Prefer a real file handle so Save can write back to the dropped file.
-    if (item.getAsFileSystemHandle) {
-      try {
-        const handle = await item.getAsFileSystemHandle();
-        if (handle && handle.kind === "file") {
-          await openFromFile(await handle.getFile(), handle);
-          return;
-        }
-      } catch (err) { /* fall through to plain File */ }
+    for (const item of e.dataTransfer.items || []) {
+      if (!item || item.kind !== "file") continue;
+      let opened = false;
+      if (item.getAsFileSystemHandle) {
+        try {
+          const handle = await item.getAsFileSystemHandle();
+          if (handle && handle.kind === "file") {
+            await openFromFile(await handle.getFile(), handle);
+            opened = true;
+          }
+        } catch (err) { /* fall through to plain File */ }
+      }
+      if (!opened) {
+        const file = item.getAsFile();
+        if (file) await openFromFile(file, null);
+      }
     }
-    const file = item.getAsFile();
-    if (file) await openFromFile(file, null);
   });
-
-  // The desktop shell forwards files handed to it by the OS (association / CLI arg).
-  if (nativeApp && window.__TAURI__.event) {
-    window.__TAURI__.event.listen("file-opened", (e) => openFromNativePath(e.payload));
-    // Files passed at startup are queued in Rust until we can pull them.
-    window.__TAURI__.core.invoke("take_pending_files").then((paths) => {
-      for (const p of paths) openFromNativePath(p);
-    }).catch(() => {});
-  }
 
   /* ── Editor behaviour ───────────────────────── */
-  editor.addEventListener("input", () => {
-    setDirty(true);
-    scheduleRender();
-    saveDraft();
-  });
-
   /* Tab / Shift+Tab indent and outdent.
      Everything goes through execCommand("insertText") rather than setRangeText:
      it is deprecated, but it is the only way to write into a textarea that the
@@ -5737,7 +6097,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     editor.setSelectionRange(Math.max(start, from + firstDelta), Math.max(start, to + totalDelta));
   }
 
-  editor.addEventListener("keydown", (e) => {
+  $("editor-surfaces").addEventListener("keydown", (e) => {
+    if (!e.target || !e.target.matches("textarea[data-document-id]")) return;
+    editor = e.target;
     if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
     e.preventDefault();
     const spansLines = editor.value.slice(editor.selectionStart, editor.selectionEnd).includes("\n");
@@ -5747,19 +6109,26 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   });
 
   // proportional scroll sync: editor → preview
-  editor.addEventListener("scroll", () => {
+  $("editor-surfaces").addEventListener("scroll", (event) => {
+    if (!event.target || !event.target.matches("textarea[data-document-id]")) return;
+    editor = event.target;
     if (document.body.dataset.view !== "split") return;
     const eMax = editor.scrollHeight - editor.clientHeight;
     const pMax = previewPane.scrollHeight - previewPane.clientHeight;
     if (eMax > 0 && pMax > 0) previewPane.scrollTop = (editor.scrollTop / eMax) * pMax;
-  });
+  }, true);
 
   filenameEl.addEventListener("change", () => {
     let name = filenameEl.value.trim() || "untitled.md";
     if (!/\.(md|markdown|mdown|mkd|txt)$/i.test(name)) name += ".md";
     filenameEl.value = name;
-    fileHandle = null; // renamed → next Save asks where to put it
-    saveDraft();
+    const active = controller.activeDocument();
+    if (!active) return;
+    active.displayName = name;
+    active.path = null;
+    active.canonicalPath = null;
+    browserFileHandles.delete(active.id);
+    controller.activateDocument(active.id);
   });
   filenameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") filenameEl.blur(); });
 
@@ -5860,6 +6229,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   document.querySelectorAll(".seg button").forEach((btn) => {
     btn.addEventListener("click", () => {
       setView(btn.dataset.mode);
+      const active = controller && controller.activeDocument();
+      if (active) active.updateWorkspace({ ...active.workspace, viewMode: btn.dataset.mode });
       if (btn.dataset.mode !== "preview") editor.focus();
     });
   });
@@ -5886,7 +6257,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     applyTheme(t);
     if (persist) { try { localStorage.setItem(THEME_KEY, t); } catch (e) {} }
     initMermaid();
-    render();
+    if (controller && controller.activeDocument()) controller.renderDocument(controller.activeDocument().id);
   }
   $("btn-theme").addEventListener("click", () => setTheme(theme === "dark" ? "light" : "dark", true));
 
@@ -5901,7 +6272,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   });
 
   window.addEventListener("beforeunload", (e) => {
-    if (dirty) { e.preventDefault(); e.returnValue = ""; }
+    if (controller && controller.session && [...controller.session.documents.values()].some((document) => document.dirty)) {
+      e.preventDefault(); e.returnValue = "";
+    }
   });
 
   /* ── Buttons ────────────────────────────────── */
@@ -5920,7 +6293,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (!b) return;
     exportPop.classList.remove("on");
     $("btn-export").classList.remove("toggled");
-    ({ md: download, html: exportHtml, png: exportPng, pdf: exportPdf })[b.dataset.exp]();
+    controller.exportActive(b.dataset.exp).catch(() => {});
   });
 
   /* ── Help ─────────────────────────────────────── */
@@ -6038,8 +6411,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const pos = at + (caret === -1 ? text.length : caret);
     editor.setSelectionRange(pos, pos);
     setDirty(true);
-    scheduleRender();
-    saveDraft();
   }
 
   if (!HAS_MATH) $("btn-eq").closest(".popover-wrap").style.display = "none";
@@ -6098,7 +6469,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     matchIdx = (matchIdx + dir + matches.length) % matches.length;
     revealMatch();
   }
-  function afterEdit() { setDirty(true); scheduleRender(); saveDraft(); }
+  function afterEdit() { setDirty(true); }
 
   function replaceCurrent() {
     if (matchIdx < 0 || !matches.length) return;
@@ -6148,7 +6519,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   $("find-replace").addEventListener("click", replaceCurrent);
   $("find-all").addEventListener("click", replaceAll);
   $("find-close").addEventListener("click", closeFind);
-  editor.addEventListener("keydown", (e) => {
+  $("editor-surfaces").addEventListener("keydown", (e) => {
+    if (!e.target || !e.target.matches("textarea[data-document-id]")) return;
+    editor = e.target;
     if (e.key === "Escape" && document.body.classList.contains("find-open")) closeFind();
   });
 
@@ -6164,8 +6537,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     launchQueue.setConsumer(async (params) => {
       if (!params.files || !params.files.length) return;
       try {
-        const handle = params.files[0];
-        await openFromFile(await handle.getFile(), handle);
+        for (const handle of params.files) await openFromFile(await handle.getFile(), handle);
       } catch (e) {
         setStatus("Could not open that file — " + (e.message || "unknown error"));
       }
@@ -6173,6 +6545,191 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   /* ── Boot ───────────────────────────────────── */
+  async function hashText(text) {
+    const bytes = new TextEncoder().encode(text);
+    if (window.crypto && window.crypto.subtle) {
+      const digest = await window.crypto.subtle.digest("SHA-256", bytes);
+      return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+    }
+    let hash = 2166136261;
+    for (const byte of bytes) hash = Math.imul(hash ^ byte, 16777619);
+    return (hash >>> 0).toString(16).padStart(64, "0");
+  }
+
+  function captureActiveDocument(format) {
+    const document = controller.activeDocument();
+    if (!document) throw new Error("there is no active document");
+    return {
+      format,
+      documentId: document.id,
+      editRevision: document.editRevision,
+      content: document.content,
+      displayName: document.displayName,
+      path: document.path,
+      canonicalPath: document.canonicalPath,
+      document,
+    };
+  }
+
+  function captureSharedWorkspace() {
+    return {
+      previewScrollTop: previewPane.scrollTop,
+      viewMode: document.body.dataset.view || "split",
+      tocOpen: document.body.classList.contains("toc-open"),
+      find: {
+        open: document.body.classList.contains("find-open"),
+        query: findInput.value,
+        replacement: replaceInput.value,
+        matchIndex: matchIdx,
+      },
+    };
+  }
+
+  function applySharedWorkspace(workspace) {
+    setView(workspace.viewMode || "split");
+    setToc(Boolean(workspace.tocOpen));
+    findInput.value = workspace.find && workspace.find.query || "";
+    replaceInput.value = workspace.find && workspace.find.replacement || "";
+    matchIdx = workspace.find && Number.isInteger(workspace.find.matchIndex) ? workspace.find.matchIndex : -1;
+    document.body.classList.toggle("find-open", Boolean(workspace.find && workspace.find.open));
+    previewPane.scrollTop = Number.isFinite(workspace.previewScrollTop) ? workspace.previewScrollTop : 0;
+    runFind(true);
+  }
+
+  function syncActiveSurface() {
+    const active = controller && controller.activeDocument();
+    if (!active || !workspaceView) return null;
+    const activeEditor = workspaceView.editorFor(active.id);
+    if (activeEditor) editor = activeEditor;
+    filenameEl.value = active.displayName;
+    filenameEl.style.width = Math.min(260, Math.max(60, (active.displayName.length + 2) * 8)) + "px";
+    dirtyDot.classList.toggle("on", Boolean(active.dirty));
+    updateStats(active.content);
+    return active;
+  }
+
+  function wireCachedPreviewTools() {
+    preview.querySelectorAll(".blk-tools").forEach((node) => node.remove());
+    preview.querySelectorAll(".code-wrap pre > code").forEach((code) => {
+      code.closest(".code-wrap").appendChild(toolButton("Copy", "Copy this code block", (event) => copyCode(code, event.currentTarget)));
+    });
+    [...preview.querySelectorAll(".table-wrap table")].forEach((table, index) => {
+      table.closest(".table-wrap").appendChild(toolButton("CSV", "Download this table as CSV", () => downloadTableCsv(table, index + 1)));
+    });
+    [...preview.querySelectorAll(".mermaid-block svg")].forEach((svg, index) => {
+      svg.closest(".mermaid-block").appendChild(toolButton("SVG", "Download this diagram as SVG", () => downloadDiagramSvg(svg, index + 1)));
+    });
+  }
+
+  const sessionIo = nativeApp ? {
+    ...nativeApp,
+    listenFileOpened(handler) {
+      if (!window.__TAURI__ || !window.__TAURI__.event) return () => {};
+      return window.__TAURI__.event.listen("file-opened", handler);
+    },
+  } : {
+    listenFileOpened() { return () => {}; },
+    async loadRecoveryManifest() { return null; },
+    async loadRecoveryDocument() { return null; },
+    async writeRecoveryDocument() {},
+    async writeRecoveryManifest() {},
+    async deleteRecoveryDocument() {},
+    async recoveryDirectory() { return "browser storage"; },
+    async readDocument() { throw new Error("native document reads are unavailable"); },
+  };
+
+  workspaceView = new MDEdit.WorkspaceView({
+    document,
+    tabList: $("document-tabs"),
+    addButton: $("btn-add-tab"),
+    editorSurfaces: $("editor-surfaces"),
+    dialogBackdrop: $("dialog-backdrop"),
+    dialog: $("app-dialog"),
+    dialogTitle: $("dialog-title"),
+    dialogMessage: $("dialog-message"),
+    dialogDocuments: $("dialog-documents"),
+    dialogActions: $("dialog-actions"),
+    statusElement: statusEl,
+    captureSharedWorkspace,
+    applySharedWorkspace,
+    onActivate(documentId) {
+      controller.activateDocument(documentId);
+      syncActiveSurface();
+    },
+    onClose(documentId) {
+      if (!controller.closeDocument(documentId)) setStatus("Unsaved tabs require confirmation before closing");
+      syncActiveSurface();
+    },
+    onAdd() { newDoc(); },
+    onEditorInput(documentId, content) {
+      controller.onEditorInput(documentId, content);
+      syncActiveSurface();
+    },
+  });
+  workspaceView.renderDocument = () => { syncActiveSurface(); };
+  workspaceView.clearPreview = () => {
+    preview.replaceChildren();
+    tocEl.replaceChildren();
+  };
+  workspaceView.setPreview = (html, capture) => {
+    preview.innerHTML = html;
+    wireCachedPreviewTools();
+    buildToc();
+    updateStats(capture.content);
+  };
+
+  let recoveryScheduler;
+  recoveryScheduler = new MDEdit.RecoveryScheduler({
+    async write(documentId, revision) {
+      const model = controller && controller.session && controller.session.documents.get(documentId);
+      if (!(model instanceof MDEdit.DocumentModel) || model.editRevision !== revision) return;
+      const snapshot = { ...model.toSnapshot(), snapshotRevision: revision };
+      await sessionIo.writeRecoveryDocument(documentId, revision, JSON.stringify(snapshot));
+      if (controller.session.documents.get(documentId) === model && model.editRevision === revision) {
+        model.persistedRevision = revision;
+        model.snapshotRevision = revision;
+      }
+    },
+    onStatus(documentId, status, error) {
+      const model = controller && controller.session && controller.session.documents.get(documentId);
+      if (model instanceof MDEdit.DocumentModel) model.recoveryStatus = status;
+      workspaceView.setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
+    },
+  });
+
+  controller = new MDEdit.SessionController({
+    io: sessionIo,
+    scheduler: recoveryScheduler,
+    view: workspaceView,
+    dialogs: {
+      showOpenError(path, error) { setStatus("Could not open " + path + " — " + error.message); },
+    },
+    legacyStorage: {
+      getItem(key) { try { return localStorage.getItem(key); } catch (_) { return null; } },
+      removeItem(key) { if (nativeApp) try { localStorage.removeItem(key); } catch (_) {} },
+    },
+    hashText,
+    idFactory: () => window.crypto.randomUUID(),
+    renderer: {
+      optionsKey: () => theme,
+      render(capture) {
+        return {
+          async commit(_sameCapture, isCurrent) {
+            if (!isCurrent()) return null;
+            render(capture.content, isCurrent);
+            await mermaidPending;
+            return isCurrent() ? preview.innerHTML : null;
+          },
+        };
+      },
+    },
+    exporter: {
+      export(capture) {
+        return ({ md: download, html: exportHtml, png: exportPng, pdf: exportPdf })[capture.format](capture);
+      },
+    },
+  });
+
   const WELCOME = `# Welcome to MDedit
 
 A fast, private desktop Markdown editor — **your documents stay on your device**.
@@ -6239,14 +6796,24 @@ flowchart LR
 Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+Shift+"}S** save as · **${isMac ? "⌘" : "Ctrl+"}O** open
 `;
 
-  if (!loadDraft()) editor.value = WELCOME;
-  render();
+  (async () => {
+    await controller.restore();
+    let active = controller.activeDocument();
+    if (active && !active.content && !active.dirty && controller.session.documents.size === 1) {
+      active.content = WELCOME;
+      active.savedContentSha256 = await hashText(WELCOME);
+    }
+    if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
+      const paths = await window.__TAURI__.core.invoke("take_pending_files").catch(() => []);
+      if (paths.length) await controller.openPaths(paths);
+    }
+    active = controller.activeDocument();
+    if (active) controller.activateDocument(active.id);
+    syncActiveSurface();
+  })().catch((error) => setStatus("Startup failed — " + error.message, true));
   // Focusing a textarea leaves the caret at the end of its text and scrolls
   // there, which would open the document at its last line (and drag the
   // preview along with it, via the scroll sync). Start at the top instead.
-  if (document.body.dataset.view !== "preview") editor.focus();
-  editor.setSelectionRange(0, 0);
-  editor.scrollTop = 0;
   previewPane.scrollTop = 0;
 })();
 </script>
