@@ -1904,9 +1904,11 @@ test("closing a document during its checkpoint preserves old recovery until an e
   clock.advance(1_000);
   await slowSnapshotStarted.promise;
 
-  assert.equal(controller.closeDocument(closing.id), true);
+  const close = controller.closeDocument(closing.id);
+  await settle();
   const replacement = controller.activeDocument();
   slowSnapshot.resolve();
+  assert.equal((await close).closed, true);
   await settle();
   await controller._manifestWrites;
   const durableAfter = JSON.parse(await browserIo.loadRecoveryManifest());
@@ -1942,11 +1944,13 @@ test("closed recovery is deleted only after an excluding manifest is durable", a
   hold = true;
   const stale = controller.persistManifest();
   await manifestStarted.promise;
-  assert.equal(controller.closeDocument(closing.id), true);
+  const close = controller.closeDocument(closing.id);
+  await settle();
   assert.equal(order.some(([kind]) => kind === "delete"), false);
   hold = false;
   manifestGate.resolve();
   await stale;
+  assert.equal((await close).closed, true);
   await settle();
   await controller._manifestWrites;
 
@@ -1975,7 +1979,7 @@ test("failed excluding manifest defers recovery deletion until retry succeeds", 
   await settle();
   order.length = 0;
   fail = true;
-  assert.equal(controller.closeDocument(closing.id), true);
+  await assert.rejects(controller.closeDocument(closing.id), /manifest unavailable/);
   await settle();
   assert.equal(order.some(([kind]) => kind === "delete"), false);
 
@@ -1999,7 +2003,7 @@ test("recovery cleanup failure is non-blocking and retries after the next manife
   const closing = controller.createUntitled();
   await controller.restore();
   await settle();
-  assert.equal(controller.closeDocument(closing.id), true);
+  assert.equal((await controller.closeDocument(closing.id)).closed, true);
   await settle();
   await controller._manifestWrites;
   assert.equal(deleteAttempts, 1);
@@ -2652,13 +2656,445 @@ test("recordCapturedSave updates only the captured baseline and preserves edits 
   assert.equal(a.savedContentSha256, "sha:first");
 });
 
+test("saveDocument writes the captured revision and leaves a later edit dirty", async () => {
+  const write = deferred();
+  let input;
+  const fixture = makeDependencies({
+    io: {
+      async saveDocument(value) { input = value; return write.promise; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/notes/a.md", "/notes/a.md", "old")));
+  await controller.restore();
+  controller.onEditorInput(document.id, "first");
+
+  const saving = controller.saveDocument(document.id);
+  await settle();
+  controller.onEditorInput(document.id, "second");
+  write.resolve({ status: "saved", canonicalPath: "/notes/a.md", sha256: "sha:first" });
+
+  assert.equal((await saving).saved, true);
+  assert.deepEqual(input, { path: "/notes/a.md", expectedSha256: "sha:old", content: "first" });
+  assert.equal(document.content, "second");
+  assert.equal(document.savedContentSha256, "sha:first");
+  assert.equal(document.dirty, true);
+});
+
+test("saveAs uses the selected existing file fingerprint before overwriting", async () => {
+  let savedInput;
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { return "/chosen/existing.md"; },
+      async canonicalizeDocumentPath() { return "/canonical/existing.md"; },
+      async readDocument() { return readResult("/chosen/existing.md", "/canonical/existing.md", "disk version"); },
+      async saveDocument(input) {
+        savedInput = input;
+        return { status: "saved", canonicalPath: "/canonical/existing.md", sha256: "sha:editor" };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  controller.onEditorInput(document.id, "editor");
+  await controller.restore();
+
+  const result = await controller.saveAs(document.id);
+
+  assert.equal(result.saved, true);
+  assert.deepEqual(savedInput, {
+    path: "/chosen/existing.md",
+    expectedSha256: "sha:disk version",
+    content: "editor",
+  });
+  assert.equal(document.path, "/chosen/existing.md");
+  assert.equal(document.canonicalPath, "/canonical/existing.md");
+  assert.equal(document.displayName, "existing.md");
+  assert.equal(document.dirty, false);
+});
+
+test("saveAs passes a null expectation only after the selected path is confirmed missing", async () => {
+  let savedInput;
+  const missing = Object.assign(new Error("No such file"), { code: "NotFound" });
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { return "/chosen/new.md"; },
+      async canonicalizeDocumentPath() { return "/canonical/new.md"; },
+      async readDocument() { throw missing; },
+      async saveDocument(input) {
+        savedInput = input;
+        return { status: "saved", canonicalPath: "/canonical/new.md", sha256: "sha:new" };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  controller.onEditorInput(document.id, "new");
+  await controller.restore();
+
+  assert.equal((await controller.saveAs(document.id)).saved, true);
+  assert.equal(savedInput.expectedSha256, null);
+});
+
+test("saveAs activates an existing canonical owner and never overwrites it", async () => {
+  let writes = 0;
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { return "/alias/owner.md"; },
+      async canonicalizeDocumentPath() { return "/canonical/owner.md"; },
+      async readDocument() { throw new Error("must not read a colliding destination"); },
+      async saveDocument() { writes += 1; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const owner = await Promise.resolve(controller.openReadResult(readResult("/owner.md", "/canonical/owner.md", "owner")));
+  const source = controller.createUntitled();
+  controller.onEditorInput(source.id, "source");
+  await controller.restore();
+
+  const result = await controller.saveAs(source.id);
+
+  assert.equal(result.collision, true);
+  assert.equal(writes, 0);
+  assert.equal(controller.activeDocument(), owner);
+  assert.equal(source.path, null);
+});
+
+test("saveAs aborts on a destination read error without an unchecked write", async () => {
+  let writes = 0;
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { return "/chosen/denied.md"; },
+      async canonicalizeDocumentPath() { return "/chosen/denied.md"; },
+      async readDocument() { throw new Error("permission denied"); },
+      async saveDocument() { writes += 1; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  controller.onEditorInput(document.id, "content");
+  await controller.restore();
+
+  await assert.rejects(controller.saveAs(document.id), /permission denied/);
+  assert.equal(writes, 0);
+});
+
+test("saveAll follows stable dirty tab order and stops at picker cancellation", async () => {
+  const writes = [];
+  let pickerCalls = 0;
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { pickerCalls += 1; return pickerCalls === 1 ? "/a.md" : null; },
+      async canonicalizeDocumentPath(pathname) { return pathname; },
+      async readDocument() { throw Object.assign(new Error("not found"), { code: "NotFound" }); },
+      async saveDocument(input) {
+        writes.push(input.path);
+        return { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  controller.onEditorInput(a.id, "a");
+  const b = controller.createUntitled();
+  controller.onEditorInput(b.id, "b");
+  const clean = controller.createUntitled();
+  await controller.restore();
+
+  const result = await controller.saveAll();
+
+  assert.deepEqual(result.savedIds, [a.id]);
+  assert.deepEqual(result.remainingIds, [b.id]);
+  assert.equal(result.canceled, true);
+  assert.equal(result.error, null);
+  assert.deepEqual(writes, ["/a.md"]);
+  assert.equal(clean.dirty, false);
+});
+
+test("save conflict exposes exactly the safe actions and keep-editing preserves content", async () => {
+  let conflictArgs;
+  const fixture = makeDependencies({
+    io: {
+      async saveDocument() { return { status: "conflict", actualSha256: "sha:external" }; },
+    },
+    dialogs: {
+      async showConflict(document, actions) { conflictArgs = [document, actions]; return "keep-editing"; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "mine");
+  await controller.restore();
+
+  const result = await controller.saveDocument(document.id);
+
+  assert.equal(result.conflict, true);
+  assert.deepEqual(conflictArgs[1], ["reload", "keep-editing", "save-as"]);
+  assert.equal(document.content, "mine");
+  assert.equal(document.fileStatus, "externally-changed");
+  assert.equal(document.dirty, true);
+});
+
+test("reload conflict replaces the confirmed captured revision with the current disk version", async () => {
+  const fixture = makeDependencies({
+    io: {
+      async readDocument() { return readResult("/a.md", "/a.md", "external"); },
+    },
+    dialogs: { async confirmReload() { return true; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "mine");
+  document.updateMetadata({ fileStatus: "externally-changed" });
+  await controller.restore();
+
+  const result = await controller.resolveConflict(document.id, "reload");
+
+  assert.equal(result.reloaded, true);
+  assert.equal(document.content, "external");
+  assert.equal(document.savedContentSha256, "sha:external");
+  assert.equal(document.expectedDiskSha256, "sha:external");
+  assert.equal(document.fileStatus, "normal");
+  assert.equal(document.dirty, false);
+});
+
+test("duplicate save commands share one in-flight guarded write", async () => {
+  const write = deferred();
+  let writes = 0;
+  const fixture = makeDependencies({ io: {
+    async saveDocument() { writes += 1; return write.promise; },
+  } });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "mine");
+  await controller.restore();
+
+  const first = controller.saveDocument(document.id);
+  const duplicate = controller.saveDocument(document.id);
+  await settle();
+  assert.equal(writes, 1);
+  write.resolve({ status: "saved", canonicalPath: "/a.md", sha256: "sha:mine" });
+  assert.deepEqual(await duplicate, await first);
+});
+
+for (const choice of ["save", "discard", "cancel"]) {
+  test(`closeDocument honors the ${choice} dirty-document choice`, async () => {
+    let writes = 0;
+    const fixture = makeDependencies({
+      io: {
+        async saveDocument(input) {
+          writes += 1;
+          return { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` };
+        },
+        async deleteRecoveryDocument() {},
+      },
+      dialogs: { async showClose() { return choice; } },
+    });
+    const controller = new SessionController(fixture.dependencies);
+    const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+    controller.onEditorInput(document.id, "mine");
+    await controller.restore();
+
+    const result = await controller.closeDocument(document.id);
+
+    assert.equal(result.closed, choice !== "cancel");
+    assert.equal(controller.session.documents.has(document.id), choice === "cancel");
+    assert.equal(writes, choice === "save" ? 1 : 0);
+  });
+}
+
+test("discard close publishes an excluding manifest before deleting recovery", async () => {
+  const order = [];
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryManifest(_generation, json) { order.push(["manifest", JSON.parse(json).tabs.map((tab) => tab.documentId)]); },
+      async deleteRecoveryDocument(id) { order.push(["delete", id]); },
+    },
+    dialogs: { async showClose() { return "discard"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const closing = controller.createUntitled();
+  controller.onEditorInput(closing.id, "discard me");
+  controller.createUntitled();
+  await controller.restore();
+  await controller._manifestWrites;
+  order.length = 0;
+
+  assert.equal((await controller.closeDocument(closing.id)).closed, true);
+  const excluding = order.findIndex(([kind, ids]) => kind === "manifest" && !ids.includes(closing.id));
+  assert.ok(excluding >= 0);
+  assert.deepEqual(order[excluding + 1], ["delete", closing.id]);
+});
+
+test("closing the final tab checkpoints a clean replacement before its manifest", async () => {
+  const order = [];
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryManifest(_generation, json) { order.push(["manifest", JSON.parse(json).tabs[0].documentId]); },
+      async deleteRecoveryDocument(id) { order.push(["delete", id]); },
+    },
+    scheduler: {
+      async flush(id) { order.push(["snapshot", id]); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const closing = controller.createUntitled();
+  await controller.restore();
+  await controller._manifestWrites;
+  order.length = 0;
+
+  const result = await controller.closeDocument(closing.id);
+  const replacement = controller.activeDocument();
+
+  assert.equal(result.closed, true);
+  assert.notEqual(replacement.id, closing.id);
+  assert.equal(replacement.dirty, false);
+  assert.ok(order.findIndex(([kind, id]) => kind === "snapshot" && id === replacement.id)
+    < order.findIndex(([kind, id]) => kind === "manifest" && id === replacement.id));
+});
+
+test("quit restore uses one consolidated dialog and flushAll exactly once", async () => {
+  let dialogs = 0;
+  let flushes = 0;
+  let listed;
+  const fixture = makeDependencies({
+    scheduler: { async flushAll() { flushes += 1; } },
+    dialogs: {
+      async showQuit(documents, actions) {
+        dialogs += 1;
+        listed = documents.map((document) => document.displayName);
+        assert.deepEqual(actions, ["save-all", "restore", "discard-all", "cancel"]);
+        return "restore";
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  controller.onEditorInput(a.id, "a");
+  const b = controller.createUntitled();
+  controller.onEditorInput(b.id, "b");
+  await controller.restore();
+
+  const result = await controller.requestQuit();
+
+  assert.equal(result.allowClose, true);
+  assert.equal(dialogs, 1);
+  assert.equal(flushes, 1);
+  assert.deepEqual(listed, [a.displayName, b.displayName]);
+  assert.equal(controller.allowNativeClose(), true);
+  assert.equal(controller.allowNativeClose(), false);
+});
+
+test("quit restore blocks native close when flushAll fails", async () => {
+  const fixture = makeDependencies({
+    scheduler: { async flushAll() { throw new Error("recovery unavailable"); } },
+    dialogs: { async showQuit() { return "restore"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  controller.onEditorInput(document.id, "dirty");
+  await controller.restore();
+
+  const result = await controller.requestQuit();
+
+  assert.equal(result.allowClose, false);
+  assert.match(result.error.message, /recovery unavailable/);
+  assert.equal(controller.allowNativeClose(), false);
+});
+
+test("quit save-all stops at conflict without opening a per-document conflict dialog", async () => {
+  let quitDialogs = 0;
+  let conflictDialogs = 0;
+  const fixture = makeDependencies({
+    io: { async saveDocument() { return { status: "conflict", actualSha256: "sha:outside" }; } },
+    dialogs: {
+      async showQuit() { quitDialogs += 1; return "save-all"; },
+      async showConflict() { conflictDialogs += 1; return "keep-editing"; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "mine");
+  await controller.restore();
+
+  const result = await controller.requestQuit();
+
+  assert.equal(result.allowClose, false);
+  assert.equal(quitDialogs, 1);
+  assert.equal(conflictDialogs, 0);
+  assert.equal(document.fileStatus, "externally-changed");
+});
+
+test("close continues after conflict Save As safely writes the editor version", async () => {
+  let saves = 0;
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { return "/alternate.md"; },
+      async canonicalizeDocumentPath(pathname) { return pathname; },
+      async readDocument() { throw Object.assign(new Error("not found"), { code: "NotFound" }); },
+      async saveDocument(input) {
+        saves += 1;
+        if (saves === 1) return { status: "conflict", actualSha256: "sha:outside" };
+        return { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` };
+      },
+      async deleteRecoveryDocument() {},
+    },
+    dialogs: {
+      async showClose() { return "save"; },
+      async showConflict() { return "save-as"; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "mine");
+  await controller.restore();
+
+  const result = await controller.closeDocument(document.id);
+
+  assert.equal(result.closed, true);
+  assert.equal(saves, 2);
+  assert.equal(controller.session.documents.has(document.id), false);
+});
+
+test("saveAs reserves canonical ownership against a concurrent file-open event", async () => {
+  const destinationRead = deferred();
+  let writes = 0;
+  const fixture = makeDependencies({
+    io: {
+      async chooseSavePath() { return "/shared.md"; },
+      async canonicalizeDocumentPath() { return "/shared.md"; },
+      async readDocument() { return destinationRead.promise; },
+      async saveDocument(input) {
+        writes += 1;
+        return { status: "saved", canonicalPath: "/shared.md", sha256: `sha:${input.content}` };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const source = controller.createUntitled();
+  controller.onEditorInput(source.id, "mine");
+  await controller.restore();
+
+  const saving = controller.saveAs(source.id);
+  await settle();
+  const opened = controller.openReadResult(readResult("/shared.md", "/shared.md", "old disk"));
+  destinationRead.resolve(readResult("/shared.md", "/shared.md", "old disk"));
+  const result = await saving;
+
+  assert.equal(opened, source);
+  assert.equal(result.saved, true);
+  assert.equal(writes, 1);
+  assert.deepEqual(controller.session.tabOrder, [source.id]);
+  assert.equal(source.canonicalPath, "/shared.md");
+});
+
 test("export completion is ignored when its starting document was closed", async () => {
   const pending = deferred();
   const fixture = makeDependencies({ exporter: { export: async () => pending.promise } });
   const controller = new SessionController(fixture.dependencies);
   const a = controller.createUntitled();
   const exporting = controller.exportActive("html");
-  controller.closeDocument(a.id);
+  await controller.closeDocument(a.id);
   const statusesBeforeCompletion = fixture.calls.statuses.filter(([id]) => id === a.id).length;
   pending.resolve({ message: "late export" });
   await exporting;
@@ -2724,6 +3160,14 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.doesNotMatch(template, /\blet\s+(?:fileHandle|nativePath|dirty)\b/);
   assert.ok(template.indexOf("listenFileOpened(handler)") < template.indexOf("await controller.restore()"));
   assert.match(template, /writeToHandle\(fileHandle, capture\.content\)/);
+  assert.match(template, /controller\.saveDocument\(document\.id\)/);
+  assert.match(template, /controller\.saveAs\(capture\.documentId\)/);
+  assert.match(template, /onCloseRequested\s*\(/);
+  assert.match(template, /event\.preventDefault\s*\(\)/);
+  assert.match(template, /controller\.requestQuit\s*\(\)/);
+  assert.match(template, /controller\.allowNativeClose\s*\(\)/);
+  assert.match(template, /currentWindow\.close\s*\(\)/);
+  assert.match(template, /controller\.hasUnsavedOrRecoveryRisk\s*\(\)/);
 });
 
 test("browser builds resolve editors by active document without a mutable editor owner", () => {

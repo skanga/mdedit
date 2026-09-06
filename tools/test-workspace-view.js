@@ -706,6 +706,25 @@ test("a busy dialog ignores Escape and backdrop cancellation until its action se
   assert.equal(elements.dialog.hidden, true);
 });
 
+test("a non-cancelable dialog ignores Escape and exposes its document list label", async () => {
+  const { document, elements, view } = makeFixture();
+  const result = view.showDialog({
+    title: "Closing",
+    documents: ["alpha.md", "beta.md"],
+    documentLabel: "Documents with unsaved changes",
+    cancelable: false,
+    actions: [{ id: "continue", label: "Continue" }],
+  });
+
+  assert.equal(elements.dialogDocuments.getAttribute("aria-label"), "Documents with unsaved changes");
+  document.dispatchEvent({ type: "keydown", key: "Escape" });
+  elements.dialogBackdrop.dispatchEvent({ type: "click" });
+  assert.equal(elements.dialog.hidden, false);
+
+  elements.dialogActions.children[0].dispatchEvent({ type: "click", bubbles: true });
+  assert.equal(await result, "continue");
+});
+
 test("a rejected dialog action re-enables the dialog and can be retried", async () => {
   let attempts = 0;
   const { elements, view } = makeFixture();

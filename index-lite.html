@@ -3430,6 +3430,12 @@ return Pe}()
     return parts[parts.length - 1] || "untitled.md";
   }
 
+  function isMissingFileError(reason) {
+    const code = reason && typeof reason === "object" ? String(reason.code || reason.kind || "") : "";
+    const message = reason instanceof Error ? reason.message : String(reason || "");
+    return /not.?found/i.test(code) || /no such file|not found|does not exist/i.test(message);
+  }
+
   function onceAsync(callback) {
     if (typeof callback !== "function") return null;
     let called = false;
@@ -3646,6 +3652,9 @@ return Pe}()
       this._latestRenderTokens = new Map();
       this._previewCache = new Map();
       this._previewCacheBytes = 0;
+      this._reservedCanonicalPaths = new Map();
+      this._documentOperation = null;
+      this._nativeCloseAllowed = false;
 
       this.start().catch(() => {});
     }
@@ -4183,6 +4192,11 @@ return Pe}()
         this.activateDocument(existing.id);
         return existing;
       }
+      const reserved = this._reservedCanonicalPaths.get(result.canonicalPath);
+      if (reserved && session.documents.get(reserved.id) === reserved) {
+        this.activateDocument(reserved.id);
+        return reserved;
+      }
       const outgoing = this.activeDocument();
       this._captureAndFlushOutgoing(outgoing);
       const document = this._documentFromReadResult(result);
@@ -4637,7 +4651,7 @@ return Pe}()
       );
     }
 
-    recordCapturedSave(capture, result) {
+    recordCapturedSave(capture, result, { persist = true } = {}) {
       if (!this._ownsOperationCapture(capture)) return false;
       const changed = capture.document.recordSave({
         editRevision: capture.editRevision,
@@ -4652,7 +4666,7 @@ return Pe}()
         fileStatus: capture.document.fileStatus,
         recoveryStatus: capture.document.recoveryStatus,
       });
-      if (needsCheckpoint && this._restoreState === "restored") {
+      if (persist && needsCheckpoint && this._restoreState === "restored") {
         this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, {
           phase: "save-checkpoint",
           documentId: capture.documentId,
@@ -4661,6 +4675,369 @@ return Pe}()
         }));
       }
       return true;
+    }
+
+    saveDocument(documentId) {
+      return this._runDocumentOperation(`save:${documentId}`, () => this._saveDocumentNow(documentId));
+    }
+
+    saveAs(documentId, options = {}) {
+      if (documentId && typeof documentId === "object") {
+        options = documentId;
+        documentId = options.documentId;
+      }
+      const id = documentId || (this.activeDocument() && this.activeDocument().id);
+      return this._runDocumentOperation(`save-as:${id}`, () => this._saveAsNow(id, options));
+    }
+
+    saveAll() {
+      return this._runDocumentOperation("save-all", () => this._saveAllNow());
+    }
+
+    resolveConflict(documentId, action) {
+      return this._runDocumentOperation(
+        `conflict:${documentId}`,
+        () => this._resolveConflictNow(documentId, action),
+      );
+    }
+
+    async _saveDocumentNow(documentId, { showConflict = true } = {}) {
+      const document = this._requireLoadedDocument(documentId);
+      if (!document.path) return this._saveAsNow(documentId);
+      const capture = this._captureDocument(document);
+      if (capture.fileStatus === "externally-changed") {
+        return this._presentSaveConflict(capture, null, { showConflict });
+      }
+      if (typeof this.io.saveDocument !== "function") throw new Error("document saving is unavailable");
+
+      this._setDocumentStatus(documentId, {
+        status: "saving",
+        message: `Saving ${capture.displayName}`,
+        editRevision: capture.editRevision,
+      });
+      try {
+        const contentSha256 = await this.hashText(capture.content);
+        const result = await this.io.saveDocument({
+          path: capture.path,
+          expectedSha256: capture.expectedDiskSha256,
+          content: capture.content,
+        });
+        if (result && result.status === "conflict") {
+          return this._presentSaveConflict(capture, result, { showConflict });
+        }
+        if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
+          throw new Error("document save returned an invalid result");
+        }
+        if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
+        let metadataChanged = false;
+        if (typeof result.canonicalPath === "string" && result.canonicalPath !== document.canonicalPath) {
+          metadataChanged = document.updateMetadata({ canonicalPath: result.canonicalPath });
+        }
+        const baselineChanged = this.recordCapturedSave(capture, {
+          contentSha256,
+          diskSha256: result.sha256,
+        }, { persist: false });
+        await this._checkpointAfterDocumentChange(capture, metadataChanged || baselineChanged, "save-checkpoint");
+        if (this._ownsOperationCapture(capture)) {
+          this._setDocumentStatus(documentId, {
+            status: "saved",
+            message: `Saved ${document.displayName}`,
+            dirty: document.dirty,
+            fileStatus: document.fileStatus,
+            recoveryStatus: document.recoveryStatus,
+          });
+        }
+        return { saved: true, documentId, path: capture.path };
+      } catch (reason) {
+        const error = normalizeError(reason);
+        if (this._ownsOperationCapture(capture)) {
+          this._setDocumentStatus(documentId, {
+            status: "failed",
+            message: `Could not save ${capture.displayName}: ${error.message}`,
+          });
+        }
+        throw error;
+      }
+    }
+
+    async _saveAsNow(documentId, options = {}) {
+      const document = this._requireLoadedDocument(documentId);
+      const capture = this._captureDocument(document);
+      if (typeof this.io.saveDocument !== "function") throw new Error("document saving is unavailable");
+      const choose = this.io.chooseSavePath;
+      if (!options.path && typeof choose !== "function") throw new Error("save path selection is unavailable");
+
+      const chosenPath = options.path || await choose.call(this.io, {
+        defaultDir: capture.path ? capture.path.replace(/[^/\\]*$/, "") : "",
+        suggestedName: options.suggestedName || capture.displayName || "untitled.md",
+      });
+      if (!chosenPath) return { saved: false, canceled: true, documentId };
+      if (!this._ownsOperationCapture(capture)) return { saved: false, stale: true, documentId };
+
+      const canonicalPath = typeof this.io.canonicalizeDocumentPath === "function"
+        ? await this.io.canonicalizeDocumentPath(chosenPath)
+        : chosenPath;
+      let owner = this.session.findByCanonicalPath(canonicalPath);
+      if (owner && owner !== document) {
+        this.activateDocument(owner.id);
+        return { saved: false, collision: true, documentId, ownerId: owner.id };
+      }
+
+      const reservations = new Set([canonicalPath]);
+      this._reservedCanonicalPaths.set(canonicalPath, document);
+      try {
+        let expectedSha256;
+        try {
+          const current = await this.io.readDocument(chosenPath);
+          expectedSha256 = current.sha256;
+          const observedCanonical = typeof current.canonicalPath === "string" ? current.canonicalPath : canonicalPath;
+          owner = this.session.findByCanonicalPath(observedCanonical);
+          if (owner && owner !== document) {
+            this.activateDocument(owner.id);
+            return { saved: false, collision: true, documentId, ownerId: owner.id };
+          }
+          reservations.add(observedCanonical);
+          this._reservedCanonicalPaths.set(observedCanonical, document);
+        } catch (reason) {
+          if (!isMissingFileError(reason)) throw normalizeError(reason);
+          expectedSha256 = null;
+        }
+        if (!this._ownsOperationCapture(capture)) return { saved: false, stale: true, documentId };
+
+        this._setDocumentStatus(documentId, {
+          status: "saving",
+          message: `Saving ${capture.displayName}`,
+          editRevision: capture.editRevision,
+        });
+        const contentSha256 = await this.hashText(capture.content);
+        const result = await this.io.saveDocument({
+          path: chosenPath,
+          expectedSha256,
+          content: capture.content,
+        });
+        if (result && result.status === "conflict") {
+          return this._presentSaveConflict(capture, result, { showConflict: true });
+        }
+        if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
+          throw new Error("document save returned an invalid result");
+        }
+        if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
+
+        const savedCanonicalPath = typeof result.canonicalPath === "string"
+          ? result.canonicalPath : canonicalPath;
+        owner = this.session.findByCanonicalPath(savedCanonicalPath);
+        if (owner && owner !== document) {
+          this.activateDocument(owner.id);
+          return { saved: false, collision: true, documentId, ownerId: owner.id };
+        }
+        const metadataChanged = document.updateMetadata({
+          path: chosenPath,
+          canonicalPath: savedCanonicalPath,
+          displayName: displayNameFromPath(chosenPath),
+        });
+        const baselineChanged = this.recordCapturedSave(capture, {
+          contentSha256,
+          diskSha256: result.sha256,
+        }, { persist: false });
+        await this._checkpointAfterDocumentChange(capture, metadataChanged || baselineChanged, "save-as-checkpoint");
+        if (this._ownsOperationCapture(capture)) {
+          this._renderSession();
+          this._renderDocumentView(document);
+          this._setDocumentStatus(documentId, {
+            status: "saved",
+            message: `Saved ${document.displayName}`,
+            displayName: document.displayName,
+            dirty: document.dirty,
+            fileStatus: document.fileStatus,
+            recoveryStatus: document.recoveryStatus,
+          });
+        }
+        return { saved: true, documentId, path: chosenPath };
+      } finally {
+        for (const path of reservations) {
+          if (this._reservedCanonicalPaths.get(path) === document) this._reservedCanonicalPaths.delete(path);
+        }
+      }
+    }
+
+    async _saveAllNow({ showConflicts = true } = {}) {
+      const dirtyIds = this.session
+        ? this.session.tabOrder.filter((id) => {
+          const document = this.session.documents.get(id);
+          return document instanceof DocumentModel && document.dirty;
+        })
+        : [];
+      const savedIds = [];
+      let canceled = false;
+      let error = null;
+      for (const documentId of dirtyIds) {
+        try {
+          const result = await this._saveDocumentNow(documentId, { showConflict: showConflicts });
+          if (!result || !result.saved) {
+            canceled = Boolean(result && result.canceled);
+            if (!canceled && result && (result.conflict || result.collision)) {
+              error = new Error(result.conflict ? "save conflict" : "save path is already open");
+            }
+            break;
+          }
+          savedIds.push(documentId);
+        } catch (reason) {
+          error = normalizeError(reason);
+          break;
+        }
+      }
+      const remainingIds = dirtyIds.filter((id) => !savedIds.includes(id));
+      return { savedIds, remainingIds, canceled, error };
+    }
+
+    async _presentSaveConflict(capture, result, { showConflict = true } = {}) {
+      if (!this._ownsOperationCapture(capture)) return { saved: false, conflict: true, stale: true };
+      capture.document.updateMetadata({ fileStatus: "externally-changed" });
+      this._scheduleRecoveryRevision(capture.document);
+      await this._checkpointAfterDocumentChange(capture, true, "save-conflict-checkpoint");
+      this._setDocumentStatus(capture.documentId, {
+        status: "conflict",
+        message: `${capture.displayName} changed outside MDedit`,
+        dirty: capture.document.dirty,
+        fileStatus: capture.document.fileStatus,
+        recoveryStatus: capture.document.recoveryStatus,
+      });
+      let action = null;
+      if (showConflict) action = await this._showConflictChoice(capture.document);
+      if (action && action !== "keep-editing") {
+        const resolved = await this._resolveConflictNow(capture.documentId, action);
+        if (action === "save-as" && resolved && resolved.saved) {
+          return { ...resolved, conflictResolved: true, action };
+        }
+        return { saved: false, conflict: true, action, result, resolved };
+      }
+      return { saved: false, conflict: true, action: action || "keep-editing", result };
+    }
+
+    async _resolveConflictNow(documentId, action) {
+      const document = this._requireLoadedDocument(documentId);
+      if (action === "keep-editing") {
+        return { resolved: false, keptEditing: true, documentId };
+      }
+      if (action === "save-as") return this._saveAsNow(documentId);
+      if (action !== "reload") throw new Error("unknown conflict action");
+      if (!document.path) throw new Error("conflicted document has no path");
+
+      const capture = this._captureDocument(document);
+      if (document.dirty) {
+        const confirmed = await this._confirmReload(document);
+        if (!confirmed) return { resolved: false, canceled: true, documentId };
+      }
+      let result;
+      try {
+        result = await this.io.readDocument(capture.path);
+      } catch (reason) {
+        if (this._ownsOperationCapture(capture)) {
+          document.updateMetadata({ fileStatus: isMissingFileError(reason) ? "missing" : "read-error" });
+          await this._checkpointAfterDocumentChange(capture, true, "reload-error-checkpoint");
+        }
+        throw normalizeError(reason);
+      }
+      const contentSha256 = await this.hashText(result.content);
+      if (!this._ownsOperationCapture(capture) || document.editRevision !== capture.editRevision) {
+        return { resolved: false, stale: true, documentId };
+      }
+      document.applyContent(result.content);
+      const metadataChanged = document.updateMetadata({
+        path: result.path || capture.path,
+        canonicalPath: result.canonicalPath || capture.canonicalPath,
+        displayName: displayNameFromPath(result.path || capture.path),
+      });
+      const reloadCapture = this._captureDocument(document);
+      const baselineChanged = this.recordCapturedSave(reloadCapture, {
+        contentSha256,
+        diskSha256: result.sha256,
+      }, { persist: false });
+      await this._checkpointAfterDocumentChange(reloadCapture, metadataChanged || baselineChanged, "reload-checkpoint");
+      if (this._ownsOperationCapture(reloadCapture)) {
+        const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
+        if (editor && editor.value !== document.content) editor.value = document.content;
+        this._renderSession();
+        this._renderDocumentView(document);
+      }
+      return { resolved: true, reloaded: true, documentId };
+    }
+
+    _captureDocument(document) {
+      return Object.freeze({
+        document,
+        documentId: document.id,
+        content: document.content,
+        editRevision: document.editRevision,
+        snapshotRevision: document.snapshotRevision,
+        displayName: document.displayName,
+        path: document.path,
+        canonicalPath: document.canonicalPath,
+        expectedDiskSha256: document.expectedDiskSha256,
+        fileStatus: document.fileStatus,
+      });
+    }
+
+    _requireLoadedDocument(documentId) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel)) throw new Error("unknown or unloaded document id");
+      return document;
+    }
+
+    async _checkpointAfterDocumentChange(capture, changed, phase) {
+      if (!changed || !this._ownsOperationCapture(capture)) return false;
+      this._scheduleRecoveryRevision(capture.document);
+      if (this._restoreState === "restored") await this._persistManifestNow(this._lifecycleToken);
+      return true;
+    }
+
+    _runDocumentOperation(key, run) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._documentOperation) {
+        if (this._documentOperation.key === key) return this._documentOperation.promise;
+        return Promise.resolve({ busy: true, saved: false, closed: false, allowClose: false });
+      }
+      const operation = { key, promise: null };
+      operation.promise = Promise.resolve().then(async () => {
+        if (this._restoreState !== "restored") await this.restore();
+        return run();
+      }).finally(() => {
+        if (this._documentOperation === operation) this._documentOperation = null;
+      });
+      this._documentOperation = operation;
+      return operation.promise;
+    }
+
+    _showConflictChoice(document) {
+      const actions = ["reload", "keep-editing", "save-as"];
+      if (typeof this.dialogs.showConflict === "function") return this.dialogs.showConflict(document, actions);
+      if (typeof this.view.showDialog !== "function") return Promise.resolve("keep-editing");
+      return this.view.showDialog({
+        title: `Resolve conflict for ${document.displayName}`,
+        message: "The file changed outside MDedit. Choose how to continue.",
+        documents: [document],
+        actions: [
+          { id: "reload", label: "Reload Disk Version" },
+          { id: "keep-editing", label: "Keep Editing", primary: true },
+          { id: "save-as", label: "Save Editor Version As" },
+        ],
+      });
+    }
+
+    _confirmReload(document) {
+      if (typeof this.dialogs.confirmReload === "function") return this.dialogs.confirmReload(document);
+      if (typeof this.view.showDialog !== "function") return Promise.resolve(false);
+      return this.view.showDialog({
+        title: `Discard edits to ${document.displayName}?`,
+        message: "Reloading replaces the editor version with the file on disk.",
+        documents: [document],
+        actions: [
+          { id: "cancel", label: "Cancel", value: false },
+          { id: "reload", label: "Discard and Reload", value: true, primary: true },
+        ],
+      });
     }
 
     checkpointDocument(documentId, phase = "metadata-checkpoint") {
@@ -4715,11 +5092,35 @@ return Pe}()
     }
 
     closeDocument(documentId) {
-      if (this._disposed) throw new Error("session controller is disposed");
-      if (!this.session) throw new Error("session has not been created");
-      const document = this.session.documents.get(documentId);
-      if (!document) throw new Error("unknown document id");
-      if (document.dirty) return false;
+      return this._runDocumentOperation(
+        `close:${documentId}`,
+        () => this._closeDocumentNow(documentId),
+      );
+    }
+
+    async _closeDocumentNow(documentId) {
+      const document = this._requireLoadedDocument(documentId);
+      await this._reconcileDocumentDirty(document);
+      let choice = "discard";
+      if (document.dirty) {
+        choice = await this._showCloseChoice(document);
+        if (!choice || choice === "cancel") return { closed: false, canceled: true, documentId };
+        if (choice === "save") {
+          const saved = await this._saveDocumentNow(documentId);
+          if (!saved || !saved.saved || !this.session.documents.has(documentId)) {
+            return { closed: false, canceled: Boolean(saved && saved.canceled), result: saved, documentId };
+          }
+          if (document.dirty) return { closed: false, stale: true, result: saved, documentId };
+        } else if (choice !== "discard") {
+          throw new Error("unknown close action");
+        }
+      }
+      await this._removeDocumentDurably(documentId);
+      return { closed: true, discarded: choice === "discard", documentId };
+    }
+
+    async _removeDocumentDurably(documentId) {
+      const document = this._requireLoadedDocument(documentId);
       if (this.session.activeDocumentId === documentId) this._captureAndFlushOutgoing(document);
       const { nextActiveId } = this.session.remove(documentId);
       this._pendingRecoveryDeletions.add(documentId);
@@ -4727,12 +5128,143 @@ return Pe}()
       this._latestRenderTokens.delete(documentId);
       if (typeof this.scheduler.forget === "function") this.scheduler.forget(documentId);
       if (typeof this.view.removeEditor === "function") this.view.removeEditor(documentId);
+      let active;
       if (nextActiveId === null) {
-        this._createUntitledNow();
+        active = this.session.createUntitled();
       } else {
-        this._presentActivatedDocument(this.session.documents.get(nextActiveId));
+        active = this.session.documents.get(nextActiveId);
       }
+      this._presentActivatedDocument(active, { persist: false });
+      await this._persistManifestNow(this._lifecycleToken);
+      return active;
+    }
+
+    async _reconcileDocumentDirty(document) {
+      if (!(document instanceof DocumentModel)) return false;
+      if (!document.dirty) return false;
+      const capture = this._captureDocument(document);
+      const contentSha256 = await this.hashText(capture.content);
+      if (!this._ownsOperationCapture(capture)) return false;
+      document.reconcileDirty(contentSha256, capture.editRevision);
+      this._setDocumentStatus(document.id, {
+        dirty: document.dirty,
+        fileStatus: document.fileStatus,
+        recoveryStatus: document.recoveryStatus,
+      });
+      return document.dirty;
+    }
+
+    _showCloseChoice(document) {
+      const actions = ["save", "discard", "cancel"];
+      if (typeof this.dialogs.showClose === "function") return this.dialogs.showClose(document, actions);
+      if (typeof this.view.showDialog !== "function") return Promise.resolve("cancel");
+      return this.view.showDialog({
+        title: `Save changes to ${document.displayName}?`,
+        message: "Closing this tab without saving will discard its editor changes.",
+        documents: [document],
+        actions: [
+          { id: "save", label: "Save", primary: true },
+          { id: "discard", label: "Discard" },
+          { id: "cancel", label: "Cancel" },
+        ],
+      });
+    }
+
+    requestQuit() {
+      return this._runDocumentOperation("quit", () => this._requestQuitNow());
+    }
+
+    async _requestQuitNow() {
+      const documents = [...this.session.documents.values()].filter(
+        (document) => document instanceof DocumentModel,
+      );
+      await Promise.all(documents.map((document) => this._reconcileDocumentDirty(document)));
+      const dirtyDocuments = this.session.tabOrder
+        .map((id) => this.session.documents.get(id))
+        .filter((document) => document instanceof DocumentModel && document.dirty);
+      let choice = "restore";
+      if (dirtyDocuments.length > 0) choice = await this._showQuitChoice(dirtyDocuments);
+      if (!choice || choice === "cancel") return { allowClose: false, canceled: true };
+
+      try {
+        if (choice === "save-all") {
+          const result = await this._saveAllNow({ showConflicts: false });
+          if (result.canceled || result.error || result.remainingIds.length > 0) {
+            return {
+              allowClose: false,
+              canceled: result.canceled,
+              error: result.error,
+              saveAll: result,
+            };
+          }
+          await this._persistManifestNow(this._lifecycleToken);
+        } else if (choice === "restore") {
+          if (typeof this.scheduler.flushAll !== "function") {
+            throw new Error("whole-session recovery flush is unavailable");
+          }
+          await this.scheduler.flushAll();
+          await this._persistManifestNow(this._lifecycleToken);
+        } else if (choice === "discard-all") {
+          await this._discardDocumentsForQuit(dirtyDocuments);
+        } else {
+          throw new Error("unknown quit action");
+        }
+      } catch (reason) {
+        const error = normalizeError(reason);
+        this._showRecoveryError(error, { phase: "quit" });
+        return { allowClose: false, canceled: false, error };
+      }
+      this._nativeCloseAllowed = true;
+      return { allowClose: true, choice };
+    }
+
+    async _discardDocumentsForQuit(documents) {
+      const ids = new Set(documents.map((document) => document.id));
+      for (const documentId of this.session.tabOrder.filter((id) => ids.has(id))) {
+        const document = this.session.documents.get(documentId);
+        if (!(document instanceof DocumentModel)) continue;
+        this.session.remove(documentId);
+        this._pendingRecoveryDeletions.add(documentId);
+        this._invalidatePreview(documentId);
+        this._latestRenderTokens.delete(documentId);
+        if (typeof this.scheduler.forget === "function") this.scheduler.forget(documentId);
+        if (typeof this.view.removeEditor === "function") this.view.removeEditor(documentId);
+      }
+      if (this.session.documents.size === 0) this.session.createUntitled();
+      const active = this.activeDocument();
+      if (active) this._presentActivatedDocument(active, { persist: false, focusEditor: false });
+      await this._persistManifestNow(this._lifecycleToken);
+    }
+
+    _showQuitChoice(documents) {
+      const actions = ["save-all", "restore", "discard-all", "cancel"];
+      if (typeof this.dialogs.showQuit === "function") return this.dialogs.showQuit(documents, actions);
+      if (typeof this.view.showDialog !== "function") return Promise.resolve("cancel");
+      return this.view.showDialog({
+        title: "Unsaved documents",
+        message: "Choose what MDedit should do before closing.",
+        documents,
+        cancelable: true,
+        actions: [
+          { id: "save-all", label: "Save All & Quit", primary: true },
+          { id: "restore", label: "Quit and Restore Next Time" },
+          { id: "discard-all", label: "Discard All & Quit" },
+          { id: "cancel", label: "Cancel" },
+        ],
+      });
+    }
+
+    allowNativeClose() {
+      if (!this._nativeCloseAllowed) return false;
+      this._nativeCloseAllowed = false;
       return true;
+    }
+
+    hasUnsavedOrRecoveryRisk() {
+      if (this._sessionRecoveryFailure) return true;
+      if (!this.session) return false;
+      return [...this.session.documents.values()].some((document) => document instanceof DocumentModel
+        && (document.dirty || document.recoveryStatus === "failed"));
     }
 
     createUntitled() {
@@ -4953,7 +5485,7 @@ return Pe}()
       });
     }
 
-    _presentActivatedDocument(document, { focusEditor = true } = {}) {
+    _presentActivatedDocument(document, { focusEditor = true, persist = true } = {}) {
       if (this._disposed || !document) return;
       if (document instanceof DocumentModel && (this._manifestBarrier || this._sessionRecoveryFailure)) {
         this._scheduleRecoveryRevision(document);
@@ -4977,7 +5509,7 @@ return Pe}()
         }
         if (focusEditor && typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
       });
-      if (this._restoreState === "restored") {
+      if (persist && this._restoreState === "restored") {
         this._persistManifestNow().catch((reason) => {
           if (!this.session || this.session.documents.get(id) !== document) return;
           this._showRecoveryError(reason, {
@@ -5342,7 +5874,7 @@ return Pe}()
       this._handleTabKeydown = (event) => this._onTabKeydown(event);
       this._handleAdd = () => this.onAdd();
       this._handleDialogClick = (event) => this._onDialogClick(event);
-      this._handleBackdropClick = () => this.closeDialog(null);
+      this._handleBackdropClick = () => this._cancelDialog();
       this._handleDocumentKeydown = (event) => this._onDocumentKeydown(event);
 
       this.tabList.addEventListener("click", this._handleTabClick);
@@ -5603,7 +6135,14 @@ return Pe}()
       return true;
     }
 
-    showDialog({ title = "", message = "", documents = [], actions = [] } = {}) {
+    showDialog({
+      title = "",
+      message = "",
+      documents = [],
+      documentLabel = "Affected documents",
+      actions = [],
+      cancelable = true,
+    } = {}) {
       this._requireDialogElements();
       if (this._dialogState && this._dialogState.busy) return this._dialogState.promise;
       if (this._dialogState) this.closeDialog(null);
@@ -5618,6 +6157,8 @@ return Pe}()
       });
       this.dialogDocuments.replaceChildren(...documentNodes);
       this.dialogDocuments.hidden = documentNodes.length === 0;
+      if (documentNodes.length > 0) this.dialogDocuments.setAttribute("aria-label", String(documentLabel));
+      else this.dialogDocuments.removeAttribute("aria-label");
 
       const actionMap = new Map();
       const actionNodes = (Array.isArray(actions) ? actions : []).map((action, index) => {
@@ -5640,7 +6181,15 @@ return Pe}()
 
       let state;
       const promise = new Promise((resolve, reject) => {
-        state = { actions: actionMap, priorFocus, resolve, reject, busy: false, promise: null };
+        state = {
+          actions: actionMap,
+          priorFocus,
+          resolve,
+          reject,
+          busy: false,
+          cancelable: Boolean(cancelable),
+          promise: null,
+        };
       });
       state.promise = promise;
       this._dialogState = state;
@@ -5773,8 +6322,7 @@ return Pe}()
       if (!this._dialogState) return;
       if (event.key === "Escape") {
         if (typeof event.preventDefault === "function") event.preventDefault();
-        if (this._dialogState.busy) return;
-        this.closeDialog(null);
+        this._cancelDialog();
         return;
       }
       if (event.key !== "Tab") return;
@@ -5790,6 +6338,11 @@ return Pe}()
       if (!leavingEnd && !leavingStart) return;
       if (typeof event.preventDefault === "function") event.preventDefault();
       focusable[event.shiftKey ? focusable.length - 1 : 0].focus();
+    }
+
+    _cancelDialog() {
+      if (!this._dialogState || this._dialogState.busy || !this._dialogState.cancelable) return false;
+      return this.closeDialog(null);
     }
 
     _focusedTabControl() {
@@ -6438,19 +6991,15 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const document = controller.activeDocument();
     if (!document) return;
     const capture = controller.captureActiveDocument();
-    if (nativeApp && document.path) {
+    if (nativeApp) {
       try {
-        const result = typeof nativeApp.saveDocument === "function"
-          ? await nativeApp.saveDocument({ path: document.path, expectedSha256: document.expectedDiskSha256, content: capture.content })
-          : (await nativeApp.writeFile(document.path, capture.content), null);
-        if (result && result.status === "conflict") throw new Error("the file changed outside MDedit");
-        const contentSha256 = result && result.sha256 ? result.sha256 : await hashText(capture.content);
-        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
+        const result = await controller.saveDocument(document.id);
         syncActiveSurface();
-        setStatus("Saved to " + capture.displayName, false, capture.documentId);
-        return;
+        if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
+        return result;
       } catch (e) {
-        setStatus("Couldn't write to the original file — choose where to save it", false, capture.documentId);
+        setStatus("Couldn't save: " + e.message, false, capture.documentId);
+        return null;
       }
     }
     const fileHandle = browserFileHandles.get(document.id);
@@ -6482,17 +7031,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (!document || !controller.session.documents.has(capture.documentId)) return;
     if (nativeApp) {
       try {
-        const path = await nativeApp.saveAs({ defaultDir: nativeDir(document), suggestedName: capture.displayName || "untitled.md", data: capture.content });
-        if (!path) return;    // user cancelled
-        if (!controller.session.documents.has(capture.documentId)) return;
+        const result = await controller.saveAs(capture.documentId);
+        if (!result || !result.saved) return result;
         browserFileHandles.delete(capture.documentId);
-        const canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
-          ? await nativeApp.canonicalizeDocumentPath(path) : path;
-        document.updateMetadata({ path, canonicalPath, displayName: path.split(/[/\\]/).pop() });
-        const contentSha256 = await hashText(capture.content);
-        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
+        return result;
       } catch (e) {
         setStatus("Couldn't save: " + e.message, false, capture.documentId);
       }
@@ -6940,7 +7484,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   });
 
   window.addEventListener("beforeunload", (e) => {
-    if (controller && controller.session && [...controller.session.documents.values()].some((document) => document.dirty)) {
+    if (controller && controller.hasUnsavedOrRecoveryRisk()) {
       e.preventDefault(); e.returnValue = "";
     }
   });
@@ -7321,8 +7865,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       controller.activateDocument(documentId, options);
       syncActiveSurface();
     },
-    onClose(documentId) {
-      if (!controller.closeDocument(documentId)) setStatus("Unsaved tabs require confirmation before closing");
+    async onClose(documentId) {
+      await controller.closeDocument(documentId);
       syncActiveSurface();
     },
     onAdd() { newDoc(); },
@@ -7403,6 +7947,27 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       },
     },
   });
+
+  async function installNativeCloseGuard() {
+    const windowApi = window.__TAURI__ && window.__TAURI__.window;
+    if (!nativeApp || !windowApi || typeof windowApi.getCurrentWindow !== "function") return null;
+    const currentWindow = windowApi.getCurrentWindow();
+    if (!currentWindow || typeof currentWindow.onCloseRequested !== "function") return null;
+    let closeRequest = null;
+    return currentWindow.onCloseRequested(async (event) => {
+      if (controller.allowNativeClose()) return;
+      event.preventDefault();
+      if (closeRequest) return;
+      closeRequest = controller.requestQuit();
+      try {
+        const result = await closeRequest;
+        if (result && result.allowClose) await currentWindow.close();
+      } finally {
+        closeRequest = null;
+      }
+    });
+  }
+  const nativeCloseGuardReady = installNativeCloseGuard();
   if (browserRecoveryEnvironment && browserRecoveryEnvironment.error) {
     persistentRecoveryWarning = "Recovery storage is unavailable — edits will only be kept for this page";
     setStatus("", true);
@@ -7475,6 +8040,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
 `;
 
   (async () => {
+    await nativeCloseGuardReady;
     await controller.restore();
     let active = controller.activeDocument();
     if (active && !active.content && !active.dirty && controller.session.documents.size === 1) {

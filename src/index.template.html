@@ -1528,19 +1528,15 @@
     const document = controller.activeDocument();
     if (!document) return;
     const capture = controller.captureActiveDocument();
-    if (nativeApp && document.path) {
+    if (nativeApp) {
       try {
-        const result = typeof nativeApp.saveDocument === "function"
-          ? await nativeApp.saveDocument({ path: document.path, expectedSha256: document.expectedDiskSha256, content: capture.content })
-          : (await nativeApp.writeFile(document.path, capture.content), null);
-        if (result && result.status === "conflict") throw new Error("the file changed outside MDedit");
-        const contentSha256 = result && result.sha256 ? result.sha256 : await hashText(capture.content);
-        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
+        const result = await controller.saveDocument(document.id);
         syncActiveSurface();
-        setStatus("Saved to " + capture.displayName, false, capture.documentId);
-        return;
+        if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
+        return result;
       } catch (e) {
-        setStatus("Couldn't write to the original file — choose where to save it", false, capture.documentId);
+        setStatus("Couldn't save: " + e.message, false, capture.documentId);
+        return null;
       }
     }
     const fileHandle = browserFileHandles.get(document.id);
@@ -1572,17 +1568,12 @@
     if (!document || !controller.session.documents.has(capture.documentId)) return;
     if (nativeApp) {
       try {
-        const path = await nativeApp.saveAs({ defaultDir: nativeDir(document), suggestedName: capture.displayName || "untitled.md", data: capture.content });
-        if (!path) return;    // user cancelled
-        if (!controller.session.documents.has(capture.documentId)) return;
+        const result = await controller.saveAs(capture.documentId);
+        if (!result || !result.saved) return result;
         browserFileHandles.delete(capture.documentId);
-        const canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
-          ? await nativeApp.canonicalizeDocumentPath(path) : path;
-        document.updateMetadata({ path, canonicalPath, displayName: path.split(/[/\\]/).pop() });
-        const contentSha256 = await hashText(capture.content);
-        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
+        return result;
       } catch (e) {
         setStatus("Couldn't save: " + e.message, false, capture.documentId);
       }
@@ -2030,7 +2021,7 @@
   });
 
   window.addEventListener("beforeunload", (e) => {
-    if (controller && controller.session && [...controller.session.documents.values()].some((document) => document.dirty)) {
+    if (controller && controller.hasUnsavedOrRecoveryRisk()) {
       e.preventDefault(); e.returnValue = "";
     }
   });
@@ -2415,8 +2406,8 @@
       controller.activateDocument(documentId, options);
       syncActiveSurface();
     },
-    onClose(documentId) {
-      if (!controller.closeDocument(documentId)) setStatus("Unsaved tabs require confirmation before closing");
+    async onClose(documentId) {
+      await controller.closeDocument(documentId);
       syncActiveSurface();
     },
     onAdd() { newDoc(); },
@@ -2497,6 +2488,27 @@
       },
     },
   });
+
+  async function installNativeCloseGuard() {
+    const windowApi = window.__TAURI__ && window.__TAURI__.window;
+    if (!nativeApp || !windowApi || typeof windowApi.getCurrentWindow !== "function") return null;
+    const currentWindow = windowApi.getCurrentWindow();
+    if (!currentWindow || typeof currentWindow.onCloseRequested !== "function") return null;
+    let closeRequest = null;
+    return currentWindow.onCloseRequested(async (event) => {
+      if (controller.allowNativeClose()) return;
+      event.preventDefault();
+      if (closeRequest) return;
+      closeRequest = controller.requestQuit();
+      try {
+        const result = await closeRequest;
+        if (result && result.allowClose) await currentWindow.close();
+      } finally {
+        closeRequest = null;
+      }
+    });
+  }
+  const nativeCloseGuardReady = installNativeCloseGuard();
   if (browserRecoveryEnvironment && browserRecoveryEnvironment.error) {
     persistentRecoveryWarning = "Recovery storage is unavailable — edits will only be kept for this page";
     setStatus("", true);
@@ -2569,6 +2581,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
 `;
 
   (async () => {
+    await nativeCloseGuardReady;
     await controller.restore();
     let active = controller.activeDocument();
     if (active && !active.content && !active.dirty && controller.session.documents.size === 1) {

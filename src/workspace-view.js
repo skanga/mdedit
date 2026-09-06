@@ -164,7 +164,7 @@
       this._handleTabKeydown = (event) => this._onTabKeydown(event);
       this._handleAdd = () => this.onAdd();
       this._handleDialogClick = (event) => this._onDialogClick(event);
-      this._handleBackdropClick = () => this.closeDialog(null);
+      this._handleBackdropClick = () => this._cancelDialog();
       this._handleDocumentKeydown = (event) => this._onDocumentKeydown(event);
 
       this.tabList.addEventListener("click", this._handleTabClick);
@@ -425,7 +425,14 @@
       return true;
     }
 
-    showDialog({ title = "", message = "", documents = [], actions = [] } = {}) {
+    showDialog({
+      title = "",
+      message = "",
+      documents = [],
+      documentLabel = "Affected documents",
+      actions = [],
+      cancelable = true,
+    } = {}) {
       this._requireDialogElements();
       if (this._dialogState && this._dialogState.busy) return this._dialogState.promise;
       if (this._dialogState) this.closeDialog(null);
@@ -440,6 +447,8 @@
       });
       this.dialogDocuments.replaceChildren(...documentNodes);
       this.dialogDocuments.hidden = documentNodes.length === 0;
+      if (documentNodes.length > 0) this.dialogDocuments.setAttribute("aria-label", String(documentLabel));
+      else this.dialogDocuments.removeAttribute("aria-label");
 
       const actionMap = new Map();
       const actionNodes = (Array.isArray(actions) ? actions : []).map((action, index) => {
@@ -462,7 +471,15 @@
 
       let state;
       const promise = new Promise((resolve, reject) => {
-        state = { actions: actionMap, priorFocus, resolve, reject, busy: false, promise: null };
+        state = {
+          actions: actionMap,
+          priorFocus,
+          resolve,
+          reject,
+          busy: false,
+          cancelable: Boolean(cancelable),
+          promise: null,
+        };
       });
       state.promise = promise;
       this._dialogState = state;
@@ -595,8 +612,7 @@
       if (!this._dialogState) return;
       if (event.key === "Escape") {
         if (typeof event.preventDefault === "function") event.preventDefault();
-        if (this._dialogState.busy) return;
-        this.closeDialog(null);
+        this._cancelDialog();
         return;
       }
       if (event.key !== "Tab") return;
@@ -612,6 +628,11 @@
       if (!leavingEnd && !leavingStart) return;
       if (typeof event.preventDefault === "function") event.preventDefault();
       focusable[event.shiftKey ? focusable.length - 1 : 0].focus();
+    }
+
+    _cancelDialog() {
+      if (!this._dialogState || this._dialogState.busy || !this._dialogState.cancelable) return false;
+      return this.closeDialog(null);
     }
 
     _focusedTabControl() {
