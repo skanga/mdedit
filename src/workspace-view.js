@@ -139,6 +139,7 @@
       this.dialogMessage = elements.dialogMessage || null;
       this.dialogDocuments = elements.dialogDocuments || null;
       this.dialogActions = elements.dialogActions || null;
+      this.statusElement = elements.statusElement || elements.statusEl || elements.status || null;
 
       this.onActivate = callbackFrom(options, intents, ["onActivate", "activate", "activateDocument"]);
       this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
@@ -231,6 +232,9 @@
           status,
           recovery,
           close,
+          name,
+          displayName: descriptor.displayName,
+          fileStatus: document.fileStatus || "normal",
           baseStatusText: descriptor.statusText,
           dirty: Boolean(document.dirty),
           conflict: descriptor.statusKind === "conflict",
@@ -245,11 +249,17 @@
       this._tabOrder = order;
       this._activeDocumentId = activeId === undefined || activeId === null ? null : String(activeId);
       const focusRecord = focused && tabs.get(focused.documentId);
+      let focusedRecord = focusRecord;
       if (focusRecord) {
         const control = focused.action === "close" ? focusRecord.close : focusRecord.tab;
         if (typeof control.focus === "function") control.focus();
+      } else if (focused) {
+        focusedRecord = tabs.get(this._activeDocumentId)
+          || tabs.get(order[Math.min(focused.index, Math.max(0, order.length - 1))]);
+        const fallback = focusedRecord ? focusedRecord.tab : (this.addButton || this.tabList);
+        if (fallback && typeof fallback.focus === "function") fallback.focus();
       }
-      const scrollRecord = focusRecord || tabs.get(this._activeDocumentId);
+      const scrollRecord = focusedRecord || tabs.get(this._activeDocumentId);
       if (scrollRecord && typeof scrollRecord.tab.scrollIntoView === "function") {
         scrollRecord.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
       }
@@ -358,25 +368,43 @@
         status = documentId;
         documentId = documentId.id;
       }
-      const record = this._tabs.get(String(documentId));
       const id = String(documentId);
-      const isBaseStatus = status && typeof status === "object"
-        && (Object.prototype.hasOwnProperty.call(status, "dirty") || Object.prototype.hasOwnProperty.call(status, "fileStatus"))
-        && !Object.prototype.hasOwnProperty.call(status, "recoveryStatus")
-        && !Object.prototype.hasOwnProperty.call(status, "status")
-        && !Object.prototype.hasOwnProperty.call(status, "message");
-      if (isBaseStatus && record) {
-        const descriptor = documentStatus(status);
+      const record = this._tabs.get(id);
+      const objectStatus = status && typeof status === "object" ? status : null;
+      const has = (key) => Boolean(objectStatus && Object.prototype.hasOwnProperty.call(objectStatus, key));
+      const hasBaseStatus = has("dirty") || has("fileStatus") || has("displayName");
+      if (hasBaseStatus && record) {
+        if (has("displayName") && typeof objectStatus.displayName === "string") {
+          record.displayName = objectStatus.displayName;
+          record.name.textContent = record.displayName;
+          record.close.setAttribute("aria-label", `Close ${record.displayName}`);
+        }
+        if (has("dirty")) record.dirty = Boolean(objectStatus.dirty);
+        if (has("fileStatus")) record.fileStatus = objectStatus.fileStatus;
+        const descriptor = documentStatus({ dirty: record.dirty, fileStatus: record.fileStatus });
         record.baseStatusText = descriptor.statusText;
-        record.dirty = Boolean(status.dirty);
         record.conflict = descriptor.statusKind === "conflict";
-      } else {
+      }
+      const hasRuntimeStatus = typeof status === "string" || status === null
+        || has("recoveryStatus") || has("status") || has("message");
+      if (hasRuntimeStatus) {
         const runtime = recoveryStatus(status);
         if (runtime) this._runtimeStatuses.set(id, runtime);
         else this._runtimeStatuses.delete(id);
       }
       if (!record) return false;
-      this._applyTabStatus(record, this._runtimeStatuses.get(id));
+      const runtime = this._runtimeStatuses.get(id);
+      this._applyTabStatus(record, runtime);
+      if (hasRuntimeStatus) {
+        const clean = status === null || status === "clean"
+          || Boolean(objectStatus && (objectStatus.recoveryStatus === "clean" || objectStatus.status === "clean"));
+        const message = runtime
+          ? `${record.displayName}: ${runtime.message}`
+          : clean ? `${record.displayName}: Recovery is current` : "";
+        if (message && this.statusElement && this.statusElement.textContent !== message) {
+          this.statusElement.textContent = message;
+        }
+      }
       return true;
     }
 
@@ -432,13 +460,20 @@
       return promise;
     }
 
-    closeDialog(result = null, error = null, force = false) {
+    closeDialog(result = null, errorOrOptions = null, legacyForce = false) {
       const state = this._dialogState;
       if (!state) return false;
+      const options = errorOrOptions && typeof errorOrOptions === "object"
+        && !(errorOrOptions instanceof Error) && Object.prototype.hasOwnProperty.call(errorOrOptions, "force")
+        ? errorOrOptions : null;
+      const force = options ? Boolean(options.force) : legacyForce;
+      const error = options ? (options.error || null) : errorOrOptions;
       if (state.busy && !force) return false;
       this._dialogState = null;
+      state.busy = false;
       this.dialog.removeAttribute("aria-busy");
       this.dialogActions.removeAttribute("aria-busy");
+      for (const child of this.dialogActions.children) child.disabled = false;
       this.dialog.hidden = true;
       this.dialogBackdrop.hidden = true;
       if (state.priorFocus && typeof state.priorFocus.focus === "function") state.priorFocus.focus();
@@ -456,7 +491,7 @@
       if (this.dialogActions) this.dialogActions.removeEventListener("click", this._handleDialogClick);
       if (this.dialogBackdrop) this.dialogBackdrop.removeEventListener("click", this._handleBackdropClick);
       this.document.removeEventListener("keydown", this._handleDocumentKeydown);
-      if (this._dialogState) this.closeDialog(null);
+      if (this._dialogState) this.closeDialog(null, { force: true });
       for (const record of this._editors.values()) {
         record.editor.removeEventListener("input", record.onInput);
         record.surface.remove();
@@ -570,12 +605,14 @@
     }
 
     _focusedTabControl() {
-      const target = eventActionTarget(this.document.activeElement, "data-action");
-      if (!target || !this.tabList.contains(target)) return null;
+      const activeElement = this.document.activeElement;
+      if (!activeElement || !this.tabList.contains(activeElement)) return null;
+      const target = eventActionTarget(activeElement, "data-action");
+      if (!target) return { documentId: null, action: null, index: 0 };
       const action = target.getAttribute("data-action");
       if (action !== "activate" && action !== "close") return null;
       const documentId = target.getAttribute("data-document-id");
-      return documentId ? { documentId, action } : null;
+      return documentId ? { documentId, action, index: this._tabOrder.indexOf(documentId) } : null;
     }
 
     _applyTabStatus(record, runtime) {

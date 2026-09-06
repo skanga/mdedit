@@ -74,6 +74,7 @@ class FakeElement {
 
   set textContent(value) {
     this._text = String(value ?? "");
+    this.textContentWrites = (this.textContentWrites || 0) + 1;
     this.children = [];
   }
 
@@ -227,10 +228,11 @@ function makeFixture(callbacks = {}, fixtureOptions = {}) {
     dialogMessage: "dialog-message",
     dialogDocuments: "dialog-documents",
     dialogActions: "dialog-actions",
+    statusElement: "status",
   };
   for (const name of [
     "tabList", "addButton", "editorSurfaces", "dialogBackdrop", "dialog",
-    "dialogTitle", "dialogMessage", "dialogDocuments", "dialogActions",
+    "dialogTitle", "dialogMessage", "dialogDocuments", "dialogActions", "statusElement",
   ]) {
     elements[name] = document.createElement(name === "dialog" ? "section" : "div");
     elements[name].id = ids[name];
@@ -266,8 +268,12 @@ function doc(id, overrides = {}) {
 
 function deferred() {
   let resolve;
-  const promise = new Promise((resolvePromise) => { resolve = resolvePromise; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 test("browser wrapper merges workspace exports into window.MDEdit", () => {
@@ -484,6 +490,54 @@ test("keyboard activation keeps focus after a synchronous controller rerender", 
   assert.equal(last.scrollIntoViewCalls.length, 1);
 });
 
+test("closing a focused tab restores focus to the active neighbor and never steals outside focus", () => {
+  let documents = [doc("one"), doc("two"), doc("three")];
+  let view;
+  const fixture = makeFixture({
+    onClose(id) {
+      documents = documents.filter((document) => document.id !== id);
+      view.renderTabs(documents, id === "two" ? "three" : null);
+    },
+  });
+  view = fixture.view;
+  view.renderTabs(documents, "two");
+  const close = find(fixture.elements.tabList.children[1], (el) => el.getAttribute("data-action") === "close");
+  close.focus();
+  close.dispatchEvent({ type: "click", bubbles: true });
+
+  const neighbor = find(fixture.elements.tabList.children[1], (el) => el.getAttribute("role") === "tab");
+  assert.equal(neighbor.getAttribute("data-document-id"), "three");
+  assert.equal(fixture.document.activeElement, neighbor);
+  assert.equal(neighbor.scrollIntoViewCalls.length, 1);
+
+  const outside = fixture.document.createElement("button");
+  fixture.document.body.appendChild(outside);
+  outside.focus();
+  view.renderTabs(documents, "three");
+  assert.equal(fixture.document.activeElement, outside);
+});
+
+test("closing the final focused tab moves focus to the add control", () => {
+  let view;
+  const fixture = makeFixture({ onClose() { view.renderTabs([], null); } });
+  view = fixture.view;
+  view.renderTabs([doc("only")], "only");
+  const close = find(fixture.elements.tabList.children[0], (el) => el.getAttribute("data-action") === "close");
+  close.focus();
+  close.dispatchEvent({ type: "click", bubbles: true });
+  assert.equal(fixture.document.activeElement, fixture.elements.addButton);
+});
+
+test("tablist focus falls forward to the selected tab after a rebuild", () => {
+  const fixture = makeFixture();
+  const documents = [doc("one"), doc("two")];
+  fixture.view.renderTabs(documents, "one");
+  fixture.elements.tabList.focus();
+  fixture.view.renderTabs(documents, "two");
+  const selected = find(fixture.elements.tabList.children[1], (el) => el.getAttribute("role") === "tab");
+  assert.equal(fixture.document.activeElement, selected);
+});
+
 test("showDialog safely renders text, awaits actions, closes, and restores focus", async () => {
   const action = [];
   const { document, elements, view } = makeFixture();
@@ -606,6 +660,32 @@ test("a rejected dialog action re-enables the dialog and can be retried", async 
   assert.equal(await result, "recovered");
 });
 
+test("dispose force-closes a busy dialog once and ignores its late rejection", async () => {
+  const pending = deferred();
+  const { document, elements, view } = makeFixture();
+  const result = view.showDialog({
+    title: "Working",
+    actions: [{ id: "work", label: "Work", callback: () => pending.promise }],
+  });
+  elements.dialogActions.children[0].dispatchEvent({ type: "click", bubbles: true });
+  view.dispose();
+
+  assert.equal(await result, null);
+  assert.equal(elements.dialog.hidden, true);
+  assert.equal(elements.dialogBackdrop.hidden, true);
+  assert.equal(elements.dialog.getAttribute("aria-busy"), null);
+  assert.equal(elements.dialogActions.getAttribute("aria-busy"), null);
+  assert.equal(elements.dialogActions.children[0].disabled, false);
+  assert.equal((elements.dialogActions.listeners.get("click") || []).length, 0);
+  assert.equal((document.listeners.get("keydown") || []).length, 0);
+
+  pending.reject(new Error("late failure"));
+  await Promise.resolve();
+  await Promise.resolve();
+  assert.equal(elements.dialog.hidden, true);
+  assert.equal(elements.dialogMessage.textContent, "");
+});
+
 test("recovery status layers over dirty and conflict state and survives tab rerenders", () => {
   const documents = [doc("one", { dirty: true, fileStatus: "externally-changed" }), doc("two")];
   const { elements, view } = makeFixture();
@@ -632,6 +712,53 @@ test("recovery status layers over dirty and conflict state and survives tab rere
   view.renderTabs(documents, "one");
   const secondStatus = find(elements.tabList.children[1], (el) => el.classList.contains("document-tab-status"));
   assert.match(secondStatus.textContent, /Saving recovery/);
+});
+
+test("one full status object merges document state, recovery state, and live announcement", () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc("one")], "one");
+  view.setDocumentStatus("one", {
+    displayName: "Renamed.md",
+    dirty: true,
+    fileStatus: "externally-changed",
+    recoveryStatus: "failed",
+    message: "Recovery write failed",
+  });
+
+  const shell = elements.tabList.children[0];
+  const name = find(shell, (el) => el.classList.contains("document-tab-name"));
+  const status = find(shell, (el) => el.classList.contains("document-tab-status"));
+  const recovery = find(shell, (el) => el.classList.contains("document-tab-recovery"));
+  const close = find(shell, (el) => el.getAttribute("data-action") === "close");
+  assert.equal(name.textContent, "Renamed.md");
+  assert.equal(close.getAttribute("aria-label"), "Close Renamed.md");
+  assert.equal(status.textContent, "File changed outside MDedit; Unsaved changes; Recovery write failed");
+  assert.equal(recovery.textContent, "Recovery write failed");
+  assert.equal(recovery.hidden, false);
+  assert.equal(shell.classList.contains("is-dirty"), true);
+  assert.equal(shell.classList.contains("is-conflict"), true);
+  assert.equal(shell.classList.contains("recovery-failed"), true);
+  assert.equal(elements.statusElement.textContent, "Renamed.md: Recovery write failed");
+
+  view.setDocumentStatus("one", {
+    displayName: "Renamed.md",
+    dirty: true,
+    fileStatus: "externally-changed",
+    recoveryStatus: "clean",
+  });
+  assert.equal(status.textContent, "File changed outside MDedit; Unsaved changes");
+  assert.equal(shell.classList.contains("is-dirty"), true);
+  assert.equal(shell.classList.contains("is-conflict"), true);
+  assert.equal(recovery.hidden, true);
+  assert.equal(elements.statusElement.textContent, "Renamed.md: Recovery is current");
+  const writes = elements.statusElement.textContentWrites;
+  view.setDocumentStatus("one", {
+    displayName: "Renamed.md",
+    dirty: true,
+    fileStatus: "externally-changed",
+    recoveryStatus: "clean",
+  });
+  assert.equal(elements.statusElement.textContentWrites, writes);
 });
 
 test("removeEditor and dispose clean up mounted surfaces and listeners", () => {
