@@ -60,9 +60,14 @@
       return { selectionStart: 0, selectionEnd: 0, editorScrollTop: 0 };
     }
 
-    const length = typeof editor.value === "string" ? editor.value.length : 0;
-    const selectionStart = Math.min(length, normalizedInteger(editor.selectionStart));
-    const selectionEnd = Math.min(length, Math.max(selectionStart, normalizedInteger(editor.selectionEnd)));
+    const hasStringValue = typeof editor.value === "string";
+    const length = hasStringValue ? editor.value.length : 0;
+    let selectionStart = normalizedInteger(editor.selectionStart);
+    let selectionEnd = Math.max(selectionStart, normalizedInteger(editor.selectionEnd));
+    if (hasStringValue) {
+      selectionStart = Math.min(length, selectionStart);
+      selectionEnd = Math.min(length, Math.max(selectionStart, selectionEnd));
+    }
     return {
       selectionStart,
       selectionEnd,

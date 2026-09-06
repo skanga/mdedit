@@ -208,10 +208,24 @@ function find(element, predicate) {
 function makeFixture(callbacks = {}) {
   const document = new FakeDocument();
   const elements = {};
+  const ids = {
+    tabList: "document-tabs",
+    addButton: "btn-add-tab",
+    editorSurfaces: "editor-surfaces",
+    dialogBackdrop: "dialog-backdrop",
+    dialog: "app-dialog",
+    dialogTitle: "dialog-title",
+    dialogMessage: "dialog-message",
+    dialogDocuments: "dialog-documents",
+    dialogActions: "dialog-actions",
+  };
   for (const name of [
     "tabList", "addButton", "editorSurfaces", "dialogBackdrop", "dialog",
     "dialogTitle", "dialogMessage", "dialogDocuments", "dialogActions",
-  ]) elements[name] = document.createElement(name === "dialog" ? "section" : "div");
+  ]) {
+    elements[name] = document.createElement(name === "dialog" ? "section" : "div");
+    elements[name].id = ids[name];
+  }
   elements.dialog.hidden = true;
   elements.dialogBackdrop.hidden = true;
   Object.values(elements).forEach((element) => document.body.appendChild(element));
@@ -286,14 +300,22 @@ test("captureEditorState defensively clamps caret and scroll values", () => {
     editorScrollTop: 0,
   });
   assert.deepEqual(captureEditorState({ value: null, selectionStart: 1.9, selectionEnd: 2.8, scrollTop: 7.9 }), {
-    selectionStart: 0,
-    selectionEnd: 0,
+    selectionStart: 1,
+    selectionEnd: 2,
     editorScrollTop: 7,
   });
   assert.deepEqual(captureEditorState(null), {
     selectionStart: 0,
     selectionEnd: 0,
     editorScrollTop: 0,
+  });
+});
+
+test("captureEditorState preserves normalized selection when value is unavailable", () => {
+  assert.deepEqual(captureEditorState({ selectionStart: 3, selectionEnd: 5, scrollTop: 22 }), {
+    selectionStart: 3,
+    selectionEnd: 5,
+    editorScrollTop: 22,
   });
 });
 
@@ -488,12 +510,12 @@ test("template provides the accessible tab strip, editor host, and dialog contra
   const template = fs.readFileSync(path.join(__dirname, "..", "src", "index.template.html"), "utf8");
   assert.match(template, /<\/header>\s*<div id="document-tabs-wrap">/);
   assert.match(template, /id="document-tabs" role="tablist" aria-label="Open documents"/);
-  assert.match(template, /id="btn-add-document"[^>]*aria-label="Add document"/);
+  assert.match(template, /id="btn-add-tab"[^>]*aria-label="New document"[^>]*title="New document"/);
   assert.match(template, /id="editor-surfaces"[\s\S]*?<textarea id="editor"/);
-  assert.match(template, /id="workspace-dialog-backdrop"[^>]*hidden/);
-  assert.match(template, /<section id="workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" hidden>/);
+  assert.match(template, /id="dialog-backdrop"[^>]*hidden/);
+  assert.match(template, /<section id="app-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" hidden>/);
   for (const id of [
-    "workspace-dialog-title", "workspace-dialog-message", "workspace-dialog-documents", "workspace-dialog-actions",
+    "dialog-title", "dialog-message", "dialog-documents", "dialog-actions",
   ]) assert.match(template, new RegExp(`id="${id}"`));
   assert.match(template, /#document-tabs-wrap\s*\{[^}]*height:\s*36px/s);
   assert.match(template, /\.document-tab-close\s*\{[^}]*min-width:\s*32px[^}]*min-height:\s*32px/s);
