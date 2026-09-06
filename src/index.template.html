@@ -218,6 +218,8 @@
     color: var(--text);
     box-shadow: inset 0 -2px var(--accent);
   }
+  .document-tab.is-dragging { opacity: 0.55; }
+  .document-tab.is-drop-target { box-shadow: inset 2px 0 var(--accent); }
   .document-tab[aria-busy="true"] { opacity: 0.65; }
   .document-tab > [role="tab"] {
     min-width: 0;
@@ -943,6 +945,7 @@
     </div>
   </span>
   <button class="btn primary" id="btn-save" title="Save (Ctrl+S)">Save <kbd class="hint" id="save-kbd">⌘S</kbd></button>
+  <button class="btn" id="btn-save-all" title="Save all changed documents" disabled>Save All</button>
   <button class="btn icon" id="btn-toc" title="Table of contents">
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
   </button>
@@ -1054,6 +1057,29 @@
   const browserFileHandles = new Map();
   let statusTimer = null;
   let persistentRecoveryWarning = "";
+  let nativeWindow = null;
+  let pendingNativeTitle = null;
+  let nativeTitleWrite = null;
+
+  function updateWindowTitle(active) {
+    const title = MDEdit.windowTitle(active);
+    document.title = title;
+    const windowApi = window.__TAURI__ && window.__TAURI__.window;
+    if (!nativeApp || !windowApi || typeof windowApi.getCurrentWindow !== "function") return title;
+    nativeWindow ||= windowApi.getCurrentWindow();
+    if (!nativeWindow || typeof nativeWindow.setTitle !== "function") return title;
+    pendingNativeTitle = title;
+    if (!nativeTitleWrite) {
+      nativeTitleWrite = (async () => {
+        while (pendingNativeTitle !== null) {
+          const nextTitle = pendingNativeTitle;
+          pendingNativeTitle = null;
+          try { await nativeWindow.setTitle(nextTitle); } catch (_) { /* document.title remains authoritative */ }
+        }
+      })().finally(() => { nativeTitleWrite = null; });
+    }
+    return title;
+  }
 
   function activeEditor() {
     const active = controller && controller.activeDocument();
@@ -1655,6 +1681,30 @@
     return saveAs(capture);
   }
 
+  async function saveAllDocuments() {
+    const button = $("btn-save-all");
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+      const result = await controller.saveAll();
+      const remaining = result.remainingIds.map((id) => controller.session.documents.get(id)).filter(Boolean);
+      const savedCount = result.savedIds.length;
+      if (remaining.length) {
+        const prefix = result.canceled ? "Save All canceled" : "Save All stopped";
+        setStatus(`${prefix} after ${savedCount} saved; ${remaining.length} remain unsaved: ${remaining.map((doc) => doc.displayName).join(", ")}`);
+      } else {
+        setStatus(`Saved ${savedCount} document${savedCount === 1 ? "" : "s"}`);
+      }
+      return result;
+    } catch (error) {
+      setStatus("Save All failed — " + error.message);
+      return null;
+    } finally {
+      button.removeAttribute("aria-busy");
+      syncActiveSurface();
+    }
+  }
+
   // Directory of the document as the shell knows it ("" when unknown):
   // Save-As and exports anchor their dialogs there instead of the app's cwd.
   const nativeDir = (document = controller.activeDocument()) => (document && document.path ? document.path.replace(/[^/\\]*$/, "") : "");
@@ -2059,6 +2109,7 @@
     controller.checkpointDocument(active.id, "rename-checkpoint");
     browserFileHandles.delete(active.id);
     controller.activateDocument(active.id);
+    syncActiveSurface();
   });
   filenameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") filenameEl.blur(); });
 
@@ -2234,6 +2285,7 @@
   /* ── Buttons ────────────────────────────────── */
   $("btn-open").addEventListener("click", openPicker);
   $("btn-save").addEventListener("click", save);
+  $("btn-save-all").addEventListener("click", saveAllDocuments);
   $("btn-new").addEventListener("click", newDoc);
 
   const exportPop = $("export-pop");
@@ -2561,10 +2613,16 @@
 
   function syncActiveSurface() {
     const active = controller && controller.activeDocument();
-    if (!active || !workspaceView) return null;
+    if (!active || !workspaceView) {
+      $("btn-save-all").disabled = true;
+      updateWindowTitle(null);
+      return null;
+    }
     filenameEl.value = active.displayName;
     filenameEl.style.width = Math.min(260, Math.max(60, (active.displayName.length + 2) * 8)) + "px";
     dirtyDot.classList.toggle("on", Boolean(active.dirty));
+    $("btn-save-all").disabled = ![...controller.session.documents.values()].some((document) => document.dirty);
+    updateWindowTitle(active);
     if (persistentRecoveryWarning) workspaceView.setDocumentStatus(active.id, {
       recoveryStatus: "failed",
       message: persistentRecoveryWarning,
@@ -2626,6 +2684,10 @@
       runTabCommand(command, event).catch((error) => setStatus(error.message));
     },
     onAdd() { newDoc(); },
+    onReorder(documentId, targetDocumentId) {
+      controller.reorderDocument(documentId, targetDocumentId);
+      syncActiveSurface();
+    },
     onEditorInput(documentId, content) {
       controller.onEditorInput(documentId, content);
       syncActiveSurface();

@@ -2836,6 +2836,26 @@ test("moveActiveDocument persists only real moves and leaves boundary moves unch
   assert.deepEqual(fixture.calls.announcements.at(-1), ["active", c.id, [a.id, c.id, b.id]]);
 });
 
+test("reorderDocument moves an inactive tab, preserves the active document, and persists order", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+  const c = controller.createUntitled();
+  controller.activateDocument(b.id);
+  await controller.restore();
+  await settle();
+  fixture.calls.manifestWrites.length = 0;
+
+  assert.equal(controller.reorderDocument(a.id, c.id), a);
+  await settle();
+
+  assert.deepEqual(controller.session.tabOrder, [b.id, c.id, a.id]);
+  assert.equal(controller.activeDocument(), b);
+  assert.equal(fixture.calls.manifestWrites.length, 1);
+  assert.deepEqual(JSON.parse(fixture.calls.manifestWrites[0][1]).tabs.map((tab) => tab.documentId), [b.id, c.id, a.id]);
+});
+
 test("workspace-only activation checkpoints use increasing snapshot revisions", async () => {
   let selection = 1;
   let controller;
@@ -4435,6 +4455,8 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /MDEdit\.commandForKey\s*\(/);
   assert.match(template, /controller\.activateAdjacentDocument\s*\(/);
   assert.match(template, /controller\.moveActiveDocument\s*\(/);
+  assert.match(template, /controller\.reorderDocument\s*\(/);
+  assert.match(template, /controller\.saveAll\s*\(/);
   assert.match(template, /controller\.openBrowserFiles\s*\(/);
   assert.match(template, /controller\.openBrowserFiles\([\s\S]*sourceKeys/);
   assert.match(template, /result\.results/);

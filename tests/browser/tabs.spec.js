@@ -211,6 +211,121 @@ test("roving focus and shortcuts follow tab order", async ({ page }) => {
   await expect(tab(2)).toBeFocused();
 });
 
+test("pointer drag reorders tabs, preserves the active document, and persists order", async ({ page }) => {
+  await installFakeTauri(page);
+  await openEditor(page);
+  await page.getByRole("button", { name: "New document" }).click();
+  await page.getByRole("button", { name: "New document" }).click();
+  const first = page.getByRole("tab", { name: /Untitled 1/ });
+  const second = page.getByRole("tab", { name: /Untitled 2/ });
+  const third = page.getByRole("tab", { name: /Untitled 3/ });
+  await second.click();
+
+  await first.dragTo(third);
+
+  await expect(second).toHaveAttribute("aria-selected", "true");
+  expect(await page.getByRole("tab").allTextContents()).toEqual(expect.arrayContaining([
+    expect.stringContaining("Untitled 2"),
+    expect.stringContaining("Untitled 3"),
+    expect.stringContaining("Untitled 1"),
+  ]));
+  const labels = await page.getByRole("tab").allTextContents();
+  expect(labels.join("|")).toMatch(/Untitled 2.*Untitled 3.*Untitled 1/);
+  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.invokes
+    .filter((call) => call.command === "write_recovery_manifest")
+    .some((call) => JSON.parse(call.args.json).tabs.map((tab) => tab.displayName).join("|")
+      .match(/Untitled 2.*Untitled 3.*Untitled 1/)))).toBe(true);
+});
+
+test("Save All saves every dirty document, announces the result, and does not quit", async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ["/notes/one.md", "/notes/two.md"],
+    documents: {
+      "/notes/one.md": { content: "one", sha256: "one-original" },
+      "/notes/two.md": { content: "two", sha256: "two-original" },
+    },
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await activeEditor(page).fill("two edited");
+  await page.getByRole("tab", { name: /one\.md/ }).click();
+  await activeEditor(page).fill("one edited");
+
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+
+  await expect(page.getByRole("status")).toContainText("Saved 2 documents");
+  await expect(page.getByRole("button", { name: "Save All", exact: true })).toBeDisabled();
+  expect(await page.evaluate(() => window.__testBridge.calls.saves.map((save) => save.path))).toEqual([
+    "/notes/one.md", "/notes/two.md",
+  ]);
+  expect(await page.evaluate(() => window.__testBridge.calls.closeCalls)).toBe(0);
+});
+
+test("Save All stops at a conflict and names the document that remains dirty", async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ["/notes/one.md", "/notes/two.md"],
+    documents: {
+      "/notes/one.md": { content: "one", sha256: "one-original" },
+      "/notes/two.md": { content: "two", sha256: "two-original" },
+    },
+    saveResults: {
+      "/notes/two.md": { status: "conflict", actualSha256: "two-external" },
+    },
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await activeEditor(page).fill("two edited");
+  await page.getByRole("tab", { name: /one\.md/ }).click();
+  await activeEditor(page).fill("one edited");
+
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("two.md");
+  await page.getByRole("button", { name: "Keep Editing" }).click();
+
+  await expect(page.getByRole("status")).toContainText("Save All stopped after 1 saved; 1 remain unsaved: two.md");
+  await expect(page.getByRole("button", { name: "Save All", exact: true })).toBeEnabled();
+  expect(await page.evaluate(() => window.__testBridge.calls.saves.map((save) => save.path))).toEqual([
+    "/notes/one.md", "/notes/two.md",
+  ]);
+  expect(await page.evaluate(() => window.__testBridge.calls.closeCalls)).toBe(0);
+});
+
+test("window title follows active document, dirty state, and save", async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ["/notes/one.md", "/notes/two.md"],
+    documents: {
+      "/notes/one.md": { content: "one", sha256: "one-original" },
+      "/notes/two.md": { content: "two", sha256: "two-original" },
+    },
+  });
+  await openEditor(page);
+  await expect(page).toHaveTitle("Untitled 1 — MDedit");
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page).toHaveTitle("two.md — MDedit");
+  await activeEditor(page).fill("two edited");
+  await expect(page).toHaveTitle("two.md * — MDedit");
+  await page.getByRole("tab", { name: /one\.md/ }).click();
+  await expect(page).toHaveTitle("one.md — MDedit");
+  await page.getByRole("tab", { name: /two\.md/ }).click();
+  await page.locator("#btn-save").click();
+  await expect(page).toHaveTitle("two.md — MDedit");
+  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.titles.at(-1))).toBe("two.md — MDedit");
+});
+
+test("native title writes serialize so a delayed old title cannot finish last", async ({ page }) => {
+  await installFakeTauri(page, { delayFirstTitle: true });
+  await openEditor(page);
+  await activeEditor(page).fill("dirty first");
+  await page.getByRole("button", { name: "New document" }).click();
+  await expect(page).toHaveTitle("Untitled 2 — MDedit");
+
+  await page.evaluate(() => window.__testBridge.releaseFirstTitle());
+
+  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.nativeTitle)).toBe("Untitled 2 — MDedit");
+  expect(await page.evaluate(() => window.__testBridge.calls.titleRequests.at(0))).toBe("Untitled 1 — MDedit");
+  expect(await page.evaluate(() => window.__testBridge.calls.titles.at(-1))).toBe("Untitled 2 — MDedit");
+});
+
 test("status announcements identify their document", async ({ page }) => {
   await installFakeTauri(page, {
     openPaths: ["/notes/failing.md", "/notes/conflicted.md"],
@@ -227,13 +342,13 @@ test("status announcements identify their document", async ({ page }) => {
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByRole("tab", { name: /conflicted\.md/ })).toBeVisible();
   await activeEditor(page).fill("editor conflict");
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await expect(page.getByRole("status")).toContainText("conflicted.md");
   await page.getByRole("button", { name: "Keep Editing" }).click();
 
   await page.getByRole("tab", { name: /failing\.md/ }).click();
   await activeEditor(page).fill("editor failure");
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await expect(page.getByRole("status")).toContainText(/failing\.md.*(?:read-only|Couldn(?:'t| not) save)/);
 });
 
@@ -302,12 +417,12 @@ test("conflict actions preserve both versions", async ({ page }) => {
   await openEditor(page);
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await activeEditor(page).fill("editor-version");
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("button", { name: "Keep Editing" }).click();
   await expect(activeEditor(page)).toHaveValue("editor-version");
 
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await expect(page.getByRole("dialog")).toBeVisible();
   await page.getByRole("button", { name: "Save Editor Version As" }).click();
   await expect(page.getByRole("tab", { name: /editor-copy\.md/ })).toBeVisible();
@@ -329,6 +444,7 @@ test("conflict actions preserve both versions", async ({ page }) => {
 
 test("browser handle saves detect external changes and keep both versions available", async ({ page }) => {
   await page.addInitScript(() => {
+    window.__MDEDIT_TEST_HOOK__ = { restored: false };
     const state = {
       original: "disk-original",
       copy: "copy-existing",
@@ -365,13 +481,13 @@ test("browser handle saves detect external changes and keep both versions availa
   await activeEditor(page).fill("editor-version");
   await page.evaluate(() => { window.__browserHandleTest.state.original = "disk-external"; });
 
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await expect(page.getByRole("dialog")).toContainText("browser.md");
   expect(await page.evaluate(() => window.__browserHandleTest.state.writes.original)).toEqual([]);
   await page.getByRole("button", { name: "Keep Editing" }).click();
   await expect(activeEditor(page)).toHaveValue("editor-version");
 
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await page.getByRole("button", { name: "Reload Disk Version" }).click();
   await page.getByRole("button", { name: "Discard and Reload" }).click();
   await expect(activeEditor(page)).toHaveValue("disk-external");
@@ -381,7 +497,7 @@ test("browser handle saves detect external changes and keep both versions availa
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await page.evaluate(() => { window.__browserHandleTest.state.original = "disk-external-again"; });
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await page.getByRole("button", { name: "Save Editor Version As" }).click();
   await expect(page.getByRole("tab", { name: /browser-copy\.md/ })).toBeVisible();
   await expect(activeEditor(page)).toHaveValue("editor-copy");
@@ -390,7 +506,7 @@ test("browser handle saves detect external changes and keep both versions availa
     copy: ["editor-copy"],
   });
 
-  await page.getByRole("button", { name: /^Save/ }).click();
+  await page.locator("#btn-save").click();
   await expect.poll(() => page.evaluate(() => window.__browserHandleTest.state.writes.copy.length)).toBe(2);
   expect(await page.evaluate(() => window.__browserHandleTest.state.writes.copy)).toEqual(["editor-copy", "editor-copy"]);
 });

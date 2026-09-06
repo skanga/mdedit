@@ -10,6 +10,7 @@ const {
   commandForKey,
   openLaunchFiles,
   tabDescriptor,
+  windowTitle,
 } = require("../src/workspace-view.js");
 const { SessionController } = require("../src/session-controller.js");
 
@@ -445,10 +446,44 @@ test("renderTabs builds safe ARIA tabs, statuses, and close labels", () => {
   assert.equal(firstTab.getAttribute("tabindex"), "-1");
   assert.equal(firstTab.getAttribute("aria-posinset"), "1");
   assert.equal(firstTab.getAttribute("aria-setsize"), "2");
+  assert.equal(firstTab.getAttribute("draggable"), "true");
   assert.equal(secondTab.getAttribute("aria-selected"), "true");
   assert.equal(secondTab.getAttribute("tabindex"), "0");
   assert.equal(firstClose.getAttribute("aria-label"), 'Close <img src=x onerror="boom">');
   assert.equal(status.textContent, "Unsaved changes");
+});
+
+test("dragging a tab delegates a reorder without activating it", () => {
+  const reorders = [];
+  const { elements, view } = makeFixture({
+    onReorder(sourceId, targetId) { reorders.push([sourceId, targetId]); },
+  });
+  view.renderTabs([doc("one"), doc("two"), doc("three")], "two");
+  const first = find(elements.tabList.children[0], (el) => el.getAttribute("role") === "tab");
+  const third = find(elements.tabList.children[2], (el) => el.getAttribute("role") === "tab");
+  const values = new Map();
+  const dataTransfer = {
+    effectAllowed: "",
+    dropEffect: "",
+    setData(type, value) { values.set(type, value); },
+    getData(type) { return values.get(type) || ""; },
+  };
+
+  first.dispatchEvent({ type: "dragstart", bubbles: true, dataTransfer });
+  third.dispatchEvent({ type: "dragover", bubbles: true, dataTransfer });
+  third.dispatchEvent({ type: "drop", bubbles: true, dataTransfer });
+  first.dispatchEvent({ type: "dragend", bubbles: true, dataTransfer });
+
+  assert.equal(dataTransfer.effectAllowed, "move");
+  assert.equal(dataTransfer.dropEffect, "move");
+  assert.deepEqual(reorders, [["one", "three"]]);
+  assert.equal(elements.tabList.children[1].classList.contains("is-selected"), true);
+});
+
+test("windowTitle identifies the active document and dirty state", () => {
+  assert.equal(windowTitle(doc("one", { displayName: "notes.md" })), "notes.md — MDedit");
+  assert.equal(windowTitle(doc("one", { displayName: "notes.md", dirty: true })), "notes.md * — MDedit");
+  assert.equal(windowTitle(null), "MDedit");
 });
 
 test("editors stay independently mounted while activation only changes visibility", () => {
@@ -1172,6 +1207,7 @@ test("template provides the accessible tab strip, editor host, and dialog contra
   assert.match(template, /<\/header>\s*<div id="document-tabs-wrap">/);
   assert.match(template, /id="document-tabs" role="tablist" aria-label="Open documents"/);
   assert.match(template, /id="btn-add-tab"[^>]*aria-label="New document"[^>]*title="New document"/);
+  assert.match(template, /id="btn-save-all"[^>]*>Save All<\/button>/);
   assert.match(template, /id="editor-surfaces"[\s\S]*?<textarea id="editor"/);
   assert.match(template, /id="dialog-backdrop"[^>]*hidden/);
   assert.match(template, /<section id="app-dialog" role="dialog" aria-modal="true" aria-labelledby="dialog-title" hidden>/);

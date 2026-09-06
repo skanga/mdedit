@@ -3,11 +3,14 @@ const { expect } = require("@playwright/test");
 async function installFakeTauri(page, options = {}) {
   await page.addInitScript((configuration) => {
     const listeners = new Map();
-    const calls = { invokes: [], saves: [], writes: [], closeCalls: 0 };
+    const calls = { invokes: [], saves: [], writes: [], closeCalls: 0, titleRequests: [], titles: [], nativeTitle: "" };
     const paths = configuration.openPaths || [];
     const documents = configuration.documents || {};
     const saveResults = configuration.saveResults || {};
     let closeHandler = null;
+    let releaseFirstTitle = null;
+    const firstTitleGate = new Promise((resolve) => { releaseFirstTitle = resolve; });
+    let titleWriteCount = 0;
 
     window.__testBridge = {
       calls,
@@ -21,7 +24,9 @@ async function installFakeTauri(page, options = {}) {
         const callback = listeners.get(name);
         return callback ? callback({ payload }) : undefined;
       },
+      releaseFirstTitle() { releaseFirstTitle(); },
     };
+    window.__MDEDIT_TEST_HOOK__ = { restored: false };
 
     window.__TAURI__ = {
       dialog: {
@@ -76,6 +81,13 @@ async function installFakeTauri(page, options = {}) {
         getCurrentWindow: () => ({
           onCloseRequested: async (callback) => { closeHandler = callback; return () => { closeHandler = null; }; },
           close: async () => { calls.closeCalls += 1; },
+          setTitle: async (title) => {
+            calls.titleRequests.push(title);
+            titleWriteCount += 1;
+            if (configuration.delayFirstTitle && titleWriteCount === 1) await firstTitleGate;
+            calls.titles.push(title);
+            calls.nativeTitle = title;
+          },
         }),
       },
     };
@@ -84,6 +96,7 @@ async function installFakeTauri(page, options = {}) {
 
 async function openEditor(page) {
   await page.goto("/");
+  await expect.poll(() => page.evaluate(() => Boolean(window.__MDEDIT_TEST_HOOK__ && window.__MDEDIT_TEST_HOOK__.restored))).toBe(true);
   await expect(page.getByRole("tab")).toHaveCount(1);
   await expect(page.locator(".editor-surface:not([hidden]):not(.is-inactive) > textarea.document-editor")).toHaveCount(1);
 }

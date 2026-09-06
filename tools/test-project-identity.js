@@ -100,6 +100,11 @@ test("Tauri configuration identifies the MDedit application", () => {
   assert.equal(tauriConfig.app.windows[0].title, "MDedit");
 });
 
+test("the main window can update its active-document title", () => {
+  const capability = readJson("src-tauri/capabilities/default.json");
+  assert.ok(capability.permissions.includes("core:window:allow-set-title"));
+});
+
 test("README describes the MDedit desktop product and GitHub Releases downloads", () => {
   const readme = readText("README.md");
   const download = readMarkdownSection(readme, "## Download");
@@ -351,6 +356,9 @@ test("generated builds contain the tabbed session modules and accessible tab str
     assert.match(html, /class SessionModel/);
     assert.match(html, /class RecoveryScheduler/);
     assert.match(html, /Quit and Restore Next Time/);
+    assert.match(html, /id="btn-save-all"[^>]*>Save All<\/button>/);
+    assert.match(html, /setAttribute\("draggable", "true"\)/);
+    assert.match(html, /updateWindowTitle\(active\)/);
     assert.doesNotMatch(html, /async readFile\(path\)/);
     assert.doesNotMatch(html, /async saveAs\(\{/);
     assert.doesNotMatch(html, /writeTextFile/);
@@ -364,6 +372,7 @@ test("the native capability description includes recovery and multi-document acc
   assert.match(capability.description, /recovery/i);
   assert.deepEqual(capability.permissions, [
     "core:default",
+    "core:window:allow-set-title",
     "dialog:default",
     { "identifier": "fs:allow-write-file", "allow": [{ "path": "**" }] },
   ]);

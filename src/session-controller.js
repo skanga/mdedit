@@ -1286,6 +1286,33 @@
       return document;
     }
 
+    reorderDocument(documentId, targetDocumentId) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const sourceIndex = this.session.tabOrder.indexOf(documentId);
+      const targetIndex = this.session.tabOrder.indexOf(targetDocumentId);
+      if (sourceIndex < 0 || targetIndex < 0) return null;
+      const generation = this.session.generation;
+      const document = this.session.move(documentId, targetIndex - sourceIndex);
+      if (this.session.generation === generation) return document;
+      this._renderSession();
+      if (typeof this.view.announceTabReorder === "function") {
+        this.view.announceTabReorder(document, this.session);
+      }
+      if (this._restoreState === "restored") {
+        this._persistManifestNow().catch((reason) => {
+          if (!this.session || this.session.documents.get(document.id) !== document) return;
+          this._showRecoveryError(reason, {
+            phase: "manifest-tab-order",
+            documentId: document.id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        });
+      }
+      return document;
+    }
+
     activeDocument() {
       if (this._disposed) return null;
       if (!this.session || this.session.activeDocumentId === null) return null;

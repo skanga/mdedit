@@ -60,6 +60,13 @@
     };
   }
 
+  function windowTitle(document) {
+    if (!document || typeof document !== "object") return "MDedit";
+    const displayName = typeof document.displayName === "string" && document.displayName
+      ? document.displayName : "Untitled";
+    return `${displayName}${document.dirty ? " *" : ""} — MDedit`;
+  }
+
   function captureEditorState(editor) {
     if (!editor || typeof editor !== "object") {
       return { selectionStart: 0, selectionEnd: 0, editorScrollTop: 0 };
@@ -222,6 +229,7 @@
       this.onActivate = callbackFrom(options, intents, ["onActivate", "activate", "activateDocument"]);
       this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
       this.onAdd = callbackFrom(options, intents, ["onAdd", "add", "addDocument"]);
+      this.onReorder = callbackFrom(options, intents, ["onReorder", "reorder", "reorderDocument"]);
       this.onCommand = callbackFrom(options, intents, ["onCommand", "command"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
       this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
@@ -241,10 +249,15 @@
       this._disposed = false;
       this._announcementToken = 0;
       this._scrollTimer = null;
+      this._draggedDocumentId = null;
       this.isMac = Boolean(options.isMac);
 
       this._handleTabClick = (event) => this._onTabClick(event);
       this._handleTabKeydown = (event) => this._onTabKeydown(event);
+      this._handleTabDragStart = (event) => this._onTabDragStart(event);
+      this._handleTabDragOver = (event) => this._onTabDragOver(event);
+      this._handleTabDrop = (event) => this._onTabDrop(event);
+      this._handleTabDragEnd = () => this._clearTabDrag();
       this._handleAdd = () => this.onAdd();
       this._handleDialogClick = (event) => this._onDialogClick(event);
       this._handleBackdropClick = () => this._cancelDialog();
@@ -252,6 +265,10 @@
 
       this.tabList.addEventListener("click", this._handleTabClick);
       this.tabList.addEventListener("keydown", this._handleTabKeydown);
+      this.tabList.addEventListener("dragstart", this._handleTabDragStart);
+      this.tabList.addEventListener("dragover", this._handleTabDragOver);
+      this.tabList.addEventListener("drop", this._handleTabDrop);
+      this.tabList.addEventListener("dragend", this._handleTabDragEnd);
       if (this.addButton) this.addButton.addEventListener("click", this._handleAdd);
       if (this.dialogActions) this.dialogActions.addEventListener("click", this._handleDialogClick);
       if (this.dialogBackdrop) this.dialogBackdrop.addEventListener("click", this._handleBackdropClick);
@@ -363,6 +380,7 @@
         tab.setAttribute("aria-posinset", String(descriptor.position));
         tab.setAttribute("aria-setsize", String(descriptor.setSize));
         tab.setAttribute("tabindex", descriptor.selected ? "0" : "-1");
+        tab.setAttribute("draggable", "true");
 
         const name = this.document.createElement("span");
         name.className = "document-tab-name";
@@ -631,6 +649,15 @@
       return this._announce(`${document.displayName}, tab ${index + 1} of ${ordered.length}`);
     }
 
+    announceTabReorder(document, session) {
+      if (!document || !session || !Array.isArray(session.tabOrder)) return false;
+      const position = session.tabOrder.indexOf(document.id);
+      if (position < 0) return false;
+      return this._announce(`${document.displayName}, moved to tab ${position + 1} of ${session.tabOrder.length}`, {
+        allowRepeat: true,
+      });
+    }
+
     announceCloseOutcome(result, displayName) {
       if (!result || typeof displayName !== "string") return false;
       let message;
@@ -747,6 +774,10 @@
       this._disposed = true;
       this.tabList.removeEventListener("click", this._handleTabClick);
       this.tabList.removeEventListener("keydown", this._handleTabKeydown);
+      this.tabList.removeEventListener("dragstart", this._handleTabDragStart);
+      this.tabList.removeEventListener("dragover", this._handleTabDragOver);
+      this.tabList.removeEventListener("drop", this._handleTabDrop);
+      this.tabList.removeEventListener("dragend", this._handleTabDragEnd);
       if (this.addButton) this.addButton.removeEventListener("click", this._handleAdd);
       if (this.dialogActions) this.dialogActions.removeEventListener("click", this._handleDialogClick);
       if (this.dialogBackdrop) this.dialogBackdrop.removeEventListener("click", this._handleBackdropClick);
@@ -761,6 +792,7 @@
         record.surface.remove();
       }
       this._editors.clear();
+      this._clearTabDrag();
       this._restoreLegacySurfaces();
     }
 
@@ -826,6 +858,57 @@
       const next = this._tabs.get(nextId);
       if (next && typeof next.tab.focus === "function") next.tab.focus();
       this.onActivate(nextId, { focusEditor: false, preserveTabFocus: true });
+    }
+
+    _onTabDragStart(event) {
+      const target = eventActionTarget(event.target, "data-action");
+      if (!target || target.getAttribute("data-action") !== "activate" || !this.tabList.contains(target)) return;
+      const documentId = target.getAttribute("data-document-id");
+      if (!documentId) return;
+      this._draggedDocumentId = documentId;
+      const record = this._tabs.get(documentId);
+      if (record) record.shell.classList.add("is-dragging");
+      if (event.dataTransfer) {
+        event.dataTransfer.effectAllowed = "move";
+        if (typeof event.dataTransfer.setData === "function") {
+          event.dataTransfer.setData("text/x-mdedit-document-id", documentId);
+        }
+      }
+      if (typeof event.stopPropagation === "function") event.stopPropagation();
+    }
+
+    _onTabDragOver(event) {
+      const target = eventActionTarget(event.target, "data-action");
+      const targetId = target && target.getAttribute("data-document-id");
+      if (!this._draggedDocumentId || !targetId || targetId === this._draggedDocumentId
+          || !this.tabList.contains(target)) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      if (typeof event.stopPropagation === "function") event.stopPropagation();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+      for (const [id, record] of this._tabs) record.shell.classList.toggle("is-drop-target", id === targetId);
+    }
+
+    _onTabDrop(event) {
+      const target = eventActionTarget(event.target, "data-action");
+      const targetId = target && target.getAttribute("data-document-id");
+      const transferred = event.dataTransfer && typeof event.dataTransfer.getData === "function"
+        ? event.dataTransfer.getData("text/x-mdedit-document-id") : "";
+      const sourceId = this._draggedDocumentId || transferred;
+      if (!sourceId || !targetId || sourceId === targetId || !this.tabList.contains(target)) {
+        this._clearTabDrag();
+        return;
+      }
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      if (typeof event.stopPropagation === "function") event.stopPropagation();
+      this._clearTabDrag();
+      this.onReorder(sourceId, targetId);
+    }
+
+    _clearTabDrag() {
+      this._draggedDocumentId = null;
+      for (const record of this._tabs.values()) {
+        record.shell.classList.remove("is-dragging", "is-drop-target");
+      }
     }
 
     async _onDialogClick(event) {
@@ -931,5 +1014,5 @@
     }
   }
 
-  return { WorkspaceView, captureEditorState, commandForKey, isTabCommandKey, openLaunchFiles, tabDescriptor };
+  return { WorkspaceView, captureEditorState, commandForKey, isTabCommandKey, openLaunchFiles, tabDescriptor, windowTitle };
 });
