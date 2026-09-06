@@ -1568,28 +1568,11 @@
       if (!(document instanceof DocumentModel)) return Promise.resolve(null);
       if (!this.renderer) return Promise.resolve(null);
 
-      const token = ++this._renderToken;
-      const optionsKey = this._rendererOptionsKey();
-      const capture = Object.freeze({
-        token,
-        documentId: document.id,
-        editRevision: document.editRevision,
-        content: document.content,
-        displayName: document.displayName,
-        optionsKey,
-        document,
-      });
-      this._latestRenderTokens.set(document.id, token);
+      const capture = this._createRenderCapture(document);
       const cacheKey = this._previewCacheKey(capture);
-      const cached = this._previewCache.get(cacheKey);
+      const cached = this._showCachedPreviewOrClear(capture);
       if (cached) {
-        this._touchPreviewCache(cacheKey, cached);
-        if (this._canCommitRender(capture)) this._setPreview(cached.html, capture);
         return Promise.resolve(cached.html);
-      }
-
-      if (this.session.activeDocumentId === document.id && typeof this.view.clearPreview === "function") {
-        this.view.clearPreview(capture);
       }
       let rendering;
       try {
@@ -1617,6 +1600,40 @@
         if (this._canCommitRender(capture)) this._setPreview(html, capture);
         return html;
       });
+    }
+
+    _createRenderCapture(document) {
+      const token = ++this._renderToken;
+      const capture = Object.freeze({
+        token,
+        documentId: document.id,
+        editRevision: document.editRevision,
+        content: document.content,
+        displayName: document.displayName,
+        optionsKey: this._rendererOptionsKey(),
+        document,
+      });
+      this._latestRenderTokens.set(document.id, token);
+      return capture;
+    }
+
+    _showCachedPreviewOrClear(capture) {
+      const cacheKey = this._previewCacheKey(capture);
+      const cached = this._previewCache.get(cacheKey);
+      if (cached) {
+        this._touchPreviewCache(cacheKey, cached);
+        if (this._canCommitRender(capture)) this._setPreview(cached.html, capture);
+        return cached;
+      }
+      if (this._canCommitRender(capture) && typeof this.view.clearPreview === "function") {
+        this.view.clearPreview(capture);
+      }
+      return null;
+    }
+
+    _preparePreviewForActivation(document) {
+      if (!(document instanceof DocumentModel)) return null;
+      return this._showCachedPreviewOrClear(this._createRenderCapture(document));
     }
 
     async exportActive(format) {
@@ -2642,6 +2659,7 @@
         this.view.ensureEditor(document);
       }
       if (typeof this.view.activateEditor === "function") this.view.activateEditor(id);
+      this._preparePreviewForActivation(document);
       this._renderDocumentView(document);
       this.requestAnimationFrame(() => {
         if (this._disposed || viewToken !== this._viewToken || !this.session

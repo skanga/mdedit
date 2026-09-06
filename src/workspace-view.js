@@ -454,7 +454,13 @@
       editor.setAttribute("tabindex", "-1");
       editor.setAttribute("placeholder", "Type markdown here, or drop a .md file anywhere…");
       editor.value = content;
-      const record = { surface, editor, onInput: null, content };
+      const record = {
+        surface,
+        editor,
+        onInput: null,
+        content,
+        editorState: captureEditorState({ value: content, selectionStart: 0, selectionEnd: 0, scrollTop: 0 }),
+      };
       const onInput = (event) => {
         const nextContent = editor.value;
         record.content = nextContent;
@@ -525,12 +531,18 @@
       const source = shared && typeof shared === "object" ? shared : {};
       const record = this._editors.get(String(documentId));
       const editor = record && record.editor;
-      const captured = { ...source, ...captureEditorState(editor ? {
+      let editorState = captureEditorState(editor ? {
         value: record.content,
         selectionStart: editor.selectionStart,
         selectionEnd: editor.selectionEnd,
         scrollTop: editor.scrollTop,
-      } : null) };
+      } : null);
+      // Browsers reset textarea.scrollTop while the entire editor pane is
+      // non-rendered in Preview mode. Keep the last state captured while the
+      // editor was visible instead of replacing it with that synthetic zero.
+      if (record && source.viewMode === "preview") editorState = record.editorState || editorState;
+      else if (record) record.editorState = editorState;
+      const captured = { ...source, ...editorState };
       if (source.find && typeof source.find === "object") captured.find = { ...source.find };
       return captured;
     }
@@ -540,7 +552,8 @@
         workspace = workspace || documentId.workspace;
         documentId = documentId.id;
       }
-      const editor = this.editorFor(documentId);
+      const record = this._editors.get(String(documentId));
+      const editor = record && record.editor;
       if (!editor) return false;
       const source = workspace && typeof workspace === "object" ? workspace : {};
       const state = captureEditorState({
@@ -549,6 +562,10 @@
         selectionEnd: source.selectionEnd,
         scrollTop: source.editorScrollTop,
       });
+      this.applySharedWorkspace({
+        ...source,
+        find: source.find && typeof source.find === "object" ? { ...source.find } : source.find,
+      }, documentId);
       if (typeof editor.setSelectionRange === "function") {
         editor.setSelectionRange(state.selectionStart, state.selectionEnd);
       } else {
@@ -556,10 +573,7 @@
         editor.selectionEnd = state.selectionEnd;
       }
       editor.scrollTop = state.editorScrollTop;
-      this.applySharedWorkspace({
-        ...source,
-        find: source.find && typeof source.find === "object" ? { ...source.find } : source.find,
-      }, documentId);
+      record.editorState = state;
       return true;
     }
 

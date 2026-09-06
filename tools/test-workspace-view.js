@@ -556,23 +556,31 @@ test("captureWorkspace and applyWorkspace clamp state and focus the active edito
 
 test("workspace adapters capture and apply shared preview, view, TOC, and find state", () => {
   const applied = [];
+  let editor;
   const shared = {
     previewScrollTop: 41,
-    viewMode: "preview",
+    viewMode: "split",
     tocOpen: true,
     find: { open: true, query: "needle", replacement: "thread", matchIndex: 2 },
   };
   const { view } = makeFixture({
     captureSharedWorkspace: () => shared,
-    applySharedWorkspace: (workspace) => applied.push(workspace),
+    applySharedWorkspace: (workspace) => {
+      applied.push(workspace);
+      // A real view-mode change can make the textarea non-rendered and reset its
+      // native scroll position. Editor state must be restored after that change.
+      if (editor) editor.scrollTop = 0;
+    },
   });
-  const editor = view.ensureEditor(doc("one", { content: "abcd" }));
+  editor = view.ensureEditor(doc("one", { content: "abcd" }));
   editor.setSelectionRange(1, 3);
   editor.scrollTop = 12;
   view.activateEditor("one");
 
   const captured = view.captureWorkspace("one");
   shared.find.query = "mutated";
+  shared.viewMode = "preview";
+  captured.viewMode = "preview";
   view.applyWorkspace("one", captured);
 
   assert.equal(captured.previewScrollTop, 41);
@@ -581,6 +589,12 @@ test("workspace adapters capture and apply shared preview, view, TOC, and find s
   assert.notEqual(applied[0], captured);
   assert.notEqual(applied[0].find, captured.find);
   assert.equal(applied[0].find.query, "needle");
+  assert.equal(editor.scrollTop, 12);
+
+  editor.scrollTop = 0;
+  const hiddenCapture = view.captureWorkspace("one");
+  assert.equal(hiddenCapture.viewMode, "preview");
+  assert.equal(hiddenCapture.editorScrollTop, 12);
 });
 
 test("delegated tab, close, add, and keyboard events emit intents without mutating models", () => {

@@ -5,11 +5,14 @@ test("tabs retain content, selection, view, and accessible state", async ({ page
   await installFakeTauri(page);
   await openEditor(page);
   const first = page.getByRole("tab", { name: /Untitled 1/ });
-  await activeEditor(page).fill("first document has a selection");
+  const longContent = Array.from({ length: 300 }, (_, index) => `line ${index} has selectable text`).join("\n");
+  await activeEditor(page).fill(longContent);
   await activeEditor(page).evaluate((editor) => {
     editor.setSelectionRange(6, 14);
-    editor.scrollTop = 17;
+    editor.scrollTop = 640;
   });
+  const savedScrollTop = await activeEditor(page).evaluate((editor) => editor.scrollTop);
+  expect(savedScrollTop).toBeGreaterThan(500);
   await page.getByRole("button", { name: "Preview", exact: true }).click();
 
   await page.getByRole("button", { name: "New document" }).click();
@@ -18,11 +21,15 @@ test("tabs retain content, selection, view, and accessible state", async ({ page
   await first.click();
 
   const firstEditor = page.locator(`textarea[data-document-id="${await first.getAttribute("data-document-id")}"]`);
-  await expect(firstEditor).toHaveValue("first document has a selection");
+  await expect(firstEditor).toHaveValue(longContent);
   await expect(first).toHaveAttribute("aria-selected", "true");
   await expect(first).toHaveAttribute("tabindex", "0");
   await expect(page.locator("body")).toHaveAttribute("data-view", "preview");
   await expect(first).toHaveAttribute("aria-controls", /document-panel-/);
+  // Chromium reports zero scroll for a textarea whose Preview-only parent is
+  // non-rendered. Reveal the editor before checking the restored native state.
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  await expect.poll(() => firstEditor.evaluate((editor) => editor.scrollTop)).toBe(savedScrollTop);
   const state = await firstEditor.evaluate((editor) => ({
     start: editor.selectionStart,
     end: editor.selectionEnd,
@@ -31,7 +38,9 @@ test("tabs retain content, selection, view, and accessible state", async ({ page
     panelRole: editor.parentElement.getAttribute("role"),
   }));
   expect(state).toMatchObject({ start: 6, end: 14, panelHidden: false, panelRole: "tabpanel" });
-  expect(state.scrollTop).toBeGreaterThanOrEqual(0);
+  expect(Math.abs(state.scrollTop - savedScrollTop)).toBeLessThanOrEqual(2);
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(page.locator("body")).toHaveAttribute("data-view", "preview");
 });
 
 test("dirty close and consolidated quit trap focus and preserve cancel", async ({ page }) => {
@@ -161,7 +170,11 @@ test("late Mermaid completion cannot cross documents", async ({ page }) => {
   });
   await activeEditor(page).fill("```mermaid\nflowchart LR\nA[PRIOR-DOC] --> B\n```");
   await expect.poll(() => page.evaluate(() => window.__mermaidStarted)).toBe(true);
-  await page.getByRole("button", { name: "New document" }).click();
+  const previewImmediatelyAfterSwitch = await page.evaluate(() => {
+    document.querySelector('[aria-label="New document"]').click();
+    return document.querySelector("#preview").textContent;
+  });
+  expect(previewImmediatelyAfterSwitch).not.toContain("PRIOR-DOC");
   await activeEditor(page).fill("# CURRENT-DOC");
   await expect(page.locator("#preview")).toContainText("CURRENT-DOC");
   await page.evaluate(() => window.__resolveMermaid());

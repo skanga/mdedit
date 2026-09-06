@@ -2482,6 +2482,30 @@ test("a deferred render cannot replace the preview after another document activa
   assert.equal(fixture.calls.preview.some(([html]) => html === "preview:a"), false);
 });
 
+test("activation immediately swaps a matching preview cache or clears stale output", async () => {
+  const frames = [];
+  const fixture = makeDependencies({
+    requestAnimationFrame(callback) { frames.push(callback); },
+    renderer: { async render({ documentId }) { return `preview:${documentId}`; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await controller.renderDocument(a.id);
+  assert.equal(fixture.calls.preview.at(-1)[0], `preview:${a.id}`);
+
+  const b = controller.createUntitled();
+  assert.equal(fixture.calls.preview.at(-1)[0], null);
+  assert.equal(fixture.calls.preview.at(-1)[1].documentId, b.id);
+
+  frames.splice(0).forEach((callback) => callback());
+  frames.splice(0).forEach((callback) => callback());
+  await settle();
+  assert.equal(fixture.calls.preview.at(-1)[0], `preview:${b.id}`);
+
+  controller.activateDocument(a.id);
+  assert.equal(fixture.calls.preview.at(-1)[0], `preview:${a.id}`);
+});
+
 test("a deferred export keeps its starting document identity after a tab switch", async () => {
   const pending = deferred();
   const fixture = makeDependencies({
@@ -2617,8 +2641,8 @@ test("activation captures, flushes, switches, restores, persists, then renders w
 
   assert.equal(controller.activeDocument(), b);
   assert.deepEqual(a.workspace, workspaceA);
-  assert.deepEqual(events.slice(0, 6).map(([name]) => name), [
-    "capture", "flush", "render-session", "ensure", "activate-editor", "show-document",
+  assert.deepEqual(events.slice(0, 7).map(([name]) => name), [
+    "capture", "flush", "render-session", "ensure", "activate-editor", "clear-preview", "show-document",
   ]);
   assert.ok(events.findIndex(([name]) => name === "frame") < events.findIndex(([name]) => name === "render"));
   assert.ok(events.some(([name, id]) => name === "render" && id === b.id));

@@ -2144,9 +2144,22 @@
   }
   document.querySelectorAll(".seg button").forEach((btn) => {
     btn.addEventListener("click", () => {
-      setView(btn.dataset.mode);
       const active = controller && controller.activeDocument();
-      if (active) active.updateWorkspace({ ...active.workspace, viewMode: btn.dataset.mode });
+      if (active) {
+        const captured = workspaceView.captureWorkspace(active.id);
+        active.updateWorkspace({
+          ...active.workspace,
+          ...captured,
+          find: { ...active.workspace.find, ...((captured && captured.find) || {}) },
+          viewMode: btn.dataset.mode,
+        });
+        controller.checkpointDocument(active.id, "view-mode-checkpoint");
+      }
+      setView(btn.dataset.mode);
+      if (active && btn.dataset.mode !== "preview") workspaceView.applyWorkspace(active.id, active.workspace);
+      if (active && btn.dataset.mode !== "edit") {
+        controller.renderDocument(active.id).catch((error) => setStatus(error.message));
+      }
       const surface = activeEditor();
       if (btn.dataset.mode !== "preview" && surface) surface.focus();
     });
@@ -2663,6 +2676,10 @@
             if (!isCurrent()) return null;
             await new Promise((resolve) => setTimeout(resolve, 150));
             if (!isCurrent()) return null;
+            // In Edit-only mode the shared preview is not rendered. Deferring
+            // this work until Preview or Split is requested keeps large-tab
+            // activation independent from Markdown/DOM construction.
+            if (document.body.dataset.view === "edit") return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
             mermaidPending = render(capture.content, isCurrent);
             await mermaidPending;
