@@ -10055,19 +10055,17 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
  *
  *   nativeApp.pickFile()                            -> path string, null on cancel
  *   nativeApp.pickFiles()                           -> path strings, [] on cancel
- *   nativeApp.readFile(path)                        -> file text (utf-8)
  *   nativeApp.readDocument(path)                    -> session-backed document text
  *   nativeApp.takePendingFiles()                    -> queued startup paths
- *   nativeApp.saveAs({ defaultDir, suggestedName, data })
- *                                                -> chosen path, null on cancel
  *   nativeApp.chooseSavePath({ defaultDir, suggestedName })
  *                                                -> chosen path, null on cancel
- *   nativeApp.writeFile(path, data)                 -> write to a known path (write-back)
+ *   nativeApp.writeFile(path, data)                 -> write raw export bytes
  *
  * defaultDir (optional) anchors the save dialog next to the document being
  * edited; without it the OS picks its own default location.
  *
- * data is a string (written as utf-8) or a Uint8Array (raw bytes, for PNG exports).
+ * Document text and recovery data route through native commands. The filesystem
+ * plugin is used only for raw byte exports selected by the user.
  */
 const markdownFilters = [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "txt"] }];
 
@@ -10081,8 +10079,18 @@ function defaultSavePath(defaultDir = "", suggestedName) {
   return (defaultDir ? defaultDir.replace(/[/\\]$/, "") + "/" : "") + (suggestedName || "untitled.md");
 }
 
+function normalizeRawBytes(data) {
+  if (data instanceof Uint8Array) return data;
+  if (data instanceof ArrayBuffer) return new Uint8Array(data);
+  if (ArrayBuffer.isView(data)) {
+    return new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
+  }
+  throw new TypeError("raw byte data must be an ArrayBuffer or typed-array view");
+}
+
 function makeNativeApp(tauri) {
-  if (!tauri || !tauri.dialog || !tauri.fs || !tauri.core || typeof tauri.core.invoke !== "function") return null;
+  if (!tauri || !tauri.dialog || !tauri.fs || typeof tauri.fs.writeFile !== "function"
+    || !tauri.core || typeof tauri.core.invoke !== "function") return null;
   return {
     async pickFile() {
       const p = await tauri.dialog.open({
@@ -10099,9 +10107,6 @@ function makeNativeApp(tauri) {
         filters: markdownFilters,
       });
       return normalizePaths(p);
-    },
-    async readFile(path) {
-      return tauri.fs.readTextFile(path);
     },
     async readDocument(path) {
       return tauri.core.invoke("read_document", { path });
@@ -10140,15 +10145,8 @@ function makeNativeApp(tauri) {
       });
       return p || null;
     },
-    async saveAs({ defaultDir = "", suggestedName, data }) {
-      const p = await this.chooseSavePath({ defaultDir, suggestedName });
-      if (!p) return null;
-      await this.writeFile(p, data);
-      return p;
-    },
     async writeFile(path, data) {
-      if (typeof data === "string") await tauri.fs.writeTextFile(path, data);
-      else await tauri.fs.writeFile(path, data);
+      await tauri.fs.writeFile(path, normalizeRawBytes(data));
     },
   };
 }

@@ -27,7 +27,7 @@ test("50 recovered 5 MiB documents activate within the p95 budget", async ({ pag
     };
     window.__TAURI__ = {
       dialog: { open: async () => null, save: async () => null },
-      fs: { readTextFile: async () => "", writeTextFile: async () => {}, writeFile: async () => {} },
+      fs: { writeFile: async () => {} },
       core: {
         invoke: async (command, args = {}) => {
           if (command === "load_recovery_manifest") return JSON.stringify(manifest);

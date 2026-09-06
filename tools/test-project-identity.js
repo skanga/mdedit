@@ -193,13 +193,23 @@ test("CI publishes tagged desktop builds as a GitHub Release", () => {
 
 test("CI verifies desktop, browser, and explicit performance builds", () => {
   const workflow = readText(".github/workflows/desktop.yml");
+  const buildStart = workflow.indexOf("\n  build:\n");
+  const browserStart = workflow.indexOf("\n  browser-tests:\n");
+  assert.notEqual(buildStart, -1);
+  assert.notEqual(browserStart, -1);
+  assert.ok(browserStart > buildStart);
+  const buildJob = workflow.slice(buildStart, browserStart);
   const cargoTest = "cargo test --manifest-path src-tauri/Cargo.toml";
   const linuxSystemDeps = "sudo apt-get install -y libwebkit2gtk-4.1-dev";
   const bundle = "npx tauri build ${{ matrix.args }}";
+  const npmTest = "run: npm test";
 
-  assert.ok(workflow.indexOf("run: npm test") < workflow.indexOf(cargoTest));
-  assert.ok(workflow.indexOf(linuxSystemDeps) < workflow.indexOf(cargoTest));
-  assert.ok(workflow.indexOf(cargoTest) < workflow.indexOf(bundle));
+  for (const requiredStep of [npmTest, linuxSystemDeps, cargoTest, bundle]) {
+    assert.notEqual(buildJob.indexOf(requiredStep), -1);
+  }
+  assert.ok(buildJob.indexOf(npmTest) < buildJob.indexOf(cargoTest));
+  assert.ok(buildJob.indexOf(linuxSystemDeps) < buildJob.indexOf(cargoTest));
+  assert.ok(buildJob.indexOf(cargoTest) < buildJob.indexOf(bundle));
   assert.match(workflow, /browser-tests:\n[\s\S]*?runs-on: ubuntu-latest/);
   assert.match(workflow, /npx playwright install --with-deps chromium/);
   assert.match(workflow, /run: npm run test:browser/);
@@ -223,9 +233,9 @@ test("README documents the multi-document workflow", () => {
     /dirty indicator/i,
     /restor/i,
     /external change/i,
-    /Reload from Disk/,
+    /Reload Disk Version/,
     /Keep Editing/,
-    /Save As/,
+    /Save Editor Version As/,
     /Save All & Quit/,
     /Quit and Restore Next Time/,
     /Discard All & Quit/,
@@ -235,6 +245,10 @@ test("README documents the multi-document workflow", () => {
   ]) {
     assert.match(readme, pattern);
   }
+});
+
+test("Playwright outputs are ignored", () => {
+  assert.match(readText(".gitignore"), /^test-results\/$/m);
 });
 
 test("the tabbed editor smoke checklist covers every release platform and failure path", () => {
@@ -258,6 +272,9 @@ test("the tabbed editor smoke checklist covers every release platform and failur
   ]) {
     assert.match(checklist, pattern);
   }
+  assert.equal((checklist.match(/Reload Disk Version/g) || []).length, 3);
+  assert.equal((checklist.match(/Save Editor Version As/g) || []).length, 3);
+  assert.doesNotMatch(checklist, /Reload from Disk/);
 });
 
 test("the desktop UI identity is consistent across template and generated builds", () => {
@@ -334,6 +351,10 @@ test("generated builds contain the tabbed session modules and accessible tab str
     assert.match(html, /class SessionModel/);
     assert.match(html, /class RecoveryScheduler/);
     assert.match(html, /Quit and Restore Next Time/);
+    assert.doesNotMatch(html, /async readFile\(path\)/);
+    assert.doesNotMatch(html, /async saveAs\(\{/);
+    assert.doesNotMatch(html, /writeTextFile/);
+    assert.match(html, /raw byte data/);
   }
 });
 

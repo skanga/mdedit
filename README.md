@@ -19,7 +19,7 @@ Select **+** to create a new tab, or select **Open** to choose one or several fi
 
 An unsaved change shows a dirty indicator on that document's tab. **Save** writes the active document, while **Save As** writes it to a new location. **Save All & Quit** in the close-application prompt saves every dirty document in tab order and asks for a destination for each untitled document. If a save is canceled or fails, MDedit stays open and leaves the remaining documents unchanged.
 
-MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload from Disk**, **Keep Editing**, and **Save As**. A deleted source remains open and can be saved to a new location.
+MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload Disk Version**, **Keep Editing**, and **Save Editor Version As**. A deleted source remains open and can be saved to a new location.
 
 Closing the application always asks for confirmation. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
 

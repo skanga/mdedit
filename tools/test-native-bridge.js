@@ -3,15 +3,13 @@ const assert = require("node:assert");
 const { makeNativeApp } = require("../src/native-bridge.js");
 
 function fakeTauri() {
-  const calls = { open: null, save: null, read: null, writeFile: [], invoke: [] };
+  const calls = { open: null, save: null, writeFile: [], invoke: [] };
   const tauri = {
     dialog: {
       open: async (opts) => { calls.open = opts; return "C:\\notes\\doc.md"; },
       save: async (opts) => { calls.save = opts; return "C:\\notes\\out.md"; },
     },
     fs: {
-      readTextFile: async (p) => { calls.read = p; return "# hello\n"; },
-      writeTextFile: async (p, d) => { calls.writeFile.push(["text", p, d]); },
       writeFile: async (p, d) => { calls.writeFile.push(["bytes", p, d]); },
     },
     core: {
@@ -44,6 +42,25 @@ test("makeNativeApp returns null when a plugin API is missing", () => {
   assert.equal(makeNativeApp({ dialog: {} }), null);
   assert.equal(makeNativeApp({ fs: {} }), null);
   assert.equal(makeNativeApp({ core: {} }), null);
+});
+
+test("native bridge exposes no direct text-file read or Save As APIs", () => {
+  const { tauri } = fakeTauri();
+  const app = makeNativeApp(tauri);
+
+  assert.equal(app.readFile, undefined);
+  assert.equal(app.saveAs, undefined);
+});
+
+test("writeFile rejects text and accepts only raw byte data", async () => {
+  const { tauri, calls } = fakeTauri();
+  const app = makeNativeApp(tauri);
+
+  await assert.rejects(app.writeFile("C:\\notes\\out.md", "text"), /raw byte/i);
+  assert.deepEqual(calls.writeFile, []);
+  const bytes = new Uint8Array([1, 2, 3]);
+  await app.writeFile("C:\\notes\\out.png", bytes.buffer);
+  assert.deepEqual(calls.writeFile, [["bytes", "C:\\notes\\out.png", bytes]]);
 });
 
 test("pickFile resolves the chosen path and null on cancel", async () => {
@@ -83,12 +100,6 @@ test("takePendingFiles normalizes one, many, and no queued paths", async () => {
   assert.deepEqual(await app.takePendingFiles(), []);
 });
 
-test("readFile returns utf-8 text via readTextFile", async () => {
-  const { tauri, calls } = fakeTauri();
-  assert.equal(await makeNativeApp(tauri).readFile("C:\\notes\\doc.md"), "# hello\n");
-  assert.equal(calls.read, "C:\\notes\\doc.md");
-});
-
 test("chooseSavePath only chooses a path and does not write", async () => {
   const { tauri, calls } = fakeTauri();
   const app = makeNativeApp(tauri);
@@ -96,47 +107,19 @@ test("chooseSavePath only chooses a path and does not write", async () => {
   assert.deepEqual(calls.writeFile, []);
 });
 
-test("saveAs writes text to the chosen path and returns it", async () => {
-  const { tauri, calls } = fakeTauri();
-  const p = await makeNativeApp(tauri).saveAs({ suggestedName: "doc.md", data: "x" });
-  assert.equal(p, "C:\\notes\\out.md");
-  assert.deepEqual(calls.writeFile, [["text", "C:\\notes\\out.md", "x"]]);
-});
-
-test("saveAs anchors the dialog in defaultDir when given", async () => {
+test("chooseSavePath anchors the dialog in defaultDir when given", async () => {
   const { tauri, calls } = fakeTauri();
   const app = makeNativeApp(tauri);
-  await app.saveAs({ defaultDir: "C:\\notes", suggestedName: "c.md", data: "x" });
+  await app.chooseSavePath({ defaultDir: "C:\\notes", suggestedName: "c.md" });
   assert.equal(calls.save.defaultPath, "C:\\notes/c.md");
-  await app.saveAs({ defaultDir: "/home/u/docs/", suggestedName: "c.md", data: "x" });
+  await app.chooseSavePath({ defaultDir: "/home/u/docs/", suggestedName: "c.md" });
   assert.equal(calls.save.defaultPath, "/home/u/docs/c.md");
 });
 
-test("saveAs falls back to the bare name without a defaultDir", async () => {
+test("chooseSavePath falls back to the bare name without a defaultDir", async () => {
   const { tauri, calls } = fakeTauri();
-  await makeNativeApp(tauri).saveAs({ suggestedName: "c.md", data: "x" });
+  await makeNativeApp(tauri).chooseSavePath({ suggestedName: "c.md" });
   assert.equal(calls.save.defaultPath, "c.md");
-});
-
-test("saveAs writes raw bytes with writeFile when data is not a string", async () => {
-  const { tauri, calls } = fakeTauri();
-  const bytes = new Uint8Array([1, 2, 3]);
-  const p = await makeNativeApp(tauri).saveAs({ suggestedName: "x.png", data: bytes });
-  assert.equal(p, "C:\\notes\\out.md");
-  assert.deepEqual(calls.writeFile, [["bytes", "C:\\notes\\out.md", bytes]]);
-});
-
-test("saveAs returns null without writing on cancel", async () => {
-  const { tauri, calls } = fakeTauri();
-  tauri.dialog.save = async () => null;
-  assert.equal(await makeNativeApp(tauri).saveAs({ suggestedName: "d.md", data: "x" }), null);
-  assert.deepEqual(calls.writeFile, []);
-});
-
-test("writeFile writes directly to a known path (write-back)", async () => {
-  const { tauri, calls } = fakeTauri();
-  await makeNativeApp(tauri).writeFile("C:\\notes\\doc.md", "edited");
-  assert.deepEqual(calls.writeFile, [["text", "C:\\notes\\doc.md", "edited"]]);
 });
 
 test("document bridge methods invoke the expected Tauri commands and forward results", async () => {
@@ -176,8 +159,6 @@ test("document bridge methods propagate invoke rejections unchanged", async () =
   const tauri = {
     dialog: { open: async () => null, save: async () => null },
     fs: {
-      readTextFile: async () => "",
-      writeTextFile: async () => {},
       writeFile: async () => {},
     },
     core: {

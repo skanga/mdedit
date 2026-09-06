@@ -18,7 +18,7 @@ Use two small Markdown fixtures with different names and content. Keep a copy ou
 - [ ] **Second-instance open:** With MDedit already running, open the other fixture from Explorer and confirm the existing window gains one tab and becomes focused.
 - [ ] **Normal quit:** Close the window with clean tabs, choose Cancel once, then Close; relaunch and verify the saved session state.
 - [ ] **Forced termination:** Make distinct unsaved edits in two tabs, terminate MDedit from Task Manager, relaunch, and verify both edits, tab order, active tab, and workspace state restore.
-- [ ] **External edit:** Change an open file with another editor, edit it in MDedit, save, and verify Reload from Disk, Keep Editing, and Save As are offered without overwriting unexpectedly.
+- [ ] **External edit:** Change an open file with another editor, edit it in MDedit, save, and verify Reload Disk Version, Keep Editing, and Save Editor Version As are offered without overwriting unexpectedly.
 - [ ] **File deletion:** Delete an open file externally, attempt to save it, and verify the tab remains open and can be saved to a new location.
 - [ ] **Recovery-directory failure:** Make the recovery-data directory unwritable, edit a document, and verify a visible persistence failure identifies the recovery location and retry remains possible after permissions are restored.
 
@@ -36,7 +36,7 @@ Use two small Markdown fixtures with different names and content. Keep a copy ou
 - [ ] **Second-instance open:** With MDedit already running, open the other fixture from Finder and confirm the existing window gains one tab and becomes focused.
 - [ ] **Normal quit:** Quit with clean tabs, choose Cancel once, then Close; relaunch and verify the saved session state.
 - [ ] **Forced termination:** Make distinct unsaved edits in two tabs, force quit MDedit, relaunch, and verify both edits, tab order, active tab, and workspace state restore.
-- [ ] **External edit:** Change an open file with another editor, edit it in MDedit, save, and verify Reload from Disk, Keep Editing, and Save As are offered without overwriting unexpectedly.
+- [ ] **External edit:** Change an open file with another editor, edit it in MDedit, save, and verify Reload Disk Version, Keep Editing, and Save Editor Version As are offered without overwriting unexpectedly.
 - [ ] **File deletion:** Delete an open file externally, attempt to save it, and verify the tab remains open and can be saved to a new location.
 - [ ] **Recovery-directory failure:** Make the recovery-data directory unwritable, edit a document, and verify a visible persistence failure identifies the recovery location and retry remains possible after permissions are restored.
 
@@ -54,6 +54,6 @@ Use two small Markdown fixtures with different names and content. Keep a copy ou
 - [ ] **Second-instance open:** With MDedit already running, open the other fixture from the file manager and confirm the existing window gains one tab and becomes focused.
 - [ ] **Normal quit:** Close the window with clean tabs, choose Cancel once, then Close; relaunch and verify the saved session state.
 - [ ] **Forced termination:** Make distinct unsaved edits in two tabs, terminate the MDedit process, relaunch, and verify both edits, tab order, active tab, and workspace state restore.
-- [ ] **External edit:** Change an open file with another editor, edit it in MDedit, save, and verify Reload from Disk, Keep Editing, and Save As are offered without overwriting unexpectedly.
+- [ ] **External edit:** Change an open file with another editor, edit it in MDedit, save, and verify Reload Disk Version, Keep Editing, and Save Editor Version As are offered without overwriting unexpectedly.
 - [ ] **File deletion:** Delete an open file externally, attempt to save it, and verify the tab remains open and can be saved to a new location.
 - [ ] **Recovery-directory failure:** Make the recovery-data directory unwritable, edit a document, and verify a visible persistence failure identifies the recovery location and retry remains possible after permissions are restored.

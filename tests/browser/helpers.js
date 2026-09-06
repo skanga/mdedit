@@ -29,8 +29,6 @@ async function installFakeTauri(page, options = {}) {
         save: async () => configuration.savePath || null,
       },
       fs: {
-        readTextFile: async () => "",
-        writeTextFile: async (path, data) => { calls.writes.push({ path, data }); },
         writeFile: async (path, data) => { calls.writes.push({ path, data }); },
       },
       core: {
