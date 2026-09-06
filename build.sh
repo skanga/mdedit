@@ -40,6 +40,11 @@ LIBS = {
     "/*__HLJS__*/":    "vendor/highlight.min.js",
     "/*__KATEX__*/":   "vendor/katex.min.js",
     "/*__MERMAID__*/": "vendor/mermaid.min.js",
+    "/*__DOCUMENT_MODEL__*/": "src/document-model.js",
+    "/*__SESSION_MODEL__*/": "src/session-model.js",
+    "/*__RECOVERY_SCHEDULER__*/": "src/recovery-scheduler.js",
+    "/*__SESSION_CONTROLLER__*/": "src/session-controller.js",
+    "/*__WORKSPACE_VIEW__*/": "src/workspace-view.js",
     "/*__NATIVE_BRIDGE__*/": "src/native-bridge.js",
 }
 HEAVY = {"/*__KATEX__*/", "/*__MERMAID__*/"}
@@ -48,8 +53,8 @@ def build(out, include_heavy):
     doc = template
     doc = doc.replace("/*__KATEX_CSS__*/", katex_css() if include_heavy else "")
     for marker, path in LIBS.items():
-        if marker not in doc:
-            raise SystemExit(f"marker {marker} missing from template")
+        if doc.count(marker) != 1:
+            raise SystemExit(f"marker {marker} must appear exactly once in template")
         doc = doc.replace(marker, js(path) if include_heavy or marker not in HEAVY else "")
     if not include_heavy:
         # the attribution banner must describe what this file actually bundles

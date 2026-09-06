@@ -33,6 +33,8 @@
     --accent-soft: rgba(37, 99, 235, 0.08);
     --code-bg: #f4f4f5;
     --danger: #dc2626;
+    --warning: #b45309;
+    --modal-backdrop: rgba(24, 24, 27, 0.48);
     --shadow: 0 1px 2px rgba(0,0,0,0.04);
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -49,6 +51,8 @@
     --accent-soft: rgba(96, 165, 250, 0.10);
     --code-bg: #1f1f23;
     --danger: #f87171;
+    --warning: #fbbf24;
+    --modal-backdrop: rgba(0, 0, 0, 0.66);
     --shadow: none;
   }
 
@@ -174,6 +178,147 @@
   .btn.primary kbd.hint { color: rgba(255,255,255,0.65); }
   [data-theme="dark"] .btn.primary kbd.hint { color: rgba(11,17,32,0.6); }
 
+  /* ── Document tabs ─────────────────────────────── */
+  #document-tabs-wrap {
+    height: 36px;
+    min-height: 36px;
+    display: flex;
+    align-items: stretch;
+    background: var(--panel);
+    border-bottom: 1px solid var(--border);
+    flex: none;
+  }
+  #document-tabs {
+    min-width: 0;
+    display: flex;
+    align-items: stretch;
+    flex: 1;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+  .document-tab {
+    position: relative;
+    display: flex;
+    align-items: stretch;
+    min-width: 118px;
+    max-width: 240px;
+    border-right: 1px solid var(--border-soft);
+    color: var(--text-soft);
+  }
+  .document-tab.is-selected {
+    background: var(--bg);
+    color: var(--text);
+    box-shadow: inset 0 -2px var(--accent);
+  }
+  .document-tab[aria-busy="true"] { opacity: 0.65; }
+  .document-tab > [role="tab"] {
+    min-width: 0;
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    border: 0;
+    background: transparent;
+    color: inherit;
+    font: 500 12px var(--sans);
+    text-align: left;
+    padding: 0 4px 0 12px;
+    cursor: pointer;
+  }
+  .document-tab > [role="tab"]:focus-visible,
+  .document-tab-close:focus-visible,
+  #btn-add-document:focus-visible,
+  #workspace-dialog button:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: -2px;
+  }
+  .document-tab-name { overflow: hidden; text-overflow: ellipsis; }
+  .document-tab.is-dirty .document-tab-name::after {
+    content: " •";
+    color: var(--accent);
+  }
+  .document-tab.is-conflict .document-tab-name::after {
+    content: " !";
+    color: var(--warning);
+    font-weight: 700;
+  }
+  .document-tab-close {
+    min-width: 32px;
+    min-height: 32px;
+    align-self: center;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--text-faint);
+    font: 18px/1 var(--sans);
+    cursor: pointer;
+  }
+  .document-tab-close:hover { background: var(--accent-soft); color: var(--text); }
+  #btn-add-document {
+    width: 36px;
+    min-width: 36px;
+    border: 0;
+    border-left: 1px solid var(--border);
+    background: var(--panel);
+    color: var(--text-soft);
+    font: 20px/1 var(--sans);
+    cursor: pointer;
+  }
+  #btn-add-document:hover { background: var(--accent-soft); color: var(--accent); }
+  .visually-hidden {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+
+  /* ── Workspace dialog ─────────────────────────── */
+  #workspace-dialog-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+    background: var(--modal-backdrop);
+  }
+  #workspace-dialog {
+    position: fixed;
+    z-index: 91;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    width: min(460px, calc(100vw - 32px));
+    max-height: calc(100vh - 32px);
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--panel);
+    color: var(--text);
+    box-shadow: 0 20px 55px rgba(0, 0, 0, 0.25);
+    padding: 20px;
+  }
+  #workspace-dialog h2 { font-size: 17px; line-height: 1.35; margin-bottom: 8px; }
+  #workspace-dialog-message { color: var(--text-soft); line-height: 1.5; }
+  #workspace-dialog-documents {
+    margin: 14px 0 0 20px;
+    color: var(--text-soft);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+  #workspace-dialog-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 20px;
+  }
+  [hidden] { display: none !important; }
+
   /* ── Panes ───────────────────────────────────── */
   main {
     flex: 1;
@@ -191,7 +336,14 @@
   body[data-view="edit"] #editor-pane { border-right: none; }
   body[data-view="preview"] #editor-pane { display: none; }
 
-  #editor {
+  #editor-surfaces, .editor-surface {
+    min-height: 0;
+    flex: 1;
+    display: flex;
+  }
+  .editor-surface { min-width: 0; }
+  .editor-surface[hidden] { display: none !important; }
+  #editor, .document-editor {
     flex: 1;
     width: 100%;
     resize: none;
@@ -205,7 +357,7 @@
     padding: 28px 32px 45vh;
     tab-size: 2;
   }
-  #editor::placeholder { color: var(--text-faint); }
+  #editor::placeholder, .document-editor::placeholder { color: var(--text-faint); }
 
   #preview-pane {
     overflow-y: auto;
@@ -711,7 +863,7 @@
     body[data-view="split"] #editor-pane { border-right: none; border-bottom: 1px solid var(--border); }
     .hide-sm { display: none; }
     #preview { padding: 20px 18px 40vh; }
-    #editor { padding: 18px 18px 40vh; }
+    #editor, .document-editor { padding: 18px 18px 40vh; }
   }
 
   @media print {
@@ -721,7 +873,8 @@
       --text-faint: #71717a; --border: #d4d4d8; --border-soft: #e4e4e7;
       --code-bg: #f6f6f7; --accent: #2563eb;
     }
-    header, footer, #editor-pane, #drop-overlay, #toc, #reader-pop, #export-pop,
+    header, footer, #document-tabs-wrap, #workspace-dialog-backdrop, #workspace-dialog,
+    #editor-pane, #drop-overlay, #toc, #reader-pop, #export-pop,
     .blk-tools { display: none !important; }
     html, body { height: auto; overflow: visible; display: block; }
     main { display: block; }
@@ -797,6 +950,19 @@
   </button>
 </header>
 
+<div id="document-tabs-wrap">
+  <div id="document-tabs" role="tablist" aria-label="Open documents"></div>
+  <button id="btn-add-document" type="button" aria-label="Add document" title="New document">+</button>
+</div>
+
+<div id="workspace-dialog-backdrop" hidden></div>
+<section id="workspace-dialog" role="dialog" aria-modal="true" aria-labelledby="workspace-dialog-title" hidden>
+  <h2 id="workspace-dialog-title"></h2>
+  <p id="workspace-dialog-message"></p>
+  <ul id="workspace-dialog-documents"></ul>
+  <div id="workspace-dialog-actions"></div>
+</section>
+
 <main>
   <div id="editor-pane">
     <div id="find-bar">
@@ -809,7 +975,11 @@
       <button id="find-all" title="Replace every match">All</button>
       <button id="find-close" title="Close (Esc)">&#10005;</button>
     </div>
-    <textarea id="editor" spellcheck="false" placeholder="Type markdown here, or drop a .md file anywhere…"></textarea>
+    <div id="editor-surfaces">
+      <div class="editor-surface" data-document-id="legacy">
+        <textarea id="editor" class="document-editor" data-document-id="legacy" spellcheck="false" placeholder="Type markdown here, or drop a .md file anywhere…"></textarea>
+      </div>
+    </div>
   </div>
   <div id="preview-pane"><article id="preview"></article></div>
   <div id="toc-backdrop"></div>
@@ -2085,6 +2255,2413 @@ return Pe}()
 ;"object"==typeof exports&&"undefined"!=typeof module&&(module.exports=hljs);</script>
 <script></script>
 <script></script>
+<script>(function initDocumentModel(root, factory) {
+  const api = factory();
+
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== "undefined" ? window : null, () => {
+  "use strict";
+
+  const SNAPSHOT_SCHEMA_VERSION = 1;
+  const FILE_STATUSES = new Set(["normal", "externally-changed", "missing", "read-error"]);
+  const VIEW_MODES = new Set(["split", "edit", "preview"]);
+  const RECOVERY_STATUSES = new Set(["clean", "pending", "writing", "failed"]);
+
+  function hasOwn(value, key) {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function emptyWorkspace() {
+    return {
+      selectionStart: 0,
+      selectionEnd: 0,
+      editorScrollTop: 0,
+      previewScrollTop: 0,
+      viewMode: "split",
+      tocOpen: false,
+      find: {
+        open: false,
+        query: "",
+        replacement: "",
+        matchIndex: -1,
+      },
+    };
+  }
+
+  function requireString(value, name) {
+    if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+    return value;
+  }
+
+  function optionalString(value, name) {
+    if (value === undefined || value === null) return null;
+    return requireString(value, name);
+  }
+
+  function requireInteger(value, name) {
+    if (!Number.isInteger(value)) throw new TypeError(`${name} must be an integer`);
+    return value;
+  }
+
+  function requireNonEmptyString(value, name) {
+    const string = requireString(value, name);
+    if (string.length === 0) throw new TypeError(`${name} must be a non-empty string`);
+    return string;
+  }
+
+  function requireNonNegativeInteger(value, name) {
+    const integer = requireInteger(value, name);
+    if (integer < 0) throw new RangeError(`${name} must be non-negative`);
+    return integer;
+  }
+
+  function requirePersistedRevision(value) {
+    if (value === undefined) return -1;
+    const integer = requireInteger(value, "persisted revision");
+    if (integer < -1) throw new RangeError("persisted revision must be -1 or non-negative");
+    return integer;
+  }
+
+  function requireRecoveryStatus(value) {
+    if (value === undefined) return "clean";
+    if (!RECOVERY_STATUSES.has(value)) throw new TypeError("recovery status must be clean, pending, writing, or failed");
+    return value;
+  }
+
+  function requireFileStatus(value) {
+    if (value === undefined) return "normal";
+    if (!FILE_STATUSES.has(value)) throw new TypeError("file status must be normal, externally-changed, missing, or read-error");
+    return value;
+  }
+
+  function requireSnapshotNullableString(snapshot, key) {
+    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
+    const value = snapshot[key];
+    if (value !== null && typeof value !== "string") throw new TypeError("invalid document snapshot");
+    return value;
+  }
+
+  function requireSnapshotNonNegativeInteger(snapshot, key, label) {
+    if (!hasOwn(snapshot, key)) throw new TypeError("invalid document snapshot");
+    const value = snapshot[key];
+    if (!Number.isInteger(value) || value < 0) throw new TypeError(label);
+    return value;
+  }
+
+  function cloneWorkspace(workspace) {
+    return {
+      selectionStart: workspace.selectionStart,
+      selectionEnd: workspace.selectionEnd,
+      editorScrollTop: workspace.editorScrollTop,
+      previewScrollTop: workspace.previewScrollTop,
+      viewMode: workspace.viewMode,
+      tocOpen: workspace.tocOpen,
+      find: {
+        open: workspace.find.open,
+        query: workspace.find.query,
+        replacement: workspace.find.replacement,
+        matchIndex: workspace.find.matchIndex,
+      },
+    };
+  }
+
+  function normalizeWorkspace(value, contentLength) {
+    const workspace = emptyWorkspace();
+    if (value === undefined || value === null) return workspace;
+    if (typeof value !== "object" || Array.isArray(value)) throw new TypeError("workspace must be an object");
+
+    if (value.viewMode !== undefined && (!VIEW_MODES.has(value.viewMode) || typeof value.viewMode !== "string")) {
+      throw new TypeError("invalid view mode");
+    }
+    if (value.tocOpen !== undefined && typeof value.tocOpen !== "boolean") throw new TypeError("invalid workspace");
+
+    workspace.viewMode = value.viewMode ?? workspace.viewMode;
+    workspace.tocOpen = value.tocOpen ?? workspace.tocOpen;
+    workspace.editorScrollTop = typeof value.editorScrollTop === "number" && Number.isFinite(value.editorScrollTop) && value.editorScrollTop >= 0 ? value.editorScrollTop : 0;
+    workspace.previewScrollTop = typeof value.previewScrollTop === "number" && Number.isFinite(value.previewScrollTop) && value.previewScrollTop >= 0 ? value.previewScrollTop : 0;
+
+    const start = Number.isFinite(value.selectionStart) && value.selectionStart >= 0 ? Math.min(contentLength, Math.trunc(value.selectionStart)) : 0;
+    const end = Number.isFinite(value.selectionEnd) && value.selectionEnd >= 0 ? Math.min(contentLength, Math.trunc(value.selectionEnd)) : start;
+    workspace.selectionStart = start;
+    workspace.selectionEnd = end < start ? start : end;
+    if (value.find === undefined || value.find === null) {
+      workspace.find = emptyWorkspace().find;
+    } else {
+      if (typeof value.find !== "object" || Array.isArray(value.find)) throw new TypeError("invalid find state");
+      if (value.find.open !== undefined && typeof value.find.open !== "boolean") throw new TypeError("invalid find state");
+      if (value.find.query !== undefined && typeof value.find.query !== "string") throw new TypeError("invalid find state");
+      if (value.find.replacement !== undefined && typeof value.find.replacement !== "string") throw new TypeError("invalid find state");
+      if (value.find.matchIndex !== undefined && !Number.isInteger(value.find.matchIndex)) throw new TypeError("invalid find state");
+
+      workspace.find = {
+        open: value.find.open ?? false,
+        query: value.find.query ?? "",
+        replacement: value.find.replacement ?? "",
+        matchIndex: value.find.matchIndex ?? -1,
+      };
+    }
+    return workspace;
+  }
+
+  function validateSnapshotWorkspace(workspace) {
+    if (!workspace || typeof workspace !== "object" || Array.isArray(workspace)) throw new TypeError("invalid document snapshot");
+    if (!hasOwn(workspace, "selectionStart") || !hasOwn(workspace, "selectionEnd") || !hasOwn(workspace, "editorScrollTop")
+      || !hasOwn(workspace, "previewScrollTop") || !hasOwn(workspace, "viewMode") || !hasOwn(workspace, "tocOpen")
+      || !hasOwn(workspace, "find")) {
+      throw new TypeError("invalid document snapshot");
+    }
+    if (!Number.isInteger(workspace.selectionStart) || workspace.selectionStart < 0) throw new TypeError("selection start must be a non-negative integer");
+    if (!Number.isInteger(workspace.selectionEnd) || workspace.selectionEnd < 0) throw new TypeError("selection end must be a non-negative integer");
+    if (typeof workspace.editorScrollTop !== "number" || !Number.isFinite(workspace.editorScrollTop) || workspace.editorScrollTop < 0) {
+      throw new TypeError("editor scroll top must be a non-negative finite number");
+    }
+    if (typeof workspace.previewScrollTop !== "number" || !Number.isFinite(workspace.previewScrollTop) || workspace.previewScrollTop < 0) {
+      throw new TypeError("preview scroll top must be a non-negative finite number");
+    }
+    if (!VIEW_MODES.has(workspace.viewMode)) throw new TypeError("invalid view mode");
+    if (typeof workspace.tocOpen !== "boolean") throw new TypeError("invalid workspace");
+    if (!workspace.find || typeof workspace.find !== "object" || Array.isArray(workspace.find)) throw new TypeError("invalid find state");
+    if (!hasOwn(workspace.find, "open") || !hasOwn(workspace.find, "query") || !hasOwn(workspace.find, "replacement") || !hasOwn(workspace.find, "matchIndex")) {
+      throw new TypeError("invalid document snapshot");
+    }
+    if (typeof workspace.find.open !== "boolean") throw new TypeError("invalid find state");
+    if (typeof workspace.find.query !== "string") throw new TypeError("invalid find state");
+    if (typeof workspace.find.replacement !== "string") throw new TypeError("invalid find state");
+    if (!Number.isInteger(workspace.find.matchIndex)) throw new TypeError("invalid find state");
+    return {
+      selectionStart: Math.trunc(workspace.selectionStart),
+      selectionEnd: Math.trunc(workspace.selectionEnd),
+      editorScrollTop: workspace.editorScrollTop,
+      previewScrollTop: workspace.previewScrollTop,
+      viewMode: workspace.viewMode,
+      tocOpen: workspace.tocOpen,
+      find: {
+        open: workspace.find.open,
+        query: workspace.find.query,
+        replacement: workspace.find.replacement,
+        matchIndex: workspace.find.matchIndex,
+      },
+    };
+  }
+
+  class DocumentModel {
+    constructor(input) {
+      if (!input || typeof input !== "object") throw new TypeError("document id and display name are required");
+
+      this.id = requireString(input.id, "document id");
+      this.displayName = requireString(input.displayName, "display name");
+      this.path = optionalString(input.path, "path");
+      this.canonicalPath = optionalString(input.canonicalPath, "canonical path");
+      this.content = typeof input.content === "string" ? input.content : "";
+      this.editRevision = input.editRevision === undefined
+        ? 0
+        : requireNonNegativeInteger(input.editRevision, "edit revision");
+      this.persistedRevision = requirePersistedRevision(input.persistedRevision);
+      this.snapshotRevision = input.snapshotRevision === undefined
+        ? 0
+        : requireNonNegativeInteger(input.snapshotRevision, "snapshot revision");
+      this.savedContentSha256 = requireString(input.savedContentSha256, "saved content sha256");
+      this.expectedDiskSha256 = optionalString(input.expectedDiskSha256, "expected disk sha256");
+      this.fileStatus = requireFileStatus(input.fileStatus);
+      this.workspace = normalizeWorkspace(input.workspace, this.content.length);
+      this.dirty = typeof input.dirty === "boolean" ? input.dirty : false;
+      this.recoveryStatus = requireRecoveryStatus(input.recoveryStatus);
+    }
+
+    applyContent(content) {
+      requireString(content, "content");
+      if (content === this.content) return false;
+
+      this.content = content;
+      this.editRevision += 1;
+      this.dirty = true;
+      this.recoveryStatus = "pending";
+      return true;
+    }
+
+    reconcileDirty(contentSha256, editRevision) {
+      requireString(contentSha256, "content sha256");
+      requireNonNegativeInteger(editRevision, "edit revision");
+      if (editRevision !== this.editRevision) return false;
+
+      this.dirty = contentSha256 !== this.savedContentSha256;
+      return true;
+    }
+
+    recordSave(result) {
+      if (!result || typeof result !== "object") throw new TypeError("save result is required");
+
+      const editRevision = requireNonNegativeInteger(result.editRevision, "edit revision");
+      const savedContentSha256 = requireNonEmptyString(result.contentSha256, "content sha256");
+      const expectedDiskSha256 = requireNonEmptyString(result.diskSha256, "disk sha256");
+
+      this.savedContentSha256 = savedContentSha256;
+      this.expectedDiskSha256 = expectedDiskSha256;
+      this.fileStatus = "normal";
+      this.dirty = this.editRevision !== editRevision;
+    }
+
+    toSnapshot() {
+      return {
+        schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+        documentId: this.id,
+        snapshotRevision: this.snapshotRevision,
+        editRevision: this.editRevision,
+        displayName: this.displayName,
+        path: this.path,
+        canonicalPath: this.canonicalPath,
+        content: this.content,
+        savedContentSha256: this.savedContentSha256,
+        expectedDiskSha256: this.expectedDiskSha256,
+        fileStatus: this.fileStatus,
+        workspace: cloneWorkspace(this.workspace),
+      };
+    }
+
+    static fromSnapshot(value) {
+      if (!value || typeof value !== "object") throw new TypeError("invalid document snapshot");
+      if (value.schemaVersion !== SNAPSHOT_SCHEMA_VERSION) throw new Error("unsupported snapshot schema version");
+
+      let documentId;
+      let displayName;
+      let content;
+      let snapshotRevision;
+      let editRevision;
+      let savedContentSha256;
+      let path;
+      let canonicalPath;
+      let expectedDiskSha256;
+      let fileStatus;
+      let workspace;
+      let recoveryStatus;
+
+      try {
+        documentId = requireString(value.documentId, "document id");
+        displayName = requireString(value.displayName, "display name");
+        content = requireString(value.content, "content");
+        savedContentSha256 = requireString(value.savedContentSha256, "saved content sha256");
+        path = requireSnapshotNullableString(value, "path");
+        canonicalPath = requireSnapshotNullableString(value, "canonicalPath");
+        expectedDiskSha256 = requireSnapshotNullableString(value, "expectedDiskSha256");
+        if (!hasOwn(value, "fileStatus") || !FILE_STATUSES.has(value.fileStatus)) throw new TypeError("invalid file status");
+        fileStatus = value.fileStatus;
+        recoveryStatus = hasOwn(value, "recoveryStatus") ? requireRecoveryStatus(value.recoveryStatus) : "clean";
+        snapshotRevision = requireSnapshotNonNegativeInteger(value, "snapshotRevision", "snapshot revision must be a non-negative integer");
+        editRevision = requireSnapshotNonNegativeInteger(value, "editRevision", "edit revision must be a non-negative integer");
+        workspace = value.workspace;
+      } catch (error) {
+        if (error instanceof TypeError && error.message !== "invalid file status") throw new TypeError("invalid document snapshot");
+        throw error;
+      }
+
+      const normalizedWorkspace = validateSnapshotWorkspace(workspace);
+      const clampedSelectionStart = Math.min(content.length, normalizedWorkspace.selectionStart);
+      const clampedSelectionEnd = Math.min(content.length, Math.max(clampedSelectionStart, normalizedWorkspace.selectionEnd));
+
+      return new DocumentModel({
+        id: documentId,
+        displayName,
+        path,
+        canonicalPath,
+        content,
+        editRevision,
+        persistedRevision: editRevision,
+        snapshotRevision,
+        savedContentSha256,
+        expectedDiskSha256,
+        fileStatus,
+        workspace: {
+          ...normalizedWorkspace,
+          selectionStart: clampedSelectionStart,
+          selectionEnd: clampedSelectionEnd,
+        },
+        recoveryStatus,
+      });
+    }
+  }
+
+  return { DocumentModel, emptyWorkspace, SNAPSHOT_SCHEMA_VERSION };
+});
+</script>
+<script>(function initSessionModel(root, factory) {
+  const api = factory(root);
+
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== "undefined" ? window : null, (root) => {
+  "use strict";
+
+  const SESSION_SCHEMA_VERSION = 1;
+  const EMPTY_CONTENT_SHA256 = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+
+  let DocumentModel;
+  if (typeof module !== "undefined" && module.exports) {
+    ({ DocumentModel } = require("./document-model.js"));
+  } else if (root && root.MDEdit && root.MDEdit.DocumentModel) {
+    ({ DocumentModel } = root.MDEdit);
+  } else {
+    throw new Error("DocumentModel is required");
+  }
+
+  function getDefaultIdFactory() {
+    if (root && root.crypto && typeof root.crypto.randomUUID === "function") {
+      return () => root.crypto.randomUUID();
+    }
+    if (typeof globalThis !== "undefined" && globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+      return () => globalThis.crypto.randomUUID();
+    }
+    if (typeof require === "function") {
+      const { randomUUID } = require("node:crypto");
+      return () => randomUUID();
+    }
+    throw new Error("random UUID generation is unavailable");
+  }
+
+  function hasOwn(value, key) {
+    return Object.prototype.hasOwnProperty.call(value, key);
+  }
+
+  function requireString(value, name) {
+    if (typeof value !== "string") throw new TypeError(`${name} must be a string`);
+    return value;
+  }
+
+  function requireNonEmptyString(value, name) {
+    const string = requireString(value, name);
+    if (string.length === 0) throw new TypeError(`${name} must be a non-empty string`);
+    return string;
+  }
+
+  function requireSafeInteger(value, name) {
+    if (!Number.isSafeInteger(value)) throw new TypeError(`${name} must be a safe integer`);
+    return value;
+  }
+
+  function requireSafeNonNegativeInteger(value, name) {
+    const integer = requireSafeInteger(value, name);
+    if (integer < 0) throw new RangeError(`${name} must be non-negative`);
+    return integer;
+  }
+
+  function requireSafePositiveInteger(value, name) {
+    const integer = requireSafeInteger(value, name);
+    if (integer < 1) throw new RangeError(`${name} must be a positive integer`);
+    return integer;
+  }
+
+  function requireSafeIncrementableInteger(value, name) {
+    const integer = requireSafeInteger(value, name);
+    if (integer >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError(`${name} must be less than ${Number.MAX_SAFE_INTEGER}`);
+    }
+    return integer;
+  }
+
+  function normalizeSessionDocument(document) {
+    if (!document || typeof document !== "object" || Array.isArray(document)) {
+      throw new TypeError("document is required");
+    }
+
+    const id = requireNonEmptyString(document.id, "document id");
+    const displayName = requireNonEmptyString(document.displayName, "display name");
+    const snapshotRevision = requireSafeNonNegativeInteger(document.snapshotRevision, "snapshot revision");
+
+    let canonicalPath = null;
+    if (hasOwn(document, "canonicalPath") && document.canonicalPath !== null) {
+      canonicalPath = requireNonEmptyString(document.canonicalPath, "canonical path");
+    }
+
+    if (document instanceof DocumentModel) {
+      return document;
+    }
+
+    return {
+      id,
+      displayName,
+      canonicalPath,
+      snapshotRevision,
+    };
+  }
+
+  function validateManifestTab(tab) {
+    if (!tab || typeof tab !== "object" || Array.isArray(tab)) {
+      throw new TypeError("invalid tab entry");
+    }
+
+    const documentId = requireNonEmptyString(tab.documentId, "document id");
+    let displayName;
+    try {
+      displayName = requireNonEmptyString(tab.displayName, "display name");
+    } catch (error) {
+      throw new TypeError("invalid tab label");
+    }
+    const snapshotRevision = requireSafeNonNegativeInteger(tab.snapshotRevision, "snapshot revision");
+
+    let canonicalPath = null;
+    if (hasOwn(tab, "canonicalPath")) {
+      if (tab.canonicalPath === null) {
+        canonicalPath = null;
+      } else {
+        try {
+          canonicalPath = requireNonEmptyString(tab.canonicalPath, "canonical path");
+        } catch (error) {
+          throw new TypeError("invalid canonical path");
+        }
+      }
+    }
+
+    return {
+      documentId,
+      displayName,
+      canonicalPath,
+      snapshotRevision,
+    };
+  }
+
+  function createLoadingStub(entry) {
+    return {
+      id: entry.documentId,
+      displayName: entry.displayName,
+      canonicalPath: entry.canonicalPath,
+      snapshotRevision: entry.snapshotRevision,
+    };
+  }
+
+  function clamp(value, min, max) {
+    return Math.min(max, Math.max(min, value));
+  }
+
+  function parseGeneratedUntitledNumber(displayName) {
+    if (typeof displayName !== "string") return null;
+    const match = /^Untitled (\d+)$/.exec(displayName);
+    if (!match) return null;
+    const number = Number(match[1]);
+    if (!Number.isSafeInteger(number) || number < 1) {
+      throw new RangeError("untitled label must be a safe integer");
+    }
+    if (number >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError("untitled label exceeds safe integer range");
+    }
+    return number;
+  }
+
+  class SessionModel {
+    constructor({ idFactory } = {}) {
+      if (idFactory !== undefined && typeof idFactory !== "function") {
+        throw new TypeError("idFactory must be a function");
+      }
+
+      this.documents = new Map();
+      this.tabOrder = [];
+      this.activeDocumentId = null;
+      this.nextUntitledNumber = 1;
+      this.generation = 0;
+      this._idFactory = idFactory || getDefaultIdFactory();
+    }
+
+    add(document) {
+      const entry = normalizeSessionDocument(document);
+
+      if (this.documents.has(entry.id)) {
+        throw new Error("duplicate document id");
+      }
+      if (entry.canonicalPath !== null && this.findByCanonicalPath(entry.canonicalPath) !== null) {
+        throw new Error("duplicate canonical path");
+      }
+
+      const untitledNumber = parseGeneratedUntitledNumber(entry.displayName);
+      if (untitledNumber !== null) {
+        for (const existing of this.documents.values()) {
+          const existingUntitledNumber = parseGeneratedUntitledNumber(existing.displayName);
+          if (existingUntitledNumber === untitledNumber) {
+            throw new Error("duplicate untitled label");
+          }
+        }
+      }
+
+      if (this.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("generation must be less than 9007199254740991");
+      }
+      if (untitledNumber !== null && untitledNumber + 1 > Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("untitled label exceeds safe integer range");
+      }
+      if (untitledNumber !== null) {
+        const nextUntitledNumber = untitledNumber + 1;
+        this.nextUntitledNumber = Math.max(this.nextUntitledNumber, nextUntitledNumber);
+      }
+
+      this.documents.set(entry.id, entry);
+      this.tabOrder.push(entry.id);
+      this.activeDocumentId = entry.id;
+      this.generation += 1;
+      return entry;
+    }
+
+    createUntitled() {
+      if (this.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("generation must be less than 9007199254740991");
+      }
+      if (this.nextUntitledNumber >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("next untitled number must be less than 9007199254740991");
+      }
+      const id = this._idFactory();
+      requireNonEmptyString(id, "document id");
+      const document = new DocumentModel({
+        id,
+        displayName: `Untitled ${this.nextUntitledNumber}`,
+        path: null,
+        canonicalPath: null,
+        content: "",
+        snapshotRevision: 0,
+        savedContentSha256: EMPTY_CONTENT_SHA256,
+      });
+
+      this.add(document);
+      return document;
+    }
+
+    activate(id) {
+      requireNonEmptyString(id, "document id");
+      if (!this.documents.has(id)) throw new Error("unknown document id");
+      if (this.activeDocumentId !== id) {
+        if (this.generation >= Number.MAX_SAFE_INTEGER) {
+          throw new RangeError("generation must be less than 9007199254740991");
+        }
+        this.activeDocumentId = id;
+        this.generation += 1;
+      }
+      return this.documents.get(id);
+    }
+
+    remove(id) {
+      requireNonEmptyString(id, "document id");
+      if (!this.documents.has(id)) throw new Error("unknown document id");
+
+      const index = this.tabOrder.indexOf(id);
+      const removed = this.documents.get(id);
+      const wasActive = this.activeDocumentId === id;
+
+      if (this.generation >= Number.MAX_SAFE_INTEGER) {
+        throw new RangeError("generation must be less than 9007199254740991");
+      }
+
+      this.documents.delete(id);
+      this.tabOrder.splice(index, 1);
+
+      let nextActiveId = this.activeDocumentId;
+      if (wasActive) {
+        if (this.tabOrder.length === 0) {
+          nextActiveId = null;
+          this.activeDocumentId = null;
+        } else {
+          const nextIndex = clamp(index, 0, this.tabOrder.length - 1);
+          nextActiveId = this.tabOrder[nextIndex];
+          this.activeDocumentId = nextActiveId;
+        }
+      }
+
+      this.generation += 1;
+      return { removed, nextActiveId };
+    }
+
+    move(id, delta) {
+      requireNonEmptyString(id, "document id");
+      if (!this.documents.has(id)) throw new Error("unknown document id");
+      requireSafeInteger(delta, "delta");
+
+      const from = this.tabOrder.indexOf(id);
+      const to = clamp(from + delta, 0, this.tabOrder.length - 1);
+      if (from !== to) {
+        if (this.generation >= Number.MAX_SAFE_INTEGER) {
+          throw new RangeError("generation must be less than 9007199254740991");
+        }
+        this.tabOrder.splice(from, 1);
+        this.tabOrder.splice(to, 0, id);
+        this.generation += 1;
+      }
+
+      return this.documents.get(id);
+    }
+
+    findByCanonicalPath(path) {
+      if (typeof path !== "string") return null;
+      for (const document of this.documents.values()) {
+        if (document.canonicalPath === path) return document;
+      }
+      return null;
+    }
+
+    toManifest() {
+      return {
+        schemaVersion: SESSION_SCHEMA_VERSION,
+        generation: this.generation,
+        activeDocumentId: this.activeDocumentId,
+        nextUntitledNumber: this.nextUntitledNumber,
+        tabs: this.tabOrder.map((documentId) => {
+          const document = this.documents.get(documentId);
+          return {
+            documentId,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          };
+        }),
+      };
+    }
+
+    static fromManifest(value, { idFactory } = {}) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) {
+        throw new TypeError("invalid session manifest");
+      }
+      if (value.schemaVersion !== SESSION_SCHEMA_VERSION) {
+        throw new Error("unsupported session schema version");
+      }
+
+      const generation = requireSafeNonNegativeInteger(value.generation, "generation");
+      const nextUntitledNumber = requireSafePositiveInteger(value.nextUntitledNumber, "next untitled number");
+
+      if (!Array.isArray(value.tabs) || value.tabs.length === 0) {
+        throw new TypeError("tabs must not be empty");
+      }
+
+      const session = new SessionModel({ idFactory });
+      session.generation = generation;
+
+      const seenIds = new Set();
+      const seenCanonicalPaths = new Set();
+      const seenUntitledNumbers = new Set();
+      const tabs = [];
+      let maxUntitledNumber = 0;
+
+      for (const tab of value.tabs) {
+        const entry = validateManifestTab(tab);
+        if (seenIds.has(entry.documentId)) {
+          throw new Error("duplicate document id");
+        }
+        if (entry.canonicalPath !== null) {
+          if (seenCanonicalPaths.has(entry.canonicalPath)) {
+            throw new Error("duplicate canonical path");
+          }
+          seenCanonicalPaths.add(entry.canonicalPath);
+        }
+        const untitledNumber = parseGeneratedUntitledNumber(entry.displayName);
+        if (untitledNumber !== null) {
+          if (seenUntitledNumbers.has(untitledNumber)) {
+            throw new Error("duplicate untitled label");
+          }
+          seenUntitledNumbers.add(untitledNumber);
+          if (untitledNumber > maxUntitledNumber) maxUntitledNumber = untitledNumber;
+        }
+        seenIds.add(entry.documentId);
+        tabs.push(entry);
+      }
+
+      if (nextUntitledNumber <= maxUntitledNumber) {
+        throw new Error("untitled label state is inconsistent");
+      }
+      session.nextUntitledNumber = nextUntitledNumber;
+
+      if (!hasOwn(value, "activeDocumentId") || value.activeDocumentId === null || value.activeDocumentId === undefined) {
+        throw new Error("active document id is required");
+      }
+      if (typeof value.activeDocumentId !== "string" || value.activeDocumentId.length === 0) {
+        throw new TypeError("active document id must be a non-empty string");
+      }
+      if (!seenIds.has(value.activeDocumentId)) {
+        throw new Error("unknown active document id");
+      }
+
+      for (const tab of tabs) {
+        const stub = createLoadingStub(tab);
+        session.documents.set(stub.id, stub);
+        session.tabOrder.push(stub.id);
+      }
+
+      session.activeDocumentId = value.activeDocumentId;
+      return session;
+    }
+  }
+
+  return {
+    SessionModel,
+    SESSION_SCHEMA_VERSION,
+  };
+});
+</script>
+<script>(function initRecoveryScheduler(root, factory) {
+  const api = factory();
+
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== "undefined" ? window : null, () => {
+  "use strict";
+
+  const IDLE_DELAY_MS = 1000;
+  const MAXIMUM_DELAY_MS = 10000;
+
+  function requireDocumentId(id) {
+    if (typeof id !== "string" || id.length === 0) {
+      throw new TypeError("document id must be a non-empty string");
+    }
+    return id;
+  }
+
+  function requireRevision(revision) {
+    if (!Number.isSafeInteger(revision)) {
+      throw new TypeError("revision must be a safe integer");
+    }
+    if (revision < 0) throw new RangeError("revision must be non-negative");
+    return revision;
+  }
+
+  function normalizeError(reason) {
+    if (reason instanceof Error) return reason;
+    return new Error(String(reason));
+  }
+
+  function forgottenError(id) {
+    return new Error(`recovery was forgotten for document ${id}`);
+  }
+
+  function defaultClock() {
+    return {
+      setTimeout(callback, delay) {
+        return setTimeout(callback, delay);
+      },
+      clearTimeout(timer) {
+        clearTimeout(timer);
+      },
+    };
+  }
+
+  class RecoveryScheduler {
+    constructor({ clock = defaultClock(), write, onStatus } = {}) {
+      if (typeof write !== "function") throw new TypeError("write must be a function");
+      if (!clock || typeof clock.setTimeout !== "function" || typeof clock.clearTimeout !== "function") {
+        throw new TypeError("clock must provide setTimeout and clearTimeout");
+      }
+      if (onStatus !== undefined && typeof onStatus !== "function") {
+        throw new TypeError("onStatus must be a function");
+      }
+
+      this._clock = clock;
+      this._write = write;
+      this._onStatus = onStatus || null;
+      this._entries = new Map();
+    }
+
+    changed(id, revision) {
+      requireDocumentId(id);
+      requireRevision(revision);
+
+      const entry = this._entry(id);
+      if (entry.forgotten) throw new Error(`document ${id} is being forgotten`);
+      if (revision <= entry.latestRevision) return false;
+
+      entry.latestRevision = revision;
+      if (entry.failed) return true;
+      this._setStatus(entry, "pending");
+      if (!this._isActive(entry)
+          || entry.failed
+          || entry.inFlight
+          || entry.latestRevision <= entry.persistedRevision) return true;
+      this._schedule(entry);
+      return true;
+    }
+
+    flush(id, revision) {
+      requireDocumentId(id);
+      if (revision !== undefined) requireRevision(revision);
+
+      let entry = this._entries.get(id);
+      if (!entry) {
+        if (revision === undefined) return Promise.resolve();
+        entry = this._entry(id);
+      }
+      if (entry.forgotten) {
+        return Promise.reject(forgottenError(id));
+      }
+
+      if (revision !== undefined && revision > entry.latestRevision) {
+        entry.latestRevision = revision;
+        if (!entry.failed) {
+          this._setStatus(entry, "pending");
+          if (!this._isActive(entry)) return Promise.reject(forgottenError(id));
+        }
+      }
+
+      const targetRevision = entry.latestRevision;
+      if (targetRevision < 0 || targetRevision <= entry.persistedRevision) {
+        this._clearTimers(entry);
+        return Promise.resolve();
+      }
+      return this._flushExisting(entry, targetRevision);
+    }
+
+    async flushAll() {
+      const entries = [...this._entries.values()].filter((entry) => !entry.forgotten);
+      const results = await Promise.allSettled(
+        entries.map((entry) => this._flushExisting(entry, entry.latestRevision, true)),
+      );
+      const failures = [];
+
+      for (let index = 0; index < results.length; index += 1) {
+        if (results[index].status === "rejected") {
+          failures.push({ id: entries[index].id, error: normalizeError(results[index].reason) });
+        }
+      }
+
+      if (failures.length > 0) {
+        const ids = failures.map((failure) => failure.id);
+        const message = `Failed to flush recovery for document IDs: ${ids.join(", ")}`;
+        const error = typeof AggregateError === "function"
+          ? new AggregateError(failures.map((failure) => failure.error), message)
+          : new Error(message);
+        error.ids = ids;
+        throw error;
+      }
+    }
+
+    forget(id) {
+      requireDocumentId(id);
+      const entry = this._entries.get(id);
+      if (!entry || entry.forgotten) return false;
+
+      entry.forgotten = true;
+      this._clearTimers(entry);
+      this._rejectWaiters(entry, forgottenError(id));
+      if (!entry.inFlight) this._entries.delete(id);
+      return true;
+    }
+
+    retry(id) {
+      requireDocumentId(id);
+      const entry = this._entries.get(id);
+      if (!entry || entry.forgotten || !entry.failed) return false;
+
+      entry.failed = null;
+      this._setStatus(entry, "pending");
+      if (!this._isActive(entry)) return Promise.reject(forgottenError(id));
+      return this._flushExisting(entry, entry.latestRevision);
+    }
+
+    _entry(id) {
+      let entry = this._entries.get(id);
+      if (entry) return entry;
+
+      entry = {
+        id,
+        latestRevision: -1,
+        persistedRevision: -1,
+        idleTimer: null,
+        maximumTimer: null,
+        inFlight: null,
+        failed: null,
+        forgotten: false,
+        status: "clean",
+        waiters: new Set(),
+      };
+      this._entries.set(id, entry);
+      return entry;
+    }
+
+    _schedule(entry) {
+      if (entry.idleTimer !== null) this._clock.clearTimeout(entry.idleTimer);
+      entry.idleTimer = this._clock.setTimeout(() => {
+        entry.idleTimer = null;
+        this._timerFlush(entry);
+      }, IDLE_DELAY_MS);
+
+      if (entry.maximumTimer === null) {
+        entry.maximumTimer = this._clock.setTimeout(() => {
+          entry.maximumTimer = null;
+          this._timerFlush(entry);
+        }, MAXIMUM_DELAY_MS);
+      }
+    }
+
+    _timerFlush(entry) {
+      if (!this._isActive(entry)) return;
+      if (entry.failed) {
+        this._clearTimers(entry);
+        return;
+      }
+      this._clearTimers(entry);
+      if (entry.latestRevision > entry.persistedRevision) this._start(entry);
+    }
+
+    _flushExisting(entry, targetRevision, skipInactive = false) {
+      if (!this._isActive(entry)) {
+        return skipInactive ? Promise.resolve() : Promise.reject(forgottenError(entry.id));
+      }
+      if (entry.failed) return Promise.reject(entry.failed);
+      this._clearTimers(entry);
+      if (targetRevision <= entry.persistedRevision) return Promise.resolve();
+
+      const promise = new Promise((resolve, reject) => {
+        entry.waiters.add({ revision: targetRevision, resolve, reject });
+      });
+      this._start(entry);
+      return promise;
+    }
+
+    _start(entry) {
+      if (entry.inFlight || !this._isActive(entry)) return;
+
+      let resolveOperation;
+      let rejectOperation;
+      const operation = new Promise((resolve, reject) => {
+        resolveOperation = resolve;
+        rejectOperation = reject;
+      });
+      entry.inFlight = operation;
+      this._run(entry).then(resolveOperation, rejectOperation);
+      operation.then(
+        () => this._finish(entry, operation),
+        () => this._finish(entry, operation),
+      );
+    }
+
+    async _run(entry) {
+      while (this._isActive(entry) && entry.latestRevision > entry.persistedRevision) {
+        const revision = entry.latestRevision;
+        this._clearTimers(entry);
+        this._setStatus(entry, "writing");
+        if (!this._isActive(entry)) return;
+
+        try {
+          await this._write(entry.id, revision);
+        } catch (reason) {
+          if (!this._isActive(entry)) return;
+          const error = normalizeError(reason);
+          this._clearTimers(entry);
+          entry.failed = error;
+          this._rejectWaiters(entry, error);
+          this._setStatus(entry, "failed", error);
+          throw error;
+        }
+
+        if (!this._isActive(entry)) return;
+        entry.persistedRevision = Math.max(entry.persistedRevision, revision);
+
+        if (entry.latestRevision > entry.persistedRevision) {
+          this._setStatus(entry, "pending");
+          if (!this._isActive(entry)) return;
+        }
+      }
+
+      if (this._isActive(entry)) {
+        this._setStatus(entry, "clean");
+        if (this._isActive(entry) && entry.latestRevision <= entry.persistedRevision) {
+          this._resolveWaiters(entry);
+        }
+      }
+    }
+
+    _finish(entry, operation) {
+      if (entry.inFlight !== operation) return;
+      entry.inFlight = null;
+      if (entry.forgotten && this._entries.get(entry.id) === entry) {
+        this._entries.delete(entry.id);
+      } else if (this._isActive(entry) && !entry.failed && entry.latestRevision > entry.persistedRevision) {
+        this._start(entry);
+      }
+    }
+
+    _resolveWaiters(entry) {
+      for (const waiter of entry.waiters) {
+        if (waiter.revision <= entry.persistedRevision) {
+          entry.waiters.delete(waiter);
+          waiter.resolve();
+        }
+      }
+    }
+
+    _rejectWaiters(entry, error) {
+      for (const waiter of entry.waiters) {
+        entry.waiters.delete(waiter);
+        waiter.reject(error);
+      }
+    }
+
+    _clearTimers(entry) {
+      if (entry.idleTimer !== null) {
+        this._clock.clearTimeout(entry.idleTimer);
+        entry.idleTimer = null;
+      }
+      if (entry.maximumTimer !== null) {
+        this._clock.clearTimeout(entry.maximumTimer);
+        entry.maximumTimer = null;
+      }
+    }
+
+    _isActive(entry) {
+      return !entry.forgotten && this._entries.get(entry.id) === entry;
+    }
+
+    _setStatus(entry, status, error) {
+      if (!this._isActive(entry) || entry.status === status) return;
+      entry.status = status;
+      if (!this._onStatus) return;
+      try {
+        this._onStatus(entry.id, status, error);
+      } catch (_) {
+        // Status observers must not interfere with recovery durability.
+      }
+    }
+  }
+
+  return { RecoveryScheduler };
+});
+</script>
+<script>(function initSessionController(root, factory) {
+  const api = factory(root);
+
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== "undefined" ? window : null, (root) => {
+  "use strict";
+
+  const LEGACY_DRAFT_KEY = "mdedit-draft-v1";
+  const DEFAULT_INACTIVE_LOAD_CONCURRENCY = 4;
+
+  let DocumentModel;
+  let SessionModel;
+  if (typeof module !== "undefined" && module.exports) {
+    ({ DocumentModel } = require("./document-model.js"));
+    ({ SessionModel } = require("./session-model.js"));
+  } else if (root && root.MDEdit && root.MDEdit.DocumentModel && root.MDEdit.SessionModel) {
+    ({ DocumentModel, SessionModel } = root.MDEdit);
+  } else {
+    throw new Error("DocumentModel and SessionModel are required");
+  }
+
+  function normalizeError(reason) {
+    return reason instanceof Error ? reason : new Error(String(reason));
+  }
+
+  function requireObject(value, name) {
+    if (!value || typeof value !== "object") throw new TypeError(`${name} is required`);
+    return value;
+  }
+
+  function requireFunction(value, name) {
+    if (typeof value !== "function") throw new TypeError(`${name} must be a function`);
+    return value;
+  }
+
+  function displayNameFromPath(path) {
+    const parts = path.split(/[/\\]/);
+    return parts[parts.length - 1] || "untitled.md";
+  }
+
+  function onceAsync(callback) {
+    if (typeof callback !== "function") return null;
+    let called = false;
+    let result = null;
+    return function unsubscribeOnce() {
+      if (called) return result;
+      called = true;
+      try {
+        result = Promise.resolve(callback());
+      } catch (reason) {
+        result = Promise.reject(reason);
+      }
+      return result;
+    };
+  }
+
+  class SessionController {
+    constructor({
+      io,
+      scheduler,
+      view,
+      dialogs,
+      legacyStorage,
+      hashText,
+      idFactory,
+      inactiveLoadConcurrency = DEFAULT_INACTIVE_LOAD_CONCURRENCY,
+      renderer,
+      exporter,
+    } = {}) {
+      this.io = requireObject(io, "io");
+      this.scheduler = requireObject(scheduler, "scheduler");
+      this.view = requireObject(view, "view");
+      this.dialogs = requireObject(dialogs, "dialogs");
+      this.legacyStorage = requireObject(legacyStorage, "legacyStorage");
+      this.hashText = requireFunction(hashText, "hashText");
+      this.idFactory = requireFunction(idFactory, "idFactory");
+      if (!Number.isSafeInteger(inactiveLoadConcurrency) || inactiveLoadConcurrency < 1) {
+        throw new TypeError("inactiveLoadConcurrency must be a positive safe integer");
+      }
+
+      this.inactiveLoadConcurrency = inactiveLoadConcurrency;
+      this.renderer = renderer;
+      this.exporter = exporter;
+      this.session = null;
+
+      this._started = false;
+      this._unlisten = null;
+      this._listenerReady = Promise.resolve(null);
+      this._listenerFailure = null;
+      this._pendingOperations = [];
+      this._activeOperations = new Set();
+      this._operationChain = Promise.resolve();
+      this._queuedOperationCount = 0;
+      this._manifestWrites = Promise.resolve();
+      this._restorePromise = null;
+      this._restoreControl = null;
+      this._restoreState = "idle";
+      this._localSessionEstablished = false;
+      this._lifecycleToken = 0;
+      this._disposed = false;
+      this._disposePromise = null;
+      this._loadQueue = [];
+      this._loadingIds = new Set();
+      this._loadPriority = [];
+
+      this.start().catch(() => {});
+    }
+
+    start() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._started) return this._listenerReady;
+      this._started = true;
+
+      const source = typeof this.io.listenFileOpened === "function"
+        ? this.io
+        : (typeof this.io.onFileOpened === "function" ? this.io : this.dialogs);
+      const listen = source === this.io
+        ? (this.io.listenFileOpened || this.io.onFileOpened)
+        : (this.dialogs.listenFileOpened || this.dialogs.onFileOpened);
+      if (typeof listen !== "function") return this._listenerReady;
+
+      let registration;
+      try {
+        registration = listen.call(source, (event) => this._handleFileOpened(event));
+      } catch (reason) {
+        const error = normalizeError(reason);
+        this._started = false;
+        this._listenerFailure = error;
+        this._listenerReady = Promise.resolve(null);
+        const rejected = Promise.reject(error);
+        rejected.catch(() => {});
+        return rejected;
+      }
+      const immediateUnlisten = typeof registration === "function" ? onceAsync(registration) : null;
+      if (immediateUnlisten) this._unlisten = immediateUnlisten;
+      this._listenerReady = Promise.resolve(registration).then(
+        (unlisten) => {
+          const guardedUnlisten = immediateUnlisten || onceAsync(unlisten);
+          if (this._disposed) {
+            if (guardedUnlisten) {
+              try {
+                Promise.resolve(guardedUnlisten()).catch(() => {});
+              } catch (_) {
+                // Disposal remains complete even if late unsubscription fails.
+              }
+            }
+            return null;
+          }
+          this._unlisten = guardedUnlisten;
+          return guardedUnlisten;
+        },
+        (reason) => {
+          const error = normalizeError(reason);
+          if (this._disposed) throw error;
+          this._started = false;
+          this._unlisten = null;
+          this._listenerFailure = error;
+          this._listenerReady = Promise.resolve(null);
+          throw error;
+        },
+      );
+      this._listenerReady.catch(() => {});
+      return this._listenerReady;
+    }
+
+    restore() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._restorePromise) return this._restorePromise;
+      if (this._restoreState === "restored") return Promise.resolve(this.session);
+      this._restoreState = "restoring";
+      const token = ++this._lifecycleToken;
+      let resolveRestore;
+      let rejectRestore;
+      let settled = false;
+      const publicPromise = new Promise((resolve, reject) => {
+        resolveRestore = resolve;
+        rejectRestore = reject;
+      });
+      publicPromise.catch(() => {});
+      const control = {
+        token,
+        promise: publicPromise,
+        resolve(value) {
+          if (settled) return;
+          settled = true;
+          resolveRestore(value);
+        },
+        reject(reason) {
+          if (settled) return;
+          settled = true;
+          rejectRestore(reason);
+        },
+      };
+      this._restoreControl = control;
+      this._restorePromise = publicPromise;
+      Promise.resolve(this._restore(token)).then(
+        (session) => {
+          if (this._restoreControl === control) this._restoreControl = null;
+          control.resolve(session);
+        },
+        (reason) => {
+          if (this._isLifecycleActive(token)) {
+            this._restoreState = "idle";
+            this._restorePromise = null;
+            this._rejectPendingOperations(reason);
+          }
+          if (this._restoreControl === control) this._restoreControl = null;
+          control.reject(reason);
+        },
+      );
+      return publicPromise;
+    }
+
+    async _restore(token) {
+      const earlierListenerFailure = this._listenerFailure;
+      this._listenerFailure = null;
+      try {
+        await this.start();
+      } catch (reason) {
+        if (this._isLifecycleActive(token)) {
+          if (this._listenerFailure === reason) this._listenerFailure = null;
+          this._showRecoveryError(reason, { phase: "file-open-listener" });
+        }
+      }
+      if (earlierListenerFailure) {
+        this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
+      }
+      if (!this._isLifecycleActive(token)) return this.session;
+      if (this._localSessionEstablished) return this._finishRestore(token);
+
+      let rawManifest;
+      try {
+        rawManifest = await this.io.loadRecoveryManifest();
+      } catch (reason) {
+        if (!this._isLifecycleActive(token)) return this.session;
+        this._showRecoveryError(reason, { phase: "manifest" });
+        this._assignEmptySession(token);
+        return this._finishRestore(token);
+      }
+      if (!this._isLifecycleActive(token)) return this.session;
+
+      if (rawManifest === null) {
+        await this.importLegacyDraft(token);
+        if (!this._isLifecycleActive(token)) return this.session;
+        if (!this.session) this._assignEmptySession(token);
+      } else {
+        try {
+          await this.restoreManifest(rawManifest, token);
+        } catch (reason) {
+          if (!this._isLifecycleActive(token)) return this.session;
+          this._showRecoveryError(reason, { phase: "manifest" });
+          this._assignEmptySession(token);
+        }
+      }
+      return this._finishRestore(token);
+    }
+
+    async _finishRestore(token) {
+      try {
+        while (this._isLifecycleActive(token)) {
+          while (this._pendingOperations.length > 0) {
+            const request = this._pendingOperations.shift();
+            this._activeOperations.add(request);
+            try {
+              request.resolve(await request.run(token));
+            } catch (reason) {
+              request.reject(reason);
+            } finally {
+              this._activeOperations.delete(request);
+            }
+            if (!this._isLifecycleActive(token)) return this.session;
+          }
+
+          if (!this.session || this.session.documents.size === 0) this._createFreshSession(token);
+          if (this._pendingOperations.length > 0) continue;
+
+          // No asynchronous boundary is allowed between this final empty-queue
+          // check and publishing restored. Follow-up work therefore either joins
+          // the drain above or enters the normal serialized operation queue.
+          this._restoreState = "restored";
+          return this.session;
+        }
+        return this.session;
+      } catch (reason) {
+        if (this._isLifecycleActive(token)) {
+          this._rejectPendingOperations(reason);
+          this._restoreState = "idle";
+        }
+        throw reason;
+      }
+    }
+
+    async restoreManifest(rawManifest, token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+      const manifest = typeof rawManifest === "string" ? JSON.parse(rawManifest) : rawManifest;
+      const session = SessionModel.fromManifest(manifest, { idFactory: this.idFactory });
+      if (!this._isLifecycleActive(token)) return session;
+      this.session = session;
+
+      for (const stub of session.documents.values()) stub.loadStatus = "loading";
+      this._renderSession();
+
+      const initiallyActiveId = session.activeDocumentId;
+      await this.loadSnapshot(initiallyActiveId, token, session);
+      if (!this._isLifecycleActive(token) || this.session !== session) return session;
+
+      const inactiveIds = session.tabOrder.filter((id) => id !== initiallyActiveId);
+      const prioritizedIds = this._loadPriority.filter((id) => inactiveIds.includes(id));
+      const prioritizedSet = new Set(prioritizedIds);
+      this._loadQueue = [
+        ...prioritizedIds,
+        ...inactiveIds.filter((id) => !prioritizedSet.has(id)),
+      ];
+      this._loadPriority = [];
+
+      const workerCount = Math.min(this.inactiveLoadConcurrency, this._loadQueue.length);
+      const workers = Array.from({ length: workerCount }, () => this._loadWorker(token, session));
+      await Promise.all(workers);
+      if (!this._isLifecycleActive(token) || this.session !== session) return session;
+      this._loadQueue = [];
+      return session;
+    }
+
+    async _loadWorker(token, session) {
+      while (this._isLifecycleActive(token) && this.session === session && this._loadQueue.length > 0) {
+        const id = this._loadQueue.shift();
+        this._loadingIds.add(id);
+        try {
+          await this.loadSnapshot(id, token, session);
+        } finally {
+          if (this._isLifecycleActive(token)) this._loadingIds.delete(id);
+        }
+      }
+    }
+
+    async loadSnapshot(documentOrId, token = this._lifecycleToken, session = this.session) {
+      if (!this._isLifecycleActive(token)) return null;
+      if (!session) throw new Error("session has not been restored");
+      const id = typeof documentOrId === "string" ? documentOrId : documentOrId && documentOrId.id;
+      const stub = session.documents.get(id);
+      if (!stub) throw new Error("unknown document id");
+      const expectedRevision = stub.snapshotRevision;
+
+      try {
+        const rawSnapshot = await this.io.loadRecoveryDocument(id, expectedRevision);
+        if (!this._isLifecycleActive(token) || this.session !== session) return null;
+        const value = typeof rawSnapshot === "string" ? JSON.parse(rawSnapshot) : rawSnapshot;
+        const document = DocumentModel.fromSnapshot(value);
+        if (document.id !== id) throw new Error(`recovery snapshot identity mismatch for ${id}`);
+        if (document.snapshotRevision !== expectedRevision) {
+          throw new Error(`recovery snapshot revision mismatch for ${id}`);
+        }
+        const contentSha256 = await this.hashText(document.content);
+        if (!this._isLifecycleActive(token) || this.session !== session) return null;
+        document.reconcileDirty(contentSha256, document.editRevision);
+
+        const canonicalOwner = document.canonicalPath === null
+          ? null
+          : session.findByCanonicalPath(document.canonicalPath);
+        if (canonicalOwner && canonicalOwner.id !== id) {
+          throw new Error(`recovery snapshot canonical path is already owned by ${canonicalOwner.id}`);
+        }
+        if (session.documents.get(id) !== stub) {
+          throw new Error(`recovery snapshot identity changed while loading ${id}`);
+        }
+
+        document.loadStatus = "loaded";
+        session.documents.set(id, document);
+        this._renderSession();
+        if (session.activeDocumentId === id) this._renderDocument(document);
+        return document;
+      } catch (reason) {
+        if (!this._isLifecycleActive(token) || this.session !== session) return null;
+        const error = normalizeError(reason);
+        if (session.documents.get(id) === stub) {
+          stub.loadStatus = "failed";
+          stub.loadError = error;
+        }
+        this._renderSession();
+        if (session.activeDocumentId === id) this._renderDocument(stub);
+        this._showRecoveryError(error, {
+          phase: "snapshot",
+          documentId: id,
+          displayName: stub.displayName,
+          snapshotRevision: expectedRevision,
+        });
+        return null;
+      }
+    }
+
+    async importLegacyDraft(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return null;
+      const previousSession = this.session;
+      let document = null;
+      let durable = false;
+      try {
+        const rawDraft = this.legacyStorage.getItem(LEGACY_DRAFT_KEY);
+        if (!rawDraft) return null;
+        const draft = JSON.parse(rawDraft);
+        if (!draft || typeof draft !== "object" || Array.isArray(draft)
+            || typeof draft.text !== "string" || !draft.text.trim()) {
+          throw new TypeError("invalid legacy draft");
+        }
+
+        const savedContentSha256 = await this.hashText("");
+        if (!this._isLifecycleActive(token)) return null;
+        document = new DocumentModel({
+          id: this.idFactory(),
+          displayName: typeof draft.name === "string" && draft.name.length > 0 ? draft.name : "untitled.md",
+          path: null,
+          canonicalPath: null,
+          content: draft.text,
+          editRevision: 1,
+          persistedRevision: -1,
+          snapshotRevision: 0,
+          savedContentSha256,
+          expectedDiskSha256: null,
+          fileStatus: "normal",
+          dirty: true,
+          recoveryStatus: "pending",
+        });
+        const migrationSession = new SessionModel({ idFactory: this.idFactory });
+        migrationSession.add(document);
+        this.session = migrationSession;
+        this.scheduler.changed(document.id, document.editRevision);
+        await this.scheduler.flush(document.id, document.editRevision);
+        if (!this._isLifecycleActive(token)) return null;
+        await this._persistManifestNow(token);
+        if (!this._isLifecycleActive(token)) return null;
+        durable = true;
+        try {
+          this.legacyStorage.removeItem(LEGACY_DRAFT_KEY);
+        } catch (reason) {
+          this._showRecoveryError(reason, {
+            phase: "legacy-cleanup",
+            documentId: document.id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        }
+        this._renderSession();
+        this._renderDocument(document);
+        return document;
+      } catch (reason) {
+        if (durable || !this._isLifecycleActive(token)) return document;
+        if (document && typeof this.scheduler.forget === "function") {
+          try {
+            this.scheduler.forget(document.id);
+          } catch (_) {
+            // Rollback remains best-effort after the migration failure.
+          }
+        }
+        this.session = previousSession;
+        this._showRecoveryError(reason, {
+          phase: "legacy-migration",
+          documentId: document && document.id,
+          displayName: document && document.displayName,
+          snapshotRevision: document && document.snapshotRevision,
+        });
+        return null;
+      }
+    }
+
+    openPaths(paths) {
+      if (this._disposed) {
+        return Promise.resolve(this._disposedOpenResult(Array.isArray(paths) ? paths : []));
+      }
+      if (!Array.isArray(paths)) throw new TypeError("paths must be an array");
+      const copiedPaths = [...paths];
+      return this._scheduleOperation(
+        (token) => this._openPathsNow(copiedPaths, token),
+        (resolve) => resolve(this._disposedOpenResult(copiedPaths)),
+      );
+    }
+
+    async _openPathsNow(paths, token = this._lifecycleToken) {
+      const opened = [];
+      const openedIds = new Set();
+      const failed = [];
+
+      for (const path of paths) {
+        if (!this._isLifecycleActive(token)) {
+          failed.push({ path, error: new Error("session controller is disposed") });
+          continue;
+        }
+        try {
+          const result = await this.io.readDocument(path);
+          if (!this._isLifecycleActive(token)) {
+            failed.push({ path, error: new Error("session controller is disposed") });
+            continue;
+          }
+          const document = this._openReadResultNow(result, token);
+          if (!openedIds.has(document.id)) {
+            openedIds.add(document.id);
+            opened.push(document);
+          }
+        } catch (reason) {
+          const error = normalizeError(reason);
+          failed.push({ path, error });
+          this._showOpenError(path, error);
+        }
+      }
+      return { opened, failed };
+    }
+
+    _disposedOpenResult(paths) {
+      return {
+        opened: [],
+        failed: paths.map((path) => ({ path, error: new Error("session controller is disposed") })),
+      };
+    }
+
+    _scheduleOperation(run, onDispose) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      const request = this._createOperationRequest(run, onDispose);
+      if (this._restoreState === "restored") return this._queueRestoredOperation(request);
+
+      this._pendingOperations.push(request);
+
+      if (this._restoreState === "idle") {
+        this.restore().catch((reason) => {
+          const index = this._pendingOperations.indexOf(request);
+          if (index >= 0) this._pendingOperations.splice(index, 1);
+          request.reject(reason);
+        });
+      }
+      return request.promise;
+    }
+
+    _createOperationRequest(run, onDispose) {
+      let request;
+      const promise = new Promise((resolvePromise, rejectPromise) => {
+        let settled = false;
+        request = {
+          run,
+          promise: null,
+          isSettled() { return settled; },
+          resolve(value) {
+            if (settled) return;
+            settled = true;
+            resolvePromise(value);
+          },
+          reject(reason) {
+            if (settled) return;
+            settled = true;
+            rejectPromise(reason);
+          },
+          dispose() {
+            if (settled) return;
+            if (onDispose) onDispose(request.resolve, request.reject);
+            else request.reject(new Error("session controller is disposed"));
+          },
+        };
+      });
+      promise.catch(() => {});
+      request.promise = promise;
+      return request;
+    }
+
+    _queueRestoredOperation(request) {
+      const token = this._lifecycleToken;
+      this._queuedOperationCount += 1;
+      this._activeOperations.add(request);
+      const operation = this._operationChain.catch(() => {}).then(async () => {
+        let failed = false;
+        let result;
+        try {
+          if (!request.isSettled()) {
+            if (!this._isLifecycleActive(token)) request.dispose();
+            else result = await request.run(token);
+          }
+        } catch (reason) {
+          failed = true;
+          result = reason;
+        }
+
+        // Clear busy bookkeeping before exposing completion to the caller, so
+        // a follow-up synchronous document mutation has deterministic timing.
+        this._activeOperations.delete(request);
+        this._queuedOperationCount -= 1;
+        if (failed) request.reject(result);
+        else request.resolve(result);
+      });
+      this._operationChain = operation;
+      return request.promise;
+    }
+
+    _rejectPendingOperations(reason) {
+      while (this._pendingOperations.length > 0) {
+        this._pendingOperations.shift().reject(reason);
+      }
+    }
+
+    _canMutateSynchronously() {
+      const sessionIsUsable = this._restoreState === "restored"
+        || (this._restoreState === "idle" && this._localSessionEstablished);
+      return !this._disposed
+        && sessionIsUsable
+        && this._queuedOperationCount === 0;
+    }
+
+    openReadResult(result) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (!result || typeof result !== "object") throw new TypeError("read result is required");
+      if (typeof result.canonicalPath !== "string" || result.canonicalPath.length === 0) {
+        throw new TypeError("read result canonicalPath must be a non-empty string");
+      }
+      if (this._restoreState === "idle" && !this._localSessionEstablished) {
+        return this._openLocalReadResult(result);
+      }
+      if (this._canMutateSynchronously()) return this._openReadResultNow(result, this._lifecycleToken);
+      // Active recovery is the exceptional asynchronous phase: queue the model
+      // creation so recovery cannot overwrite it.
+      return this._scheduleOperation((token) => this._openReadResultNow(result, token));
+    }
+
+    _openReadResultNow(result, token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+      const session = this._ensureSession();
+      const existing = session.findByCanonicalPath(result.canonicalPath);
+      if (existing) {
+        this.activateDocument(existing.id);
+        return existing;
+      }
+      const document = this._documentFromReadResult(result);
+      session.add(document);
+      this._renderSession();
+      this._renderDocument(document);
+      return document;
+    }
+
+    _documentFromReadResult(result) {
+      if (typeof result.path !== "string" || result.path.length === 0) {
+        throw new TypeError("read result path must be a non-empty string");
+      }
+      return new DocumentModel({
+        id: this.idFactory(),
+        displayName: displayNameFromPath(result.path),
+        path: result.path,
+        canonicalPath: result.canonicalPath,
+        content: result.content,
+        editRevision: 0,
+        persistedRevision: -1,
+        snapshotRevision: 0,
+        savedContentSha256: result.sha256,
+        expectedDiskSha256: result.sha256,
+        fileStatus: "normal",
+        dirty: false,
+        recoveryStatus: "clean",
+      });
+    }
+
+    _openLocalReadResult(result) {
+      const candidate = new SessionModel({ idFactory: this.idFactory });
+      const document = this._documentFromReadResult(result);
+      candidate.add(document);
+      this._commitLocalSession(candidate);
+      this._renderSession();
+      this._renderDocument(document);
+      return document;
+    }
+
+    activateDocument(id) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session) throw new Error("session has not been created");
+      const document = this.session.activate(id);
+      if (!(document instanceof DocumentModel)) {
+        const queuedIndex = this._loadQueue.indexOf(id);
+        if (queuedIndex >= 0) {
+          this._loadQueue.splice(queuedIndex, 1);
+          this._loadQueue.unshift(id);
+        } else if (!this._loadingIds.has(id)) {
+          const priorityIndex = this._loadPriority.indexOf(id);
+          if (priorityIndex >= 0) this._loadPriority.splice(priorityIndex, 1);
+          this._loadPriority.unshift(id);
+        }
+      }
+      this._renderSession();
+      this._renderDocument(document);
+      return document;
+    }
+
+    activate(id) {
+      return this.activateDocument(id);
+    }
+
+    activeDocument() {
+      if (this._disposed) return null;
+      if (!this.session || this.session.activeDocumentId === null) return null;
+      return this.session.documents.get(this.session.activeDocumentId) || null;
+    }
+
+    createUntitled() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._restoreState === "idle" && !this._localSessionEstablished) {
+        const candidate = new SessionModel({ idFactory: this.idFactory });
+        const document = candidate.createUntitled();
+        this._commitLocalSession(candidate);
+        this._renderSession();
+        this._renderDocument(document);
+        return document;
+      }
+      if (this._canMutateSynchronously()) return this._createUntitledNow(this._lifecycleToken);
+      // Active recovery is the exceptional asynchronous phase: queue the model
+      // creation until recovery owns a stable session.
+      return this._scheduleOperation((token) => this._createUntitledNow(token));
+    }
+
+    _createUntitledNow(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+      const document = this._ensureSession().createUntitled();
+      this._renderSession();
+      this._renderDocument(document);
+      return document;
+    }
+
+    persistManifest() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._localSessionEstablished && this._restoreState !== "restored") {
+        if (this._restoreState === "idle") this.restore();
+        return this._scheduleOperation((token) => this._persistManifestNow(token));
+      }
+      if (this._restoreState !== "restored") {
+        const restoring = this._restoreState === "idle" ? this.restore() : this._restorePromise;
+        return restoring.then(() => {
+          if (this._disposed) throw new Error("session controller is disposed");
+          return this._scheduleOperation((token) => this._persistManifestNow(token));
+        });
+      }
+      return this._scheduleOperation((token) => this._persistManifestNow(token));
+    }
+
+    _persistManifestNow(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return Promise.reject(new Error("session controller is disposed"));
+      if (!this.session) return Promise.reject(new Error("session has not been created"));
+      const value = this.session.toManifest();
+      const generation = value.generation;
+      const json = JSON.stringify(value);
+      const write = this._manifestWrites.catch(() => {}).then(
+        () => {
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          return this.io.writeRecoveryManifest(generation, json);
+        },
+      );
+      this._manifestWrites = write;
+      return write;
+    }
+
+    _ensureSession() {
+      if (!this.session) this.session = new SessionModel({ idFactory: this.idFactory });
+      return this.session;
+    }
+
+    _commitLocalSession(session) {
+      this.session = session;
+      this._localSessionEstablished = true;
+    }
+
+    _createFreshSession(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return null;
+      this.session = new SessionModel({ idFactory: this.idFactory });
+      return this._createUntitledNow(token);
+    }
+
+    _assignEmptySession(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return null;
+      this.session = new SessionModel({ idFactory: this.idFactory });
+      return this.session;
+    }
+
+    _renderSession() {
+      if (this._disposed) return;
+      if (typeof this.view.renderSession === "function") this.view.renderSession(this.session);
+      else if (typeof this.view.renderTabs === "function") this.view.renderTabs(this.session);
+    }
+
+    _renderDocument(document) {
+      if (this._disposed) return;
+      if (typeof this.view.renderDocument === "function") this.view.renderDocument(document, this.session);
+      else if (typeof this.view.showDocument === "function") this.view.showDocument(document, this.session);
+      else if (typeof this.view.activateDocument === "function") this.view.activateDocument(document, this.session);
+    }
+
+    _showRecoveryError(reason, context) {
+      const error = normalizeError(reason);
+      const details = {
+        ...context,
+        error,
+        message: error.message,
+        recoveryDirectory: null,
+      };
+      const reporting = Promise.resolve().then(async () => {
+        try {
+          details.recoveryDirectory = await this.io.recoveryDirectory();
+        } catch (_) {
+          // The original recovery failure remains the useful error.
+        }
+        if (this._disposed || typeof this.view.showRecoveryError !== "function") return;
+        try {
+          Promise.resolve(this.view.showRecoveryError(details)).catch(() => {});
+        } catch (_) {
+          // Recovery presentation is best-effort and cannot block restoration.
+        }
+      });
+      reporting.catch(() => {});
+      return details;
+    }
+
+    _showOpenError(path, error) {
+      if (typeof this.dialogs.showOpenError !== "function") return;
+      try {
+        Promise.resolve(this.dialogs.showOpenError(path, error)).catch(() => {});
+      } catch (_) {
+        // Dialog failures must not block the remaining selected files.
+      }
+    }
+
+    _handleFileOpened(event) {
+      const path = typeof event === "string" ? event : event && event.payload;
+      if (this._disposed || typeof path !== "string" || path.length === 0) return Promise.resolve();
+      return this.openPaths([path]);
+    }
+
+    dispose() {
+      if (this._disposePromise) return this._disposePromise;
+      this._disposed = true;
+      this._lifecycleToken += 1;
+      this._restoreState = "disposed";
+      this._loadQueue = [];
+      this._loadPriority = [];
+      this._loadingIds.clear();
+      while (this._pendingOperations.length > 0) {
+        this._pendingOperations.shift().dispose();
+      }
+      for (const request of this._activeOperations) request.dispose();
+      this._activeOperations.clear();
+      if (this._restoreControl) {
+        this._restoreControl.reject(new Error("session controller is disposed"));
+        this._restoreControl = null;
+      }
+
+      this._disposePromise = (async () => {
+        const unlisten = this._unlisten;
+        this._unlisten = null;
+        this._started = false;
+        this._listenerReady = Promise.resolve(null);
+        if (typeof unlisten === "function") await Promise.resolve(unlisten());
+      })();
+      return this._disposePromise;
+    }
+
+    destroy() {
+      return this.dispose();
+    }
+
+    _isLifecycleActive(token) {
+      return !this._disposed && token === this._lifecycleToken;
+    }
+  }
+
+  return {
+    SessionController,
+    LEGACY_DRAFT_KEY,
+  };
+});
+</script>
+<script>(function initWorkspaceView(root, factory) {
+  const api = factory();
+
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== "undefined" ? window : null, () => {
+  "use strict";
+
+  const STATUS_BY_FILE_STATE = {
+    "externally-changed": "File changed outside MDedit",
+    missing: "File is missing",
+    "read-error": "File could not be read",
+  };
+
+  function normalizedInteger(value, fallback = 0) {
+    if (!Number.isFinite(value)) return fallback;
+    return Math.max(0, Math.trunc(value));
+  }
+
+  function stableToken(documentId) {
+    return encodeURIComponent(String(documentId));
+  }
+
+  function documentStatus(document) {
+    const statusText = STATUS_BY_FILE_STATE[document && document.fileStatus];
+    if (statusText) {
+      return {
+        statusText: document && document.dirty ? `${statusText}; Unsaved changes` : statusText,
+        statusKind: "conflict",
+      };
+    }
+    if (document && document.dirty) return { statusText: "Unsaved changes", statusKind: "dirty" };
+    return { statusText: "", statusKind: "clean" };
+  }
+
+  function tabDescriptor(document, { activeId = null, index = 0, size = 1 } = {}) {
+    if (!document || typeof document !== "object") throw new TypeError("document is required");
+    const documentId = String(document.id);
+    const displayName = typeof document.displayName === "string" ? document.displayName : "Untitled";
+    const token = stableToken(documentId);
+    const { statusText, statusKind } = documentStatus(document);
+
+    return {
+      documentId,
+      displayName,
+      selected: documentId === activeId,
+      position: normalizedInteger(index) + 1,
+      setSize: Math.max(1, normalizedInteger(size, 1)),
+      statusText,
+      statusKind,
+      closeLabel: `Close ${displayName}`,
+      tabId: `document-tab-${token}`,
+      panelId: `document-panel-${token}`,
+      ariaControls: `document-panel-${token}`,
+    };
+  }
+
+  function captureEditorState(editor) {
+    if (!editor || typeof editor !== "object") {
+      return { selectionStart: 0, selectionEnd: 0, editorScrollTop: 0 };
+    }
+
+    const length = typeof editor.value === "string" ? editor.value.length : 0;
+    const selectionStart = Math.min(length, normalizedInteger(editor.selectionStart));
+    const selectionEnd = Math.min(length, Math.max(selectionStart, normalizedInteger(editor.selectionEnd)));
+    return {
+      selectionStart,
+      selectionEnd,
+      editorScrollTop: normalizedInteger(editor.scrollTop),
+    };
+  }
+
+  function requireElement(value, name) {
+    if (!value || typeof value.addEventListener !== "function") {
+      throw new TypeError(`${name} element is required`);
+    }
+    return value;
+  }
+
+  function callbackFrom(options, intents, names) {
+    for (const name of names) {
+      if (typeof options[name] === "function") return options[name];
+      if (typeof intents[name] === "function") return intents[name];
+    }
+    return () => {};
+  }
+
+  function eventActionTarget(target, attribute) {
+    if (!target) return null;
+    if (typeof target.closest === "function") return target.closest(`[${attribute}]`);
+    let current = target;
+    while (current) {
+      if (typeof current.getAttribute === "function" && current.getAttribute(attribute)) return current;
+      current = current.parentNode;
+    }
+    return null;
+  }
+
+  class WorkspaceView {
+    constructor(options = {}) {
+      const elements = options.elements || options;
+      const intents = options.intents || options.callbacks || {};
+      this.document = options.document || (elements.tabList && elements.tabList.ownerDocument);
+      if (!this.document || typeof this.document.createElement !== "function") {
+        throw new TypeError("document is required");
+      }
+
+      this.tabList = requireElement(elements.tabList, "tab list");
+      this.addButton = elements.addButton || null;
+      this.editorSurfaces = requireElement(elements.editorSurfaces, "editor surfaces");
+      this.dialogBackdrop = elements.dialogBackdrop || null;
+      this.dialog = elements.dialog || null;
+      this.dialogTitle = elements.dialogTitle || null;
+      this.dialogMessage = elements.dialogMessage || null;
+      this.dialogDocuments = elements.dialogDocuments || null;
+      this.dialogActions = elements.dialogActions || null;
+
+      this.onActivate = callbackFrom(options, intents, ["onActivate", "activate", "activateDocument"]);
+      this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
+      this.onAdd = callbackFrom(options, intents, ["onAdd", "add", "addDocument"]);
+      this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
+
+      this._tabs = new Map();
+      this._editors = new Map();
+      this._tabOrder = [];
+      this._activeDocumentId = null;
+      this._dialogState = null;
+      this._disposed = false;
+
+      this._handleTabClick = (event) => this._onTabClick(event);
+      this._handleTabKeydown = (event) => this._onTabKeydown(event);
+      this._handleAdd = () => this.onAdd();
+      this._handleDialogClick = (event) => this._onDialogClick(event);
+      this._handleBackdropClick = () => this.closeDialog(null);
+      this._handleDocumentKeydown = (event) => this._onDocumentKeydown(event);
+
+      this.tabList.addEventListener("click", this._handleTabClick);
+      this.tabList.addEventListener("keydown", this._handleTabKeydown);
+      if (this.addButton) this.addButton.addEventListener("click", this._handleAdd);
+      if (this.dialogActions) this.dialogActions.addEventListener("click", this._handleDialogClick);
+      if (this.dialogBackdrop) this.dialogBackdrop.addEventListener("click", this._handleBackdropClick);
+      this.document.addEventListener("keydown", this._handleDocumentKeydown);
+    }
+
+    renderTabs(documents, activeId) {
+      let ordered = documents;
+      if (documents && !Array.isArray(documents) && Array.isArray(documents.tabOrder) && documents.documents) {
+        ordered = documents.tabOrder.map((id) => documents.documents.get(id)).filter(Boolean);
+        activeId = documents.activeDocumentId;
+      }
+      if (!Array.isArray(ordered)) ordered = [];
+
+      const fragment = [];
+      const tabs = new Map();
+      const order = [];
+      ordered.forEach((document, index) => {
+        const descriptor = tabDescriptor(document, { activeId, index, size: ordered.length });
+        const shell = this.document.createElement("div");
+        shell.className = "document-tab";
+        shell.setAttribute("data-document-id", descriptor.documentId);
+        shell.classList.toggle("is-selected", descriptor.selected);
+        shell.classList.toggle("is-dirty", Boolean(document.dirty));
+        shell.classList.toggle("is-conflict", descriptor.statusKind === "conflict");
+
+        const tab = this.document.createElement("button");
+        tab.setAttribute("type", "button");
+        tab.setAttribute("role", "tab");
+        tab.setAttribute("id", descriptor.tabId);
+        tab.setAttribute("data-action", "activate");
+        tab.setAttribute("data-document-id", descriptor.documentId);
+        tab.setAttribute("aria-controls", descriptor.ariaControls);
+        tab.setAttribute("aria-selected", String(descriptor.selected));
+        tab.setAttribute("aria-posinset", String(descriptor.position));
+        tab.setAttribute("aria-setsize", String(descriptor.setSize));
+        tab.setAttribute("tabindex", descriptor.selected ? "0" : "-1");
+
+        const name = this.document.createElement("span");
+        name.className = "document-tab-name";
+        name.textContent = descriptor.displayName;
+        const status = this.document.createElement("span");
+        status.className = "document-tab-status visually-hidden";
+        status.textContent = descriptor.statusText;
+        tab.append(name, status);
+
+        const close = this.document.createElement("button");
+        close.className = "document-tab-close";
+        close.setAttribute("type", "button");
+        close.setAttribute("data-action", "close");
+        close.setAttribute("data-document-id", descriptor.documentId);
+        close.setAttribute("aria-label", descriptor.closeLabel);
+        close.textContent = "×";
+        shell.append(tab, close);
+        fragment.push(shell);
+        tabs.set(descriptor.documentId, { shell, tab, status, close });
+        order.push(descriptor.documentId);
+      });
+
+      this.tabList.replaceChildren(...fragment);
+      this._tabs = tabs;
+      this._tabOrder = order;
+      this._activeDocumentId = activeId === undefined || activeId === null ? null : String(activeId);
+      return order.length;
+    }
+
+    ensureEditor(document) {
+      if (!document || typeof document !== "object") throw new TypeError("document is required");
+      const documentId = String(document.id);
+      const existing = this._editors.get(documentId);
+      if (existing) return existing.editor;
+
+      const descriptor = tabDescriptor(document);
+      const surface = this.document.createElement("div");
+      surface.className = "editor-surface";
+      surface.hidden = true;
+      surface.setAttribute("id", descriptor.panelId);
+      surface.setAttribute("role", "tabpanel");
+      surface.setAttribute("aria-labelledby", descriptor.tabId);
+      surface.setAttribute("data-document-id", documentId);
+
+      const editor = this.document.createElement("textarea");
+      editor.className = "document-editor";
+      editor.setAttribute("id", `document-editor-${stableToken(documentId)}`);
+      editor.setAttribute("data-document-id", documentId);
+      editor.setAttribute("spellcheck", "false");
+      editor.setAttribute("placeholder", "Type markdown here, or drop a .md file anywhere…");
+      editor.value = typeof document.content === "string" ? document.content : "";
+      const onInput = (event) => this.onEditorInput(documentId, editor.value, event);
+      editor.addEventListener("input", onInput);
+
+      surface.appendChild(editor);
+      this.editorSurfaces.appendChild(surface);
+      this._editors.set(documentId, { surface, editor, onInput });
+      return editor;
+    }
+
+    removeEditor(documentId) {
+      const id = String(documentId);
+      const record = this._editors.get(id);
+      if (!record) return false;
+      record.editor.removeEventListener("input", record.onInput);
+      record.surface.remove();
+      this._editors.delete(id);
+      if (this._activeDocumentId === id) this._activeDocumentId = null;
+      return true;
+    }
+
+    editorFor(documentId) {
+      const record = this._editors.get(String(documentId));
+      return record ? record.editor : null;
+    }
+
+    activateEditor(documentId) {
+      const id = documentId === undefined || documentId === null ? null : String(documentId);
+      let found = false;
+      for (const [candidate, record] of this._editors) {
+        const active = candidate === id;
+        record.surface.hidden = !active;
+        if (active) found = true;
+      }
+      this._activeDocumentId = found ? id : null;
+      for (const [candidate, record] of this._tabs) {
+        const selected = found && candidate === id;
+        record.shell.classList.toggle("is-selected", selected);
+        record.tab.setAttribute("aria-selected", String(selected));
+        record.tab.setAttribute("tabindex", selected ? "0" : "-1");
+      }
+      return found ? this.editorFor(id) : null;
+    }
+
+    captureWorkspace(documentId = this._activeDocumentId) {
+      return captureEditorState(this.editorFor(documentId));
+    }
+
+    applyWorkspace(documentId, workspace) {
+      if (documentId && typeof documentId === "object") {
+        workspace = workspace || documentId.workspace;
+        documentId = documentId.id;
+      }
+      const editor = this.editorFor(documentId);
+      if (!editor) return false;
+      const source = workspace && typeof workspace === "object" ? workspace : {};
+      const state = captureEditorState({
+        value: editor.value,
+        selectionStart: source.selectionStart,
+        selectionEnd: source.selectionEnd,
+        scrollTop: source.editorScrollTop,
+      });
+      if (typeof editor.setSelectionRange === "function") {
+        editor.setSelectionRange(state.selectionStart, state.selectionEnd);
+      } else {
+        editor.selectionStart = state.selectionStart;
+        editor.selectionEnd = state.selectionEnd;
+      }
+      editor.scrollTop = state.editorScrollTop;
+      return true;
+    }
+
+    setDocumentStatus(documentId, status) {
+      if (documentId && typeof documentId === "object") {
+        status = documentId;
+        documentId = documentId.id;
+      }
+      const record = this._tabs.get(String(documentId));
+      if (!record) return false;
+      const descriptor = documentStatus(status || {});
+      record.status.textContent = descriptor.statusText;
+      record.shell.classList.toggle("is-dirty", Boolean(status && status.dirty));
+      record.shell.classList.toggle("is-conflict", descriptor.statusKind === "conflict");
+      return true;
+    }
+
+    focusActiveEditor() {
+      const editor = this.editorFor(this._activeDocumentId);
+      if (!editor || typeof editor.focus !== "function") return false;
+      editor.focus();
+      return true;
+    }
+
+    showDialog({ title = "", message = "", documents = [], actions = [] } = {}) {
+      this._requireDialogElements();
+      if (this._dialogState) this.closeDialog(null);
+
+      this.dialogTitle.textContent = String(title);
+      this.dialogMessage.textContent = String(message);
+      const documentNodes = (Array.isArray(documents) ? documents : []).map((item) => {
+        const row = this.document.createElement("li");
+        row.textContent = typeof item === "string" ? item : String(item && (item.displayName || item.name || item.id) || "");
+        return row;
+      });
+      this.dialogDocuments.replaceChildren(...documentNodes);
+      this.dialogDocuments.hidden = documentNodes.length === 0;
+
+      const actionMap = new Map();
+      const actionNodes = (Array.isArray(actions) ? actions : []).map((action, index) => {
+        const normalized = action && typeof action === "object" ? action : { label: String(action) };
+        const id = String(normalized.id ?? normalized.value ?? index);
+        const button = this.document.createElement("button");
+        button.className = normalized.primary ? "btn primary" : "btn";
+        button.setAttribute("type", "button");
+        button.setAttribute("data-dialog-action", id);
+        button.textContent = String(normalized.label ?? normalized.title ?? id);
+        actionMap.set(id, normalized);
+        return button;
+      });
+      this.dialogActions.replaceChildren(...actionNodes);
+
+      const priorFocus = this.document.activeElement;
+      this.dialogBackdrop.hidden = false;
+      this.dialog.hidden = false;
+      this.dialog.setAttribute("tabindex", "-1");
+
+      const promise = new Promise((resolve, reject) => {
+        this._dialogState = { actions: actionMap, priorFocus, resolve, reject, busy: false };
+      });
+      (actionNodes[0] || this.dialog).focus();
+      return promise;
+    }
+
+    closeDialog(result = null, error = null) {
+      const state = this._dialogState;
+      if (!state) return false;
+      this._dialogState = null;
+      this.dialog.hidden = true;
+      this.dialogBackdrop.hidden = true;
+      if (state.priorFocus && typeof state.priorFocus.focus === "function") state.priorFocus.focus();
+      if (error) state.reject(error);
+      else state.resolve(result);
+      return true;
+    }
+
+    dispose() {
+      if (this._disposed) return;
+      this._disposed = true;
+      this.tabList.removeEventListener("click", this._handleTabClick);
+      this.tabList.removeEventListener("keydown", this._handleTabKeydown);
+      if (this.addButton) this.addButton.removeEventListener("click", this._handleAdd);
+      if (this.dialogActions) this.dialogActions.removeEventListener("click", this._handleDialogClick);
+      if (this.dialogBackdrop) this.dialogBackdrop.removeEventListener("click", this._handleBackdropClick);
+      this.document.removeEventListener("keydown", this._handleDocumentKeydown);
+      if (this._dialogState) this.closeDialog(null);
+      for (const record of this._editors.values()) {
+        record.editor.removeEventListener("input", record.onInput);
+      }
+    }
+
+    _requireDialogElements() {
+      for (const [name, element] of [
+        ["dialog backdrop", this.dialogBackdrop],
+        ["dialog", this.dialog],
+        ["dialog title", this.dialogTitle],
+        ["dialog message", this.dialogMessage],
+        ["dialog documents", this.dialogDocuments],
+        ["dialog actions", this.dialogActions],
+      ]) {
+        if (!element) throw new TypeError(`${name} element is required`);
+      }
+    }
+
+    _onTabClick(event) {
+      const target = eventActionTarget(event.target, "data-action");
+      if (!target || !this.tabList.contains(target)) return;
+      const action = target.getAttribute("data-action");
+      const documentId = target.getAttribute("data-document-id");
+      if (!documentId) return;
+      if (action === "close") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        this.onClose(documentId);
+      } else if (action === "activate") {
+        this.onActivate(documentId);
+      }
+    }
+
+    _onTabKeydown(event) {
+      const target = eventActionTarget(event.target, "data-action");
+      if (!target || target.getAttribute("role") !== "tab") return;
+      const currentId = target.getAttribute("data-document-id");
+      const index = this._tabOrder.indexOf(currentId);
+      if (index < 0) return;
+      let nextIndex;
+      if (event.key === "ArrowRight") nextIndex = (index + 1) % this._tabOrder.length;
+      else if (event.key === "ArrowLeft") nextIndex = (index - 1 + this._tabOrder.length) % this._tabOrder.length;
+      else if (event.key === "Home") nextIndex = 0;
+      else if (event.key === "End") nextIndex = this._tabOrder.length - 1;
+      else if (event.key === "Delete") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        this.onClose(currentId);
+        return;
+      } else return;
+
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      const nextId = this._tabOrder[nextIndex];
+      const next = this._tabs.get(nextId);
+      if (next && typeof next.tab.focus === "function") next.tab.focus();
+      this.onActivate(nextId);
+    }
+
+    async _onDialogClick(event) {
+      const target = eventActionTarget(event.target, "data-dialog-action");
+      const state = this._dialogState;
+      if (!target || !state || state.busy || !this.dialogActions.contains(target)) return;
+      const action = state.actions.get(target.getAttribute("data-dialog-action"));
+      if (!action) return;
+      state.busy = true;
+      for (const child of this.dialogActions.children) child.disabled = true;
+      try {
+        let result = action.value ?? action.id ?? target.getAttribute("data-dialog-action");
+        const callback = action.callback || action.onSelect || action.onClick;
+        if (typeof callback === "function") result = await callback(action);
+        if (this._dialogState === state) this.closeDialog(result);
+      } catch (error) {
+        if (this._dialogState === state) this.closeDialog(null, error);
+      }
+    }
+
+    _onDocumentKeydown(event) {
+      if (!this._dialogState) return;
+      if (event.key === "Escape") {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        this.closeDialog(null);
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = [...this.dialogActions.children].filter((element) => !element.disabled);
+      if (focusable.length === 0) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        this.dialog.focus();
+        return;
+      }
+      const current = focusable.indexOf(this.document.activeElement);
+      const leavingEnd = !event.shiftKey && current === focusable.length - 1;
+      const leavingStart = event.shiftKey && current <= 0;
+      if (!leavingEnd && !leavingStart) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      focusable[event.shiftKey ? focusable.length - 1 : 0].focus();
+    }
+  }
+
+  return { WorkspaceView, captureEditorState, tabDescriptor };
+});
+</script>
 <script>/* Native file access bridge for the desktop (Tauri) shell.
  *
  * In a plain browser this defines window.nativeApp = null and everything else
@@ -2093,8 +4670,12 @@ return Pe}()
  * APIs, and this file wraps them in the tiny surface the app needs:
  *
  *   nativeApp.pickFile()                            -> path string, null on cancel
+ *   nativeApp.pickFiles()                           -> path strings, [] on cancel
  *   nativeApp.readFile(path)                        -> file text (utf-8)
+ *   nativeApp.readDocument(path)                    -> session-backed document text
  *   nativeApp.saveAs({ defaultDir, suggestedName, data })
+ *                                                -> chosen path, null on cancel
+ *   nativeApp.chooseSavePath({ defaultDir, suggestedName })
  *                                                -> chosen path, null on cancel
  *   nativeApp.writeFile(path, data)                 -> write to a known path (write-back)
  *
@@ -2103,25 +4684,76 @@ return Pe}()
  *
  * data is a string (written as utf-8) or a Uint8Array (raw bytes, for PNG exports).
  */
+const markdownFilters = [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "txt"] }];
+
+function normalizePaths(selection) {
+  if (Array.isArray(selection)) return selection;
+  if (typeof selection === "string") return [selection];
+  return [];
+}
+
+function defaultSavePath(defaultDir = "", suggestedName) {
+  return (defaultDir ? defaultDir.replace(/[/\\]$/, "") + "/" : "") + (suggestedName || "untitled.md");
+}
+
 function makeNativeApp(tauri) {
-  if (!tauri || !tauri.dialog || !tauri.fs) return null;
+  if (!tauri || !tauri.dialog || !tauri.fs || !tauri.core || typeof tauri.core.invoke !== "function") return null;
   return {
     async pickFile() {
       const p = await tauri.dialog.open({
         multiple: false,
         directory: false,
-        filters: [{ name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd", "txt"] }],
+        filters: markdownFilters,
       });
       return p || null;
+    },
+    async pickFiles() {
+      const p = await tauri.dialog.open({
+        multiple: true,
+        directory: false,
+        filters: markdownFilters,
+      });
+      return normalizePaths(p);
     },
     async readFile(path) {
       return tauri.fs.readTextFile(path);
     },
-    async saveAs({ defaultDir = "", suggestedName, data }) {
+    async readDocument(path) {
+      return tauri.core.invoke("read_document", { path });
+    },
+    async saveDocument(input) {
+      return tauri.core.invoke("save_document", input);
+    },
+    async canonicalizeDocumentPath(path) {
+      return tauri.core.invoke("canonicalize_document_path", { path });
+    },
+    async loadRecoveryManifest() {
+      return tauri.core.invoke("load_recovery_manifest");
+    },
+    async loadRecoveryDocument(documentId, snapshotRevision) {
+      return tauri.core.invoke("load_recovery_document", { documentId, snapshotRevision });
+    },
+    async writeRecoveryDocument(documentId, revision, json) {
+      return tauri.core.invoke("write_recovery_document", { documentId, revision, json });
+    },
+    async writeRecoveryManifest(generation, json) {
+      return tauri.core.invoke("write_recovery_manifest", { generation, json });
+    },
+    async deleteRecoveryDocument(documentId) {
+      return tauri.core.invoke("delete_recovery_document", { documentId });
+    },
+    async recoveryDirectory() {
+      return tauri.core.invoke("recovery_directory");
+    },
+    async chooseSavePath({ defaultDir = "", suggestedName } = {}) {
       const p = await tauri.dialog.save({
-        defaultPath: (defaultDir ? defaultDir.replace(/[/\\]$/, "") + "/" : "") + (suggestedName || "untitled.md"),
+        defaultPath: defaultSavePath(defaultDir, suggestedName),
         filters: [{ name: "Markdown", extensions: ["md"] }],
       });
+      return p || null;
+    },
+    async saveAs({ defaultDir = "", suggestedName, data }) {
+      const p = await this.chooseSavePath({ defaultDir, suggestedName });
       if (!p) return null;
       await this.writeFile(p, data);
       return p;
