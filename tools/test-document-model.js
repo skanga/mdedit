@@ -136,8 +136,41 @@ test("applyContent increments the edit revision and marks recovery pending", () 
   assert.equal(doc.applyContent("ab"), true);
   assert.equal(doc.content, "ab");
   assert.equal(doc.editRevision, 1);
+  assert.equal(doc.snapshotRevision, 1);
   assert.equal(doc.dirty, true);
   assert.equal(doc.recoveryStatus, "pending");
+});
+
+test("workspace-only changes advance snapshot revision once and remain detached", () => {
+  const doc = new DocumentModel({
+    id: "doc-workspace",
+    displayName: "workspace.md",
+    content: "abcdef",
+    savedContentSha256: "sha-abcdef",
+  });
+  const workspace = { ...emptyWorkspace(), selectionStart: 2, selectionEnd: 4 };
+
+  doc.updateWorkspace(workspace);
+  assert.equal(doc.snapshotRevision, 1);
+  doc.updateWorkspace({ ...workspace });
+  assert.equal(doc.snapshotRevision, 1);
+  workspace.selectionStart = 5;
+  assert.equal(doc.workspace.selectionStart, 2);
+});
+
+test("metadata changes advance snapshot revision without changing edit revision", () => {
+  const doc = new DocumentModel({
+    id: "doc-metadata",
+    displayName: "before.md",
+    content: "text",
+    savedContentSha256: "sha-text",
+  });
+
+  assert.equal(doc.updateMetadata({ displayName: "after.md", path: "/after.md", canonicalPath: "/after.md" }), true);
+  assert.equal(doc.snapshotRevision, 1);
+  assert.equal(doc.editRevision, 0);
+  assert.equal(doc.updateMetadata({ displayName: "after.md", path: "/after.md", canonicalPath: "/after.md" }), false);
+  assert.equal(doc.snapshotRevision, 1);
 });
 
 test("applyContent returns false for identical content and leaves state unchanged", () => {
@@ -237,7 +270,7 @@ test("fromSnapshot restores state and clamps selection and scroll positions", ()
   assert.equal(doc.displayName, "notes.md");
   assert.equal(doc.editRevision, 4);
   assert.equal(doc.snapshotRevision, 3);
-  assert.equal(doc.persistedRevision, 4);
+  assert.equal(doc.persistedRevision, 3);
   assert.equal(doc.workspace.selectionStart, 3);
   assert.equal(doc.workspace.selectionEnd, 3);
   assert.equal(doc.workspace.editorScrollTop, 12);

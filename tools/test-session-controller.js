@@ -6,7 +6,12 @@ const vm = require("node:vm");
 
 const { DocumentModel, emptyWorkspace } = require("../src/document-model.js");
 const { SessionModel } = require("../src/session-model.js");
-const { SessionController, LEGACY_DRAFT_KEY } = require("../src/session-controller.js");
+const {
+  SessionController,
+  LEGACY_DRAFT_KEY,
+  createBrowserRecoveryIo,
+} = require("../src/session-controller.js");
+const { RecoveryScheduler } = require("../src/recovery-scheduler.js");
 
 function deferred() {
   let resolve;
@@ -22,6 +27,18 @@ async function settle() {
   await Promise.resolve();
   await Promise.resolve();
   await new Promise((resolve) => setImmediate(resolve));
+}
+
+function memoryStorage() {
+  const values = new Map();
+  return {
+    get length() { return values.size; },
+    key(index) { return [...values.keys()][index] ?? null; },
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(String(key), String(value)); },
+    removeItem(key) { values.delete(key); },
+    values,
+  };
 }
 
 async function outcomeByImmediate(promise) {
@@ -208,7 +225,9 @@ function makeDependencies(overrides = {}) {
     hashText: overrides.hashText || (async (text) => `sha:${text}`),
     idFactory: overrides.idFactory || (() => `generated-${++id}`),
     inactiveLoadConcurrency: overrides.inactiveLoadConcurrency,
-    renderer: overrides.renderer,
+    renderer: overrides.renderer || (overrides.exporter ? {
+      async renderForExport(capture) { return `<article>${capture.content}</article>`; },
+    } : undefined),
     exporter: overrides.exporter,
     requestAnimationFrame: overrides.requestAnimationFrame || ((callback) => {
       calls.frames.push(callback);
@@ -241,6 +260,88 @@ test("browser wrapper merges SessionController into window.MDEdit", () => {
 
   assert.equal(typeof sandbox.window.MDEdit.SessionController, "function");
   assert.equal(sandbox.window.MDEdit.LEGACY_DRAFT_KEY, "mdedit-draft-v1");
+});
+
+test("browser recovery IO stores versioned JSON documents and manifest durably", async () => {
+  const storage = memoryStorage();
+  const io = createBrowserRecoveryIo(storage);
+
+  await io.writeRecoveryDocument("doc/a", 3, '{"documentId":"doc/a"}');
+  await io.writeRecoveryManifest(9, '{"generation":9}');
+
+  assert.equal(await io.loadRecoveryDocument("doc/a", 3), '{"documentId":"doc/a"}');
+  assert.equal(await io.loadRecoveryManifest(), '{"generation":9}');
+  assert.match(await io.recoveryDirectory(), /localStorage.*v1/i);
+  assert.ok([...storage.values.keys()].every((key) => key.startsWith("mdedit-recovery-v1:")));
+
+  await io.deleteRecoveryDocument("doc/a");
+  assert.equal(await io.loadRecoveryDocument("doc/a", 3), null);
+});
+
+test("browser recovery IO propagates storage quota failures", async () => {
+  const storage = memoryStorage();
+  storage.setItem = () => { throw new Error("quota exceeded"); };
+  const io = createBrowserRecoveryIo(storage);
+
+  await assert.rejects(io.writeRecoveryDocument("a", 1, "{}"), /quota exceeded/);
+  await assert.rejects(io.writeRecoveryManifest(1, "{}"), /quota exceeded/);
+});
+
+test("browser manifest pointer keeps the last valid generation after a failed publish", async () => {
+  const storage = memoryStorage();
+  const io = createBrowserRecoveryIo(storage);
+  await io.writeRecoveryManifest(1, '{"generation":1}');
+  const setItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key.endsWith("manifest-current") && value === "2") throw new Error("pointer quota");
+    setItem.call(storage, key, value);
+  };
+
+  await assert.rejects(io.writeRecoveryManifest(2, '{"generation":2}'), /pointer quota/);
+  assert.equal(await io.loadRecoveryManifest(), '{"generation":1}');
+});
+
+test("browser legacy migration reloads the latest later edit from the versioned store", async () => {
+  const storage = memoryStorage();
+  storage.setItem(LEGACY_DRAFT_KEY, JSON.stringify({ name: "legacy.md", text: "original" }));
+
+  function browserController() {
+    const io = createBrowserRecoveryIo(storage);
+    let controller;
+    const scheduler = new RecoveryScheduler({
+      async write(documentId, revision) {
+        const document = controller.session.documents.get(documentId);
+        assert.equal(document.snapshotRevision, revision);
+        await io.writeRecoveryDocument(documentId, revision, JSON.stringify(document.toSnapshot()));
+        document.persistedRevision = revision;
+      },
+    });
+    const fixture = makeDependencies({
+      io,
+      legacyStorage: storage,
+    });
+    fixture.dependencies.scheduler = scheduler;
+    controller = new SessionController(fixture.dependencies);
+    return controller;
+  }
+
+  const first = browserController();
+  await first.restore();
+  const document = first.activeDocument();
+  first.onEditorInput(document.id, "latest edit");
+  await first.persistManifest();
+  assert.equal(storage.getItem(LEGACY_DRAFT_KEY), null);
+  const browserIo = createBrowserRecoveryIo(storage);
+  const storedManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  assert.equal(storedManifest.tabs[0].snapshotRevision, document.snapshotRevision);
+  const storedDocument = await browserIo.loadRecoveryDocument(document.id, document.snapshotRevision);
+  assert.ok(storedDocument, `missing revision ${document.snapshotRevision}; keys: ${[...storage.values.keys()].join(",")}`);
+  assert.equal(JSON.parse(storedDocument).content, "latest edit");
+
+  const reloaded = browserController();
+  await reloaded.restore();
+  assert.equal(reloaded.activeDocument().content, "latest edit");
+  assert.equal(reloaded.activeDocument().snapshotRevision, document.snapshotRevision);
 });
 
 test("restore loads the active snapshot first without changing tab order or manifest state", async () => {
@@ -322,8 +423,8 @@ test("no manifest imports the legacy pathless draft as dirty and removes it afte
   assert.equal(document.savedContentSha256, "sha:");
   assert.equal(document.editRevision, 1);
   assert.deepEqual(fixture.calls.scheduler, [
-    ["changed", document.id, 1],
-    ["flush", document.id, 1],
+    ["changed", document.id, 0],
+    ["flush", document.id, 0],
   ]);
   assert.equal(fixture.calls.manifestWrites.length, 1);
   assert.deepEqual(fixture.calls.removedLegacy, [LEGACY_DRAFT_KEY]);
@@ -1021,7 +1122,7 @@ test("persistManifest requested during an empty restore writes the finalized bas
   manifestGate.resolve(null);
   await Promise.all([restoring, persisting]);
 
-  const written = JSON.parse(fixture.calls.manifestWrites[0][1]);
+  const written = JSON.parse(fixture.calls.manifestWrites.at(-1)[1]);
   assert.equal(written.tabs.length, 1);
   assert.equal(written.tabs[0].displayName, "Untitled 1");
   assert.equal(written.activeDocumentId, controller.activeDocument().id);
@@ -1033,6 +1134,8 @@ test("persistManifest queues behind an unawaited mutation and writes its resulti
   fixture.dependencies.io.readDocument = async () => readGate.promise;
   const controller = new SessionController(fixture.dependencies);
   await controller.restore();
+  await settle();
+  fixture.calls.manifestWrites.length = 0;
 
   const opening = controller.openPaths(["opened.md"]);
   const creating = controller.createUntitled();
@@ -1044,7 +1147,7 @@ test("persistManifest queues behind an unawaited mutation and writes its resulti
   const [openResult, created] = await Promise.all([opening, creating]);
   await persisting;
 
-  const written = JSON.parse(fixture.calls.manifestWrites[0][1]);
+  const written = JSON.parse(fixture.calls.manifestWrites.at(-1)[1]);
   assert.equal(openResult.opened.length, 1);
   assert.ok(created instanceof DocumentModel);
   assert.deepEqual(written.tabs.map((tab) => tab.displayName), ["Untitled 1", "opened.md", "Untitled 2"]);
@@ -1622,6 +1725,139 @@ test("activation captures, flushes, switches, restores, persists, then renders w
   flushGate.resolve();
 });
 
+test("keyboard activation can preserve tab focus while restoring workspace", () => {
+  const frames = [];
+  const fixture = makeDependencies({ requestAnimationFrame(callback) { frames.push(callback); } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+  frames.splice(0).forEach((callback) => callback());
+  fixture.calls.activation.length = 0;
+
+  controller.activateDocument(a.id, { focusEditor: false, preserveTabFocus: true });
+  frames.splice(0).forEach((callback) => callback());
+
+  assert.equal(controller.activeDocument(), a);
+  assert.ok(fixture.calls.activation.some(([kind, id]) => kind === "apply" && id === a.id));
+  assert.equal(fixture.calls.activation.some(([kind]) => kind === "focus"), false);
+  assert.notEqual(a.id, b.id);
+});
+
+test("workspace-only activation checkpoints use increasing snapshot revisions", async () => {
+  let selection = 1;
+  let controller;
+  const writes = [];
+  const fixture = makeDependencies({
+    view: {
+      captureWorkspace() { return { ...emptyWorkspace(), selectionStart: selection, selectionEnd: selection }; },
+    },
+    scheduler: {
+      async flush(id, revision) {
+        const document = controller.session.documents.get(id);
+        writes.push([id, revision, document.toSnapshot()]);
+      },
+    },
+  });
+  controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  a.content = "abcdef";
+  const b = controller.createUntitled();
+  b.content = "abcdef";
+  await settle();
+  controller.activateDocument(a.id);
+  selection = 2;
+  controller.activateDocument(b.id);
+  selection = 3;
+  controller.activateDocument(a.id);
+  await settle();
+
+  const aWrites = fixture.calls.scheduler.filter(([kind, id, revision]) => kind === "changed" && id === a.id && revision > 0);
+  assert.deepEqual([...new Set(aWrites.map(([, , revision]) => revision))], [1, 2]);
+  const savedA = writes.filter(([id]) => id === a.id);
+  assert.deepEqual([...new Set(savedA.map(([, revision]) => revision))], [1, 2]);
+  assert.equal(DocumentModel.fromSnapshot(savedA.at(-1)[2]).workspace.selectionStart, 2);
+  assert.equal(a.editRevision, 0);
+  assert.equal(a.snapshotRevision, 2);
+});
+
+test("new documents checkpoint a snapshot before their manifest is published", async () => {
+  const order = [];
+  const fixture = makeDependencies({
+    scheduler: {
+      changed() { return true; },
+      async flush(id, revision) { order.push(["document", id, revision]); },
+    },
+    io: {
+      async writeRecoveryManifest(generation, json) { order.push(["manifest", generation, JSON.parse(json)]); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+
+  await controller.restore();
+  await settle();
+
+  const documentIndex = order.findIndex(([kind, id]) => kind === "document" && id === document.id);
+  const manifestIndex = order.findIndex(([kind]) => kind === "manifest");
+  assert.ok(documentIndex >= 0);
+  assert.ok(manifestIndex > documentIndex);
+});
+
+test("a newly opened clean document checkpoints before its first manifest reference", async () => {
+  const order = [];
+  const fixture = makeDependencies({
+    scheduler: {
+      changed() { return true; },
+      async flush(id, revision) { order.push(["document", id, revision]); },
+    },
+    io: {
+      async writeRecoveryManifest(generation, json) { order.push(["manifest", generation, JSON.parse(json)]); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("opened.md"));
+
+  await controller.restore();
+  await settle();
+
+  assert.ok(order.findIndex(([kind, id]) => kind === "document" && id === document.id)
+    < order.findIndex(([kind]) => kind === "manifest"));
+});
+
+test("snapshot failure prevents publishing a dangling manifest and reports recovery failure", async () => {
+  const fixture = makeDependencies({
+    scheduler: {
+      changed() { return true; },
+      async flush() { throw new Error("snapshot quota"); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+
+  await controller.restore();
+  await settle();
+
+  assert.equal(fixture.calls.manifestWrites.length, 0);
+  assert.match(fixture.calls.recoveryErrors.at(-1).message, /snapshot quota/);
+});
+
+test("initial manifest failure is reported after its document snapshot succeeds", async () => {
+  const fixture = makeDependencies({
+    io: { async writeRecoveryManifest() { throw new Error("manifest quota"); } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+
+  await controller.restore();
+  await settle();
+
+  assert.match(fixture.calls.recoveryErrors.at(-1).message, /manifest quota/);
+  assert.equal(fixture.calls.recoveryErrors.at(-1).phase, "initial-checkpoint");
+  assert.equal(fixture.calls.statuses.at(-1)[1].recoveryStatus, "failed");
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /manifest quota/);
+  assert.ok(fixture.calls.scheduler.some(([kind]) => kind === "flush"));
+});
+
 test("a failed outgoing recovery flush is reported to that document without rolling activation back", async () => {
   const fixture = makeDependencies({
     scheduler: { async flush() { throw new Error("disk full"); } },
@@ -1724,6 +1960,71 @@ test("export errors are reported to the starting document and do not switch tabs
   assert.match(fixture.calls.statuses.at(-1)[1].message, /canvas failed/);
 });
 
+test("HTML and PNG exports receive isolated rendered HTML for the captured revision", async () => {
+  const rendered = deferred();
+  const sharedRender = deferred();
+  const captures = [];
+  const fixture = makeDependencies({
+    renderer: {
+      render: async () => sharedRender.promise,
+      renderForExport: async (capture) => {
+        await rendered.promise;
+        return `<article>${capture.content}</article>`;
+      },
+    },
+    exporter: { export: async (capture) => { captures.push(capture); return { bytes: capture.renderedHtml.length }; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  controller.onEditorInput(a.id, "captured alpha");
+  const exporting = controller.exportActive("html");
+  controller.createUntitled();
+  rendered.resolve();
+
+  const result = await exporting;
+  assert.ok(result.bytes > 0);
+  assert.equal(captures[0].documentId, a.id);
+  assert.equal(captures[0].renderedHtml, "<article>captured alpha</article>");
+  assert.equal((await outcomeByImmediate(sharedRender.promise)).status, "unsettled");
+  sharedRender.resolve("shared preview");
+  await settle();
+});
+
+test("isolated export render failure is explicit and never invokes the exporter", async () => {
+  let exported = false;
+  const fixture = makeDependencies({
+    renderer: { render: async () => "shared", renderForExport: async () => { throw new Error("isolated render failed"); } },
+    exporter: { export: async () => { exported = true; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+
+  await assert.rejects(controller.exportActive("png"), /isolated render failed/);
+  assert.equal(exported, false);
+  assert.equal(fixture.calls.statuses.at(-1)[0], a.id);
+});
+
+test("recordCapturedSave updates only the captured baseline and preserves edits made during save", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  controller.onEditorInput(a.id, "first");
+  const capture = controller.captureActiveDocument();
+  const b = controller.createUntitled();
+
+  controller.recordCapturedSave(capture, { contentSha256: "sha:first", diskSha256: "sha:first" });
+  assert.equal(a.dirty, false);
+  assert.equal(b.dirty, false);
+  assert.equal(controller.activeDocument(), b);
+
+  controller.activateDocument(a.id);
+  const editingCapture = controller.captureActiveDocument();
+  controller.onEditorInput(a.id, "second");
+  controller.recordCapturedSave(editingCapture, { contentSha256: "sha:first", diskSha256: "sha:first" });
+  assert.equal(a.dirty, true);
+  assert.equal(a.savedContentSha256, "sha:first");
+});
+
 test("export completion is ignored when its starting document was closed", async () => {
   const pending = deferred();
   const fixture = makeDependencies({ exporter: { export: async () => pending.promise } });
@@ -1731,11 +2032,11 @@ test("export completion is ignored when its starting document was closed", async
   const a = controller.createUntitled();
   const exporting = controller.exportActive("html");
   controller.closeDocument(a.id);
-  const statusesBeforeCompletion = fixture.calls.statuses.length;
+  const statusesBeforeCompletion = fixture.calls.statuses.filter(([id]) => id === a.id).length;
   pending.resolve({ message: "late export" });
   await exporting;
 
-  assert.equal(fixture.calls.statuses.length, statusesBeforeCompletion);
+  assert.equal(fixture.calls.statuses.filter(([id]) => id === a.id).length, statusesBeforeCompletion);
   assert.notEqual(controller.activeDocument() && controller.activeDocument().id, a.id);
 });
 
@@ -1808,6 +2109,14 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /controller\.runCapturedExport\("diagram " \+ n \+ " as SVG"/, filename);
     assert.match(html, /controller\.runCapturedExport\("table " \+ n \+ " as CSV"/, filename);
     assert.match(html, /canPrintCapture\(capture, previewOwner\)/, filename);
+    assert.match(html, /createBrowserRecoveryIo\(localStorage\)/, filename);
+    assert.match(html, /model\.snapshotRevision !== revision/, filename);
+    assert.match(html, /renderForExport/, filename);
+    assert.match(html, /capture\.renderedHtml/, filename);
+    assert.doesNotMatch(html, /cleanPreviewClone\(\)/, filename);
+    assert.match(html, /addEventListener\("change", async \(e\)/, filename);
+    assert.match(html, /for \(const file of e\.target\.files \|\| \[\]\)[\s\S]{0,120}await openFromFile/, filename);
+    assert.match(html, /downloadAsSave\(capture\)[\s\S]{0,300}recordCapturedSave\(capture/, filename);
   }
 });
 

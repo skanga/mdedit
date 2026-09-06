@@ -109,6 +109,19 @@
     };
   }
 
+  function workspaceEquals(left, right) {
+    return left.selectionStart === right.selectionStart
+      && left.selectionEnd === right.selectionEnd
+      && left.editorScrollTop === right.editorScrollTop
+      && left.previewScrollTop === right.previewScrollTop
+      && left.viewMode === right.viewMode
+      && left.tocOpen === right.tocOpen
+      && left.find.open === right.find.open
+      && left.find.query === right.find.query
+      && left.find.replacement === right.find.replacement
+      && left.find.matchIndex === right.find.matchIndex;
+  }
+
   function normalizeWorkspace(value, contentLength) {
     const workspace = emptyWorkspace();
     if (value === undefined || value === null) return workspace;
@@ -218,14 +231,37 @@
 
       this.content = content;
       this.editRevision += 1;
+      this.snapshotRevision += 1;
       this.dirty = true;
       this.recoveryStatus = "pending";
       return true;
     }
 
     updateWorkspace(workspace) {
-      this.workspace = normalizeWorkspace(workspace, this.content.length);
+      const normalized = normalizeWorkspace(workspace, this.content.length);
+      if (!workspaceEquals(this.workspace, normalized)) {
+        this.workspace = normalized;
+        this.snapshotRevision += 1;
+        this.recoveryStatus = "pending";
+      }
       return cloneWorkspace(this.workspace);
+    }
+
+    updateMetadata(patch) {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TypeError("metadata patch is required");
+      const next = {
+        displayName: hasOwn(patch, "displayName") ? requireString(patch.displayName, "display name") : this.displayName,
+        path: hasOwn(patch, "path") ? optionalString(patch.path, "path") : this.path,
+        canonicalPath: hasOwn(patch, "canonicalPath") ? optionalString(patch.canonicalPath, "canonical path") : this.canonicalPath,
+        fileStatus: hasOwn(patch, "fileStatus") ? requireFileStatus(patch.fileStatus) : this.fileStatus,
+      };
+      const changed = next.displayName !== this.displayName || next.path !== this.path
+        || next.canonicalPath !== this.canonicalPath || next.fileStatus !== this.fileStatus;
+      if (!changed) return false;
+      Object.assign(this, next);
+      this.snapshotRevision += 1;
+      this.recoveryStatus = "pending";
+      return true;
     }
 
     reconcileDirty(contentSha256, editRevision) {
@@ -244,10 +280,19 @@
       const savedContentSha256 = requireNonEmptyString(result.contentSha256, "content sha256");
       const expectedDiskSha256 = requireNonEmptyString(result.diskSha256, "disk sha256");
 
+      const dirty = this.editRevision !== editRevision;
+      const changed = this.savedContentSha256 !== savedContentSha256
+        || this.expectedDiskSha256 !== expectedDiskSha256
+        || this.fileStatus !== "normal";
       this.savedContentSha256 = savedContentSha256;
       this.expectedDiskSha256 = expectedDiskSha256;
       this.fileStatus = "normal";
-      this.dirty = this.editRevision !== editRevision;
+      this.dirty = dirty;
+      if (changed) {
+        this.snapshotRevision += 1;
+        this.recoveryStatus = "pending";
+      }
+      return changed;
     }
 
     toSnapshot() {
@@ -314,7 +359,7 @@
         canonicalPath,
         content,
         editRevision,
-        persistedRevision: editRevision,
+        persistedRevision: snapshotRevision,
         snapshotRevision,
         savedContentSha256,
         expectedDiskSha256,

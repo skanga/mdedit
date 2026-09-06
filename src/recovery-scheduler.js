@@ -79,6 +79,22 @@
       return true;
     }
 
+    markPersisted(id, revision) {
+      requireDocumentId(id);
+      requireRevision(revision);
+      const entry = this._entry(id);
+      if (entry.forgotten) throw new Error(`document ${id} is being forgotten`);
+      if (entry.inFlight || entry.waiters.size > 0) {
+        throw new Error(`cannot seed recovery while a write is active for document ${id}`);
+      }
+      entry.latestRevision = Math.max(entry.latestRevision, revision);
+      entry.persistedRevision = Math.max(entry.persistedRevision, revision);
+      entry.failed = null;
+      this._clearTimers(entry);
+      this._setStatus(entry, "clean");
+      return true;
+    }
+
     flush(id, revision) {
       requireDocumentId(id);
       if (revision !== undefined) requireRevision(revision);

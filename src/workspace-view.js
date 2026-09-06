@@ -534,7 +534,7 @@
         if (typeof event.stopPropagation === "function") event.stopPropagation();
         this.onClose(documentId);
       } else if (action === "activate") {
-        this.onActivate(documentId);
+        this.onActivate(documentId, { focusEditor: true, preserveTabFocus: false });
       }
     }
 
@@ -559,7 +559,7 @@
       const nextId = this._tabOrder[nextIndex];
       const next = this._tabs.get(nextId);
       if (next && typeof next.tab.focus === "function") next.tab.focus();
-      this.onActivate(nextId);
+      this.onActivate(nextId, { focusEditor: false, preserveTabFocus: true });
     }
 
     async _onDialogClick(event) {

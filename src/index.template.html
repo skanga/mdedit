@@ -1195,9 +1195,9 @@
     return { src: out.join("\n"), math };
   }
 
-  function injectMath(mathList) {
+  function injectMath(mathList, rootElement = preview) {
     if (!mathList.length) return;
-    const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(rootElement, NodeFilter.SHOW_TEXT);
     const nodes = [];
     let n;
     while ((n = walker.nextNode())) { if (n.nodeValue.indexOf("\uE000") !== -1) nodes.push(n); }
@@ -1229,8 +1229,8 @@
     warning:   ["Warning",   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'],
     caution:   ["Caution",   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'],
   };
-  function transformCallouts() {
-    preview.querySelectorAll("blockquote").forEach((bq) => {
+  function transformCallouts(rootElement = preview) {
+    rootElement.querySelectorAll("blockquote").forEach((bq) => {
       const p = bq.firstElementChild;
       if (!p || p.tagName !== "P" || !p.firstChild || p.firstChild.nodeType !== 3) return;
       const m = p.firstChild.nodeValue.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
@@ -1261,7 +1261,7 @@
       fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
     });
   }
-  async function renderMermaidJobs(jobs, isCurrent = () => true) {
+  async function renderMermaidJobs(jobs, isCurrent = () => true, interactive = true) {
     let n = 0;
     for (const { div, src } of jobs) {
       const id = "mmd-" + (++mermaidSeq);
@@ -1272,7 +1272,7 @@
         if (!isCurrent()) continue;
         div.innerHTML = svg;
         const el = div.querySelector("svg");
-        if (el) div.appendChild(toolButton("SVG", "Download this diagram as SVG", () => downloadDiagramSvg(el, index)));
+        if (el && interactive) div.appendChild(toolButton("SVG", "Download this diagram as SVG", () => downloadDiagramSvg(el, index)));
       } catch (e) {
         const leftover = document.getElementById("d" + id);
         if (leftover) leftover.remove();
@@ -1283,8 +1283,8 @@
       }
     }
   }
-  function highlightAndDiagrams(isCurrent = () => true) {
-    preview.querySelectorAll("pre > code").forEach((code) => {
+  function highlightAndDiagrams(rootElement = preview, isCurrent = () => true, interactive = true) {
+    rootElement.querySelectorAll("pre > code").forEach((code) => {
       const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
       if (!lang || lang === "mermaid") return;
       if (hljs.getLanguage(lang)) {
@@ -1295,15 +1295,15 @@
       }
     });
     const jobs = [];
-    if (!HAS_DIAGRAMS) return;      // leave the fence as an ordinary code block
-    preview.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
+    if (!HAS_DIAGRAMS) return Promise.resolve();      // leave the fence as an ordinary code block
+    rootElement.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
       const div = document.createElement("div");
       div.className = "mermaid-block";
       const src = code.textContent;
       code.parentElement.replaceWith(div);
       jobs.push({ div, src });
     });
-    mermaidPending = jobs.length ? renderMermaidJobs(jobs, isCurrent) : Promise.resolve();
+    return jobs.length ? renderMermaidJobs(jobs, isCurrent, interactive) : Promise.resolve();
   }
 
   /* Per-block downloads: a diagram as SVG, a table as CSV. */
@@ -1379,8 +1379,8 @@
     setTimeout(() => { btn.textContent = "Copy"; }, 1400);
   }
 
-  function addCodeTools() {
-    preview.querySelectorAll("pre > code").forEach((code) => {
+  function addCodeTools(rootElement = preview) {
+    rootElement.querySelectorAll("pre > code").forEach((code) => {
       const pre = code.parentElement;
       if (pre.parentElement && pre.parentElement.classList.contains("code-wrap")) return;
       const wrap = document.createElement("div");
@@ -1392,9 +1392,9 @@
     });
   }
 
-  function addTableTools() {
+  function addTableTools(rootElement = preview) {
     let n = 0;
-    preview.querySelectorAll("table").forEach((table) => {
+    rootElement.querySelectorAll("table").forEach((table) => {
       n++;
       const index = n;
       const wrap = document.createElement("div");
@@ -1407,8 +1407,8 @@
 
   /* Table of contents */
   const tocEl = $("toc");
-  function buildToc() {
-    const hs = preview.querySelectorAll("h1, h2, h3, h4");
+  function buildToc(rootElement = preview) {
+    const hs = rootElement.querySelectorAll("h1, h2, h3, h4");
     const used = new Set();
     let html = '<div class="toc-title">Contents</div>';
     hs.forEach((h) => {
@@ -1422,20 +1422,31 @@
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true) {
+  function render(content, isCurrent = () => true, rootElement = preview, interactive = true) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
-    preview.innerHTML = DOMPurify.sanitize(marked.parse(src));
-    if (HAS_MATH) injectMath(math);
-    transformCallouts();
-    highlightAndDiagrams(isCurrent);
+    rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
+    if (HAS_MATH) injectMath(math, rootElement);
+    transformCallouts(rootElement);
+    const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive);
     // mark task-list items so CSS can drop their bullets
-    preview.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
+    rootElement.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
       cb.closest("li").classList.add("task");
     });
-    addTableTools();
-    addCodeTools();
-    buildToc();
-    updateStats(content);
+    if (interactive) {
+      addTableTools(rootElement);
+      addCodeTools(rootElement);
+      buildToc(rootElement);
+      updateStats(content);
+    }
+    return diagrams;
+  }
+
+  async function renderForExport(capture) {
+    const isolated = document.createElement("article");
+    const owned = () => controller.isDocumentCaptureCurrent(capture);
+    await render(capture.content, owned, isolated, false);
+    if (!owned()) throw new Error("the document changed before its export could be rendered");
+    return isolated.innerHTML;
   }
 
   function updateStats(text) {
@@ -1466,10 +1477,11 @@
   async function openFromFile(file, handle) {
     const text = await file.text();
     const document = await Promise.resolve(controller.createUntitled());
-    document.displayName = file.name || document.displayName;
+    document.updateMetadata({ displayName: file.name || document.displayName });
     controller.onEditorInput(document.id, text.replace(/\r\n/g, "\n"));
-    document.savedContentSha256 = await hashText(document.content);
-    document.dirty = false;
+    const capture = controller.captureActiveDocument();
+    const contentSha256 = await hashText(capture.content);
+    controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
     if (handle) browserFileHandles.set(document.id, handle);
     controller.activateDocument(document.id);
     syncActiveSurface();
@@ -1496,8 +1508,11 @@
       $("file-input").click();
     }
   }
-  $("file-input").addEventListener("change", (e) => {
-    for (const file of e.target.files || []) openFromFile(file, null);
+  $("file-input").addEventListener("change", async (e) => {
+    for (const file of e.target.files || []) {
+      try { await openFromFile(file, null); }
+      catch (error) { setStatus("Could not open " + file.name + " — " + error.message); }
+    }
     e.target.value = "";
   });
 
@@ -1511,7 +1526,7 @@
   async function save() {
     const document = controller.activeDocument();
     if (!document) return;
-    const capture = { documentId: document.id, editRevision: document.editRevision, content: document.content, displayName: document.displayName };
+    const capture = controller.captureActiveDocument();
     if (nativeApp && document.path) {
       try {
         const result = typeof nativeApp.saveDocument === "function"
@@ -1519,7 +1534,7 @@
           : (await nativeApp.writeFile(document.path, capture.content), null);
         if (result && result.status === "conflict") throw new Error("the file changed outside MDedit");
         const contentSha256 = result && result.sha256 ? result.sha256 : await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
@@ -1535,7 +1550,7 @@
         }
         await writeToHandle(fileHandle, capture.content);
         const contentSha256 = await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
@@ -1553,20 +1568,18 @@
   async function saveAs() {
     const document = controller.activeDocument();
     if (!document) return;
-    const capture = { documentId: document.id, editRevision: document.editRevision, content: document.content, displayName: document.displayName };
+    const capture = controller.captureActiveDocument();
     if (nativeApp) {
       try {
         const path = await nativeApp.saveAs({ defaultDir: nativeDir(document), suggestedName: capture.displayName || "untitled.md", data: capture.content });
         if (!path) return;    // user cancelled
         if (!controller.session.documents.has(capture.documentId)) return;
         browserFileHandles.delete(capture.documentId);
-        document.path = path;
-        document.canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
+        const canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
           ? await nativeApp.canonicalizeDocumentPath(path) : path;
-        document.displayName = path.split(/[/\\]/).pop();
+        document.updateMetadata({ path, canonicalPath, displayName: path.split(/[/\\]/).pop() });
         const contentSha256 = await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
-        controller.activateDocument(document.id);
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
       } catch (e) {
@@ -1582,15 +1595,14 @@
         });
         await writeToHandle(handle, capture.content);
         browserFileHandles.set(capture.documentId, handle);
-        document.displayName = handle.name;
+        document.updateMetadata({ displayName: handle.name });
         const contentSha256 = await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
-        controller.activateDocument(document.id);
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + handle.name, false, document.id);
       } catch (e) { /* user cancelled */ }
     } else {
-      download();
+      await downloadAsSave(capture);
     }
   }
 
@@ -1626,6 +1638,14 @@
     return { message: (nativeApp ? "Saved " : "Downloaded ") + name };
   }
 
+  async function downloadAsSave(capture) {
+    await download(capture);
+    const contentSha256 = await hashText(capture.content);
+    controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
+    syncActiveSurface();
+    setStatus("Saved " + capture.displayName, false, capture.documentId);
+  }
+
   /* ── Exports ────────────────────────────────── */
   const pageStyles = () => [...document.querySelectorAll("style")].map((s) => s.textContent).join("\n");
 
@@ -1635,23 +1655,28 @@
     "body{background:var(--bg);padding:40px 24px}" +
     "#preview{margin:0 auto;padding:0}";
 
-  // a copy of the rendered document without the hover download buttons
-  function cleanPreviewClone() {
-    const clone = preview.cloneNode(true);
-    clone.querySelectorAll(".blk-tools").forEach((n) => n.remove());
+  // Build an export-only tree from HTML rendered for the captured document.
+  function cleanPreviewClone(capture) {
+    if (!capture || typeof capture.renderedHtml !== "string" || !capture.renderedHtml) {
+      throw new Error("captured export HTML is unavailable");
+    }
+    const clone = document.createElement("article");
+    clone.id = "preview";
+    clone.innerHTML = capture.renderedHtml;
     return clone;
   }
 
   async function exportHtml(capture) {
     capture = capture || captureActiveDocument("html");
-    const title = (preview.querySelector("h1") || {}).textContent || baseName(capture);
+    const clone = cleanPreviewClone(capture);
+    const title = (clone.querySelector("h1") || {}).textContent || baseName(capture);
     const doc =
       '<!DOCTYPE html>\n<html lang="en" data-theme="' + theme + '">\n<head>\n' +
       '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
       "<title>" + escapeHtml(title.trim()) + "</title>\n" +
       "<style>" + pageStyles() + "</style>\n<style>" + EXPORT_RESET + "</style>\n" +
-      '</head>\n<body>\n<article id="preview" style="' + escapeHtml(preview.getAttribute("style") || "") + '">\n' +
-      cleanPreviewClone().innerHTML +
+      '</head>\n<body>\n<article id="preview">\n' +
+      clone.innerHTML +
       "\n</article>\n</body>\n</html>\n";
     const name = baseName(capture) + ".html";
     await saveBlob(new Blob([doc], { type: "text/html;charset=utf-8" }), name, capture);
@@ -1666,9 +1691,9 @@
     const P = 36;
     const holder = document.createElement("div");
     holder.style.cssText = "position:fixed;left:-20000px;top:0;";
-    const clone = cleanPreviewClone();
-    const width = Math.ceil(preview.getBoundingClientRect().width) || 760;
-    clone.setAttribute("style", (preview.getAttribute("style") || "") + ";padding:0;margin:0;max-width:none;width:" + width + "px");
+    const clone = cleanPreviewClone(capture);
+    const width = 760;
+    clone.setAttribute("style", "padding:0;margin:0;max-width:none;width:" + width + "px");
     holder.appendChild(clone);
     document.body.appendChild(holder);
     try {
@@ -1856,9 +1881,8 @@
     filenameEl.value = name;
     const active = controller.activeDocument();
     if (!active) return;
-    active.displayName = name;
-    active.path = null;
-    active.canonicalPath = null;
+    active.updateMetadata({ displayName: name, path: null, canonicalPath: null });
+    controller.checkpointDocument(active.id, "rename-checkpoint");
     browserFileHandles.delete(active.id);
     controller.activateDocument(active.id);
   });
@@ -2363,13 +2387,7 @@
       return window.__TAURI__.event.listen("file-opened", handler);
     },
   } : {
-    listenFileOpened() { return () => {}; },
-    async loadRecoveryManifest() { return null; },
-    async loadRecoveryDocument() { return null; },
-    async writeRecoveryDocument() {},
-    async writeRecoveryManifest() {},
-    async deleteRecoveryDocument() {},
-    async recoveryDirectory() { return "browser storage"; },
+    ...MDEdit.createBrowserRecoveryIo(localStorage),
     async readDocument() { throw new Error("native document reads are unavailable"); },
   };
 
@@ -2387,8 +2405,8 @@
     statusElement: statusEl,
     captureSharedWorkspace,
     applySharedWorkspace,
-    onActivate(documentId) {
-      controller.activateDocument(documentId);
+    onActivate(documentId, options) {
+      controller.activateDocument(documentId, options);
       syncActiveSurface();
     },
     onClose(documentId) {
@@ -2419,12 +2437,11 @@
   recoveryScheduler = new MDEdit.RecoveryScheduler({
     async write(documentId, revision) {
       const model = controller && controller.session && controller.session.documents.get(documentId);
-      if (!(model instanceof MDEdit.DocumentModel) || model.editRevision !== revision) return;
-      const snapshot = { ...model.toSnapshot(), snapshotRevision: revision };
+      if (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision) return;
+      const snapshot = model.toSnapshot();
       await sessionIo.writeRecoveryDocument(documentId, revision, JSON.stringify(snapshot));
-      if (controller.session.documents.get(documentId) === model && model.editRevision === revision) {
+      if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {
         model.persistedRevision = revision;
-        model.snapshotRevision = revision;
       }
     },
     onStatus(documentId, status, error) {
@@ -2443,7 +2460,7 @@
     },
     legacyStorage: {
       getItem(key) { try { return localStorage.getItem(key); } catch (_) { return null; } },
-      removeItem(key) { if (nativeApp) try { localStorage.removeItem(key); } catch (_) {} },
+      removeItem(key) { localStorage.removeItem(key); },
     },
     hashText,
     idFactory: () => window.crypto.randomUUID(),
@@ -2454,12 +2471,13 @@
           async commit(_sameCapture, isCurrent) {
             if (!isCurrent()) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
-            render(capture.content, isCurrent);
+            mermaidPending = render(capture.content, isCurrent);
             await mermaidPending;
             return isCurrent() ? preview.innerHTML : null;
           },
         };
       },
+      renderForExport,
     },
     exporter: {
       export(capture) {
@@ -2538,8 +2556,10 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
     await controller.restore();
     let active = controller.activeDocument();
     if (active && !active.content && !active.dirty && controller.session.documents.size === 1) {
-      active.content = WELCOME;
-      active.savedContentSha256 = await hashText(WELCOME);
+      controller.onEditorInput(active.id, WELCOME);
+      const welcomeCapture = controller.captureActiveDocument();
+      const welcomeSha256 = await hashText(WELCOME);
+      controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
     }
     if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
       const paths = await window.__TAURI__.core.invoke("take_pending_files").catch(() => []);

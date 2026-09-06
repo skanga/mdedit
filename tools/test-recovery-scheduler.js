@@ -77,6 +77,20 @@ test("browser wrapper merges RecoveryScheduler into window.MDEdit", () => {
   assert.equal(typeof sandbox.window.MDEdit.RecoveryScheduler, "function");
 });
 
+test("markPersisted seeds a restored snapshot baseline without rewriting it", async () => {
+  const writes = [];
+  const scheduler = new RecoveryScheduler({ write: async (id, revision) => writes.push([id, revision]) });
+
+  assert.equal(scheduler.markPersisted("a", 7), true);
+  assert.equal(scheduler.changed("a", 7), false);
+  await scheduler.flush("a", 7);
+  assert.deepEqual(writes, []);
+
+  scheduler.changed("a", 8);
+  await scheduler.flush("a", 8);
+  assert.deepEqual(writes, [["a", 8]]);
+});
+
 test("forget from changed pending status leaves no timers", async () => {
   const clock = fakeClock();
   const writes = [];

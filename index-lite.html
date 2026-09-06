@@ -2372,6 +2372,19 @@ return Pe}()
     };
   }
 
+  function workspaceEquals(left, right) {
+    return left.selectionStart === right.selectionStart
+      && left.selectionEnd === right.selectionEnd
+      && left.editorScrollTop === right.editorScrollTop
+      && left.previewScrollTop === right.previewScrollTop
+      && left.viewMode === right.viewMode
+      && left.tocOpen === right.tocOpen
+      && left.find.open === right.find.open
+      && left.find.query === right.find.query
+      && left.find.replacement === right.find.replacement
+      && left.find.matchIndex === right.find.matchIndex;
+  }
+
   function normalizeWorkspace(value, contentLength) {
     const workspace = emptyWorkspace();
     if (value === undefined || value === null) return workspace;
@@ -2481,14 +2494,37 @@ return Pe}()
 
       this.content = content;
       this.editRevision += 1;
+      this.snapshotRevision += 1;
       this.dirty = true;
       this.recoveryStatus = "pending";
       return true;
     }
 
     updateWorkspace(workspace) {
-      this.workspace = normalizeWorkspace(workspace, this.content.length);
+      const normalized = normalizeWorkspace(workspace, this.content.length);
+      if (!workspaceEquals(this.workspace, normalized)) {
+        this.workspace = normalized;
+        this.snapshotRevision += 1;
+        this.recoveryStatus = "pending";
+      }
       return cloneWorkspace(this.workspace);
+    }
+
+    updateMetadata(patch) {
+      if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TypeError("metadata patch is required");
+      const next = {
+        displayName: hasOwn(patch, "displayName") ? requireString(patch.displayName, "display name") : this.displayName,
+        path: hasOwn(patch, "path") ? optionalString(patch.path, "path") : this.path,
+        canonicalPath: hasOwn(patch, "canonicalPath") ? optionalString(patch.canonicalPath, "canonical path") : this.canonicalPath,
+        fileStatus: hasOwn(patch, "fileStatus") ? requireFileStatus(patch.fileStatus) : this.fileStatus,
+      };
+      const changed = next.displayName !== this.displayName || next.path !== this.path
+        || next.canonicalPath !== this.canonicalPath || next.fileStatus !== this.fileStatus;
+      if (!changed) return false;
+      Object.assign(this, next);
+      this.snapshotRevision += 1;
+      this.recoveryStatus = "pending";
+      return true;
     }
 
     reconcileDirty(contentSha256, editRevision) {
@@ -2507,10 +2543,19 @@ return Pe}()
       const savedContentSha256 = requireNonEmptyString(result.contentSha256, "content sha256");
       const expectedDiskSha256 = requireNonEmptyString(result.diskSha256, "disk sha256");
 
+      const dirty = this.editRevision !== editRevision;
+      const changed = this.savedContentSha256 !== savedContentSha256
+        || this.expectedDiskSha256 !== expectedDiskSha256
+        || this.fileStatus !== "normal";
       this.savedContentSha256 = savedContentSha256;
       this.expectedDiskSha256 = expectedDiskSha256;
       this.fileStatus = "normal";
-      this.dirty = this.editRevision !== editRevision;
+      this.dirty = dirty;
+      if (changed) {
+        this.snapshotRevision += 1;
+        this.recoveryStatus = "pending";
+      }
+      return changed;
     }
 
     toSnapshot() {
@@ -2577,7 +2622,7 @@ return Pe}()
         canonicalPath,
         content,
         editRevision,
-        persistedRevision: editRevision,
+        persistedRevision: snapshotRevision,
         snapshotRevision,
         savedContentSha256,
         expectedDiskSha256,
@@ -3080,6 +3125,22 @@ return Pe}()
       return true;
     }
 
+    markPersisted(id, revision) {
+      requireDocumentId(id);
+      requireRevision(revision);
+      const entry = this._entry(id);
+      if (entry.forgotten) throw new Error(`document ${id} is being forgotten`);
+      if (entry.inFlight || entry.waiters.size > 0) {
+        throw new Error(`cannot seed recovery while a write is active for document ${id}`);
+      }
+      entry.latestRevision = Math.max(entry.latestRevision, revision);
+      entry.persistedRevision = Math.max(entry.persistedRevision, revision);
+      entry.failed = null;
+      this._clearTimers(entry);
+      this._setStatus(entry, "clean");
+      return true;
+    }
+
     flush(id, revision) {
       requireDocumentId(id);
       if (revision !== undefined) requireRevision(revision);
@@ -3334,6 +3395,7 @@ return Pe}()
   "use strict";
 
   const LEGACY_DRAFT_KEY = "mdedit-draft-v1";
+  const BROWSER_RECOVERY_PREFIX = "mdedit-recovery-v1:";
   const DEFAULT_INACTIVE_LOAD_CONCURRENCY = 4;
   const DEFAULT_PREVIEW_CACHE_MAX_ENTRIES = 5;
   const DEFAULT_PREVIEW_CACHE_MAX_BYTES = 20 * 1024 * 1024;
@@ -3389,6 +3451,44 @@ return Pe}()
     if (typeof TextEncoder !== "undefined") return new TextEncoder().encode(text).byteLength;
     if (typeof Buffer !== "undefined") return Buffer.byteLength(text, "utf8");
     return unescape(encodeURIComponent(text)).length;
+  }
+
+  function createBrowserRecoveryIo(storage) {
+    requireObject(storage, "storage");
+    for (const method of ["getItem", "setItem", "removeItem", "key"]) {
+      requireFunction(storage[method], `storage.${method}`);
+    }
+    const manifestPointerKey = `${BROWSER_RECOVERY_PREFIX}manifest-current`;
+    const documentPrefix = (documentId) => `${BROWSER_RECOVERY_PREFIX}document:${encodeURIComponent(documentId)}:`;
+    const documentKey = (documentId, revision) => `${documentPrefix(documentId)}${revision}`;
+    const manifestKey = (generation) => `${BROWSER_RECOVERY_PREFIX}manifest:${generation}`;
+    return {
+      listenFileOpened() { return () => {}; },
+      async loadRecoveryManifest() {
+        const generation = storage.getItem(manifestPointerKey);
+        return generation === null ? null : storage.getItem(manifestKey(generation));
+      },
+      async loadRecoveryDocument(documentId, revision) {
+        return storage.getItem(documentKey(documentId, revision));
+      },
+      async writeRecoveryDocument(documentId, revision, json) {
+        storage.setItem(documentKey(documentId, revision), String(json));
+      },
+      async writeRecoveryManifest(generation, json) {
+        storage.setItem(manifestKey(generation), String(json));
+        storage.setItem(manifestPointerKey, String(generation));
+      },
+      async deleteRecoveryDocument(documentId) {
+        const prefix = documentPrefix(documentId);
+        const keys = [];
+        for (let index = 0; index < storage.length; index += 1) {
+          const key = storage.key(index);
+          if (typeof key === "string" && key.startsWith(prefix)) keys.push(key);
+        }
+        for (const key of keys) storage.removeItem(key);
+      },
+      async recoveryDirectory() { return "localStorage://mdedit-recovery-v1"; },
+    };
   }
 
   class SessionController {
@@ -3634,6 +3734,22 @@ return Pe}()
           // check and publishing restored. Follow-up work therefore either joins
           // the drain above or enters the normal serialized operation queue.
           this._restoreState = "restored";
+          const needsInitialCheckpoint = [...this.session.documents.values()].some(
+            (document) => document instanceof DocumentModel
+              && document.persistedRevision < document.snapshotRevision,
+          );
+          if (needsInitialCheckpoint) {
+            this._persistManifestNow(token).catch((reason) => {
+              if (!this._isLifecycleActive(token)) return;
+              const active = this.activeDocument();
+              this._showRecoveryError(reason, {
+                phase: "initial-checkpoint",
+                documentId: active && active.id,
+                displayName: active && active.displayName,
+                snapshotRevision: active && active.snapshotRevision,
+              });
+            });
+          }
           return this.session;
         }
         return this.session;
@@ -3722,6 +3838,9 @@ return Pe}()
 
         document.loadStatus = "loaded";
         session.documents.set(id, document);
+        if (typeof this.scheduler.markPersisted === "function") {
+          this.scheduler.markPersisted(id, document.snapshotRevision);
+        }
         this._renderSession();
         if (session.activeDocumentId === id) this._renderDocument(document);
         return document;
@@ -3778,9 +3897,6 @@ return Pe}()
         const migrationSession = new SessionModel({ idFactory: this.idFactory });
         migrationSession.add(document);
         this.session = migrationSession;
-        this.scheduler.changed(document.id, document.editRevision);
-        await this.scheduler.flush(document.id, document.editRevision);
-        if (!this._isLifecycleActive(token)) return null;
         await this._persistManifestNow(token);
         if (!this._isLifecycleActive(token)) return null;
         durable = true;
@@ -4016,7 +4132,7 @@ return Pe}()
       return document;
     }
 
-    activateDocument(id) {
+    activateDocument(id, options = {}) {
       if (this._disposed) throw new Error("session controller is disposed");
       if (!this.session) throw new Error("session has not been created");
       const outgoing = this.activeDocument();
@@ -4033,7 +4149,7 @@ return Pe}()
           this._loadPriority.unshift(id);
         }
       }
-      this._presentActivatedDocument(document);
+      this._presentActivatedDocument(document, options);
       return document;
     }
 
@@ -4100,7 +4216,18 @@ return Pe}()
       if (!changed) return false;
 
       this._invalidatePreview(documentId);
-      this.scheduler.changed(documentId, document.editRevision);
+      this.scheduler.changed(documentId, document.snapshotRevision);
+      if (this._restoreState === "restored") {
+        this._persistManifestNow().catch((reason) => {
+          if (!this.session || this.session.documents.get(documentId) !== document) return;
+          this._showRecoveryError(reason, {
+            phase: "edit-checkpoint",
+            documentId,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        });
+      }
       this._setDocumentStatus(documentId, {
         dirty: document.dirty,
         fileStatus: document.fileStatus,
@@ -4186,8 +4313,64 @@ return Pe}()
       return this._runCapturedExport(
         capture,
         capture.displayName,
-        () => exportDocument.call(this.exporter, capture),
+        async () => {
+          let exportCapture = capture;
+          if (format === "html" || format === "png") {
+            const renderForExport = this.renderer && this.renderer.renderForExport;
+            if (typeof renderForExport !== "function") {
+              throw new Error(`isolated ${format.toUpperCase()} export renderer is unavailable`);
+            }
+            const renderedHtml = await renderForExport.call(this.renderer, capture);
+            if (typeof renderedHtml !== "string" || renderedHtml.length === 0) {
+              throw new Error(`isolated ${format.toUpperCase()} export produced no HTML`);
+            }
+            exportCapture = Object.freeze({ ...capture, renderedHtml });
+          }
+          return exportDocument.call(this.exporter, exportCapture);
+        },
       );
+    }
+
+    recordCapturedSave(capture, result) {
+      if (!this._ownsOperationCapture(capture)) return false;
+      const changed = capture.document.recordSave({
+        editRevision: capture.editRevision,
+        contentSha256: result && result.contentSha256,
+        diskSha256: result && result.diskSha256,
+      });
+      const needsCheckpoint = changed
+        || capture.document.persistedRevision < capture.document.snapshotRevision;
+      if (needsCheckpoint) this.scheduler.changed(capture.documentId, capture.document.snapshotRevision);
+      this._setDocumentStatus(capture.documentId, {
+        dirty: capture.document.dirty,
+        fileStatus: capture.document.fileStatus,
+        recoveryStatus: capture.document.recoveryStatus,
+      });
+      if (needsCheckpoint && this._restoreState === "restored") {
+        this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, {
+          phase: "save-checkpoint",
+          documentId: capture.documentId,
+          displayName: capture.displayName,
+          snapshotRevision: capture.document.snapshotRevision,
+        }));
+      }
+      return true;
+    }
+
+    checkpointDocument(documentId, phase = "metadata-checkpoint") {
+      if (this._disposed || !this.session) return false;
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel)) return false;
+      this.scheduler.changed(documentId, document.snapshotRevision);
+      if (this._restoreState === "restored") {
+        this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, {
+          phase,
+          documentId,
+          displayName: document.displayName,
+          snapshotRevision: document.snapshotRevision,
+        }));
+      }
+      return true;
     }
 
     async _runCapturedExport(capture, label, operation) {
@@ -4289,12 +4472,19 @@ return Pe}()
     _persistManifestNow(token = this._lifecycleToken) {
       if (!this._isLifecycleActive(token)) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
-      const value = this.session.toManifest();
-      const generation = value.generation;
-      const json = JSON.stringify(value);
       const write = this._manifestWrites.catch(() => {}).then(
-        () => {
+        async () => {
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          for (const document of this.session.documents.values()) {
+            if (!(document instanceof DocumentModel)) continue;
+            this.scheduler.changed(document.id, document.snapshotRevision);
+            await this.scheduler.flush(document.id, document.snapshotRevision);
+            document.persistedRevision = Math.max(document.persistedRevision, document.snapshotRevision);
+          }
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          const value = this.session.toManifest();
+          const generation = value.generation;
+          const json = JSON.stringify(value);
           return this.io.writeRecoveryManifest(generation, json);
         },
       );
@@ -4337,6 +4527,7 @@ return Pe}()
               ...((captured && captured.find) || {}),
             },
           });
+          this.scheduler.changed(document.id, document.snapshotRevision);
         } catch (reason) {
           this._setDocumentStatus(document.id, {
             status: "failed",
@@ -4347,7 +4538,7 @@ return Pe}()
 
       let flushing;
       try {
-        flushing = this.scheduler.flush(document.id, document.editRevision);
+        flushing = this.scheduler.flush(document.id, document.snapshotRevision);
       } catch (reason) {
         flushing = Promise.reject(reason);
       }
@@ -4367,7 +4558,7 @@ return Pe}()
       });
     }
 
-    _presentActivatedDocument(document) {
+    _presentActivatedDocument(document, { focusEditor = true } = {}) {
       if (this._disposed || !document) return;
       const id = document.id;
       const viewToken = ++this._viewToken;
@@ -4386,9 +4577,9 @@ return Pe}()
         if (document instanceof DocumentModel && typeof this.view.applyWorkspace === "function") {
           this.view.applyWorkspace(id, document.workspace);
         }
-        if (typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
+        if (focusEditor && typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
       });
-      if (this._restoreState === "restored" && this._queuedOperationCount === 0) {
+      if (this._restoreState === "restored") {
         this._persistManifestNow().catch((reason) => {
           if (!this.session || this.session.documents.get(id) !== document) return;
           this._showRecoveryError(reason, {
@@ -4497,6 +4688,12 @@ return Pe}()
 
     _showRecoveryError(reason, context) {
       const error = normalizeError(reason);
+      if (context && context.documentId) {
+        this._setDocumentStatus(context.documentId, {
+          recoveryStatus: "failed",
+          message: `Recovery failed for ${context.displayName || context.documentId}: ${error.message}`,
+        });
+      }
       const details = {
         ...context,
         error,
@@ -4575,6 +4772,8 @@ return Pe}()
   return {
     SessionController,
     LEGACY_DRAFT_KEY,
+    BROWSER_RECOVERY_PREFIX,
+    createBrowserRecoveryIo,
   };
 });
 </script>
@@ -5114,7 +5313,7 @@ return Pe}()
         if (typeof event.stopPropagation === "function") event.stopPropagation();
         this.onClose(documentId);
       } else if (action === "activate") {
-        this.onActivate(documentId);
+        this.onActivate(documentId, { focusEditor: true, preserveTabFocus: false });
       }
     }
 
@@ -5139,7 +5338,7 @@ return Pe}()
       const nextId = this._tabOrder[nextIndex];
       const next = this._tabs.get(nextId);
       if (next && typeof next.tab.focus === "function") next.tab.focus();
-      this.onActivate(nextId);
+      this.onActivate(nextId, { focusEditor: false, preserveTabFocus: true });
     }
 
     async _onDialogClick(event) {
@@ -5507,9 +5706,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     return { src: out.join("\n"), math };
   }
 
-  function injectMath(mathList) {
+  function injectMath(mathList, rootElement = preview) {
     if (!mathList.length) return;
-    const walker = document.createTreeWalker(preview, NodeFilter.SHOW_TEXT);
+    const walker = document.createTreeWalker(rootElement, NodeFilter.SHOW_TEXT);
     const nodes = [];
     let n;
     while ((n = walker.nextNode())) { if (n.nodeValue.indexOf("\uE000") !== -1) nodes.push(n); }
@@ -5541,8 +5740,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     warning:   ["Warning",   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'],
     caution:   ["Caution",   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><polygon points="7.86 2 16.14 2 22 7.86 22 16.14 16.14 22 7.86 22 2 16.14 2 7.86 7.86 2"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>'],
   };
-  function transformCallouts() {
-    preview.querySelectorAll("blockquote").forEach((bq) => {
+  function transformCallouts(rootElement = preview) {
+    rootElement.querySelectorAll("blockquote").forEach((bq) => {
       const p = bq.firstElementChild;
       if (!p || p.tagName !== "P" || !p.firstChild || p.firstChild.nodeType !== 3) return;
       const m = p.firstChild.nodeValue.match(/^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*/i);
@@ -5573,7 +5772,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, Roboto, sans-serif",
     });
   }
-  async function renderMermaidJobs(jobs, isCurrent = () => true) {
+  async function renderMermaidJobs(jobs, isCurrent = () => true, interactive = true) {
     let n = 0;
     for (const { div, src } of jobs) {
       const id = "mmd-" + (++mermaidSeq);
@@ -5584,7 +5783,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         if (!isCurrent()) continue;
         div.innerHTML = svg;
         const el = div.querySelector("svg");
-        if (el) div.appendChild(toolButton("SVG", "Download this diagram as SVG", () => downloadDiagramSvg(el, index)));
+        if (el && interactive) div.appendChild(toolButton("SVG", "Download this diagram as SVG", () => downloadDiagramSvg(el, index)));
       } catch (e) {
         const leftover = document.getElementById("d" + id);
         if (leftover) leftover.remove();
@@ -5595,8 +5794,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       }
     }
   }
-  function highlightAndDiagrams(isCurrent = () => true) {
-    preview.querySelectorAll("pre > code").forEach((code) => {
+  function highlightAndDiagrams(rootElement = preview, isCurrent = () => true, interactive = true) {
+    rootElement.querySelectorAll("pre > code").forEach((code) => {
       const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
       if (!lang || lang === "mermaid") return;
       if (hljs.getLanguage(lang)) {
@@ -5607,15 +5806,15 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       }
     });
     const jobs = [];
-    if (!HAS_DIAGRAMS) return;      // leave the fence as an ordinary code block
-    preview.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
+    if (!HAS_DIAGRAMS) return Promise.resolve();      // leave the fence as an ordinary code block
+    rootElement.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
       const div = document.createElement("div");
       div.className = "mermaid-block";
       const src = code.textContent;
       code.parentElement.replaceWith(div);
       jobs.push({ div, src });
     });
-    mermaidPending = jobs.length ? renderMermaidJobs(jobs, isCurrent) : Promise.resolve();
+    return jobs.length ? renderMermaidJobs(jobs, isCurrent, interactive) : Promise.resolve();
   }
 
   /* Per-block downloads: a diagram as SVG, a table as CSV. */
@@ -5691,8 +5890,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     setTimeout(() => { btn.textContent = "Copy"; }, 1400);
   }
 
-  function addCodeTools() {
-    preview.querySelectorAll("pre > code").forEach((code) => {
+  function addCodeTools(rootElement = preview) {
+    rootElement.querySelectorAll("pre > code").forEach((code) => {
       const pre = code.parentElement;
       if (pre.parentElement && pre.parentElement.classList.contains("code-wrap")) return;
       const wrap = document.createElement("div");
@@ -5704,9 +5903,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     });
   }
 
-  function addTableTools() {
+  function addTableTools(rootElement = preview) {
     let n = 0;
-    preview.querySelectorAll("table").forEach((table) => {
+    rootElement.querySelectorAll("table").forEach((table) => {
       n++;
       const index = n;
       const wrap = document.createElement("div");
@@ -5719,8 +5918,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   /* Table of contents */
   const tocEl = $("toc");
-  function buildToc() {
-    const hs = preview.querySelectorAll("h1, h2, h3, h4");
+  function buildToc(rootElement = preview) {
+    const hs = rootElement.querySelectorAll("h1, h2, h3, h4");
     const used = new Set();
     let html = '<div class="toc-title">Contents</div>';
     hs.forEach((h) => {
@@ -5734,20 +5933,31 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true) {
+  function render(content, isCurrent = () => true, rootElement = preview, interactive = true) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
-    preview.innerHTML = DOMPurify.sanitize(marked.parse(src));
-    if (HAS_MATH) injectMath(math);
-    transformCallouts();
-    highlightAndDiagrams(isCurrent);
+    rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
+    if (HAS_MATH) injectMath(math, rootElement);
+    transformCallouts(rootElement);
+    const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive);
     // mark task-list items so CSS can drop their bullets
-    preview.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
+    rootElement.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
       cb.closest("li").classList.add("task");
     });
-    addTableTools();
-    addCodeTools();
-    buildToc();
-    updateStats(content);
+    if (interactive) {
+      addTableTools(rootElement);
+      addCodeTools(rootElement);
+      buildToc(rootElement);
+      updateStats(content);
+    }
+    return diagrams;
+  }
+
+  async function renderForExport(capture) {
+    const isolated = document.createElement("article");
+    const owned = () => controller.isDocumentCaptureCurrent(capture);
+    await render(capture.content, owned, isolated, false);
+    if (!owned()) throw new Error("the document changed before its export could be rendered");
+    return isolated.innerHTML;
   }
 
   function updateStats(text) {
@@ -5778,10 +5988,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function openFromFile(file, handle) {
     const text = await file.text();
     const document = await Promise.resolve(controller.createUntitled());
-    document.displayName = file.name || document.displayName;
+    document.updateMetadata({ displayName: file.name || document.displayName });
     controller.onEditorInput(document.id, text.replace(/\r\n/g, "\n"));
-    document.savedContentSha256 = await hashText(document.content);
-    document.dirty = false;
+    const capture = controller.captureActiveDocument();
+    const contentSha256 = await hashText(capture.content);
+    controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
     if (handle) browserFileHandles.set(document.id, handle);
     controller.activateDocument(document.id);
     syncActiveSurface();
@@ -5808,8 +6019,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       $("file-input").click();
     }
   }
-  $("file-input").addEventListener("change", (e) => {
-    for (const file of e.target.files || []) openFromFile(file, null);
+  $("file-input").addEventListener("change", async (e) => {
+    for (const file of e.target.files || []) {
+      try { await openFromFile(file, null); }
+      catch (error) { setStatus("Could not open " + file.name + " — " + error.message); }
+    }
     e.target.value = "";
   });
 
@@ -5823,7 +6037,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function save() {
     const document = controller.activeDocument();
     if (!document) return;
-    const capture = { documentId: document.id, editRevision: document.editRevision, content: document.content, displayName: document.displayName };
+    const capture = controller.captureActiveDocument();
     if (nativeApp && document.path) {
       try {
         const result = typeof nativeApp.saveDocument === "function"
@@ -5831,7 +6045,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
           : (await nativeApp.writeFile(document.path, capture.content), null);
         if (result && result.status === "conflict") throw new Error("the file changed outside MDedit");
         const contentSha256 = result && result.sha256 ? result.sha256 : await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
@@ -5847,7 +6061,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         }
         await writeToHandle(fileHandle, capture.content);
         const contentSha256 = await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + capture.displayName, false, capture.documentId);
         return;
@@ -5865,20 +6079,18 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function saveAs() {
     const document = controller.activeDocument();
     if (!document) return;
-    const capture = { documentId: document.id, editRevision: document.editRevision, content: document.content, displayName: document.displayName };
+    const capture = controller.captureActiveDocument();
     if (nativeApp) {
       try {
         const path = await nativeApp.saveAs({ defaultDir: nativeDir(document), suggestedName: capture.displayName || "untitled.md", data: capture.content });
         if (!path) return;    // user cancelled
         if (!controller.session.documents.has(capture.documentId)) return;
         browserFileHandles.delete(capture.documentId);
-        document.path = path;
-        document.canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
+        const canonicalPath = typeof nativeApp.canonicalizeDocumentPath === "function"
           ? await nativeApp.canonicalizeDocumentPath(path) : path;
-        document.displayName = path.split(/[/\\]/).pop();
+        document.updateMetadata({ path, canonicalPath, displayName: path.split(/[/\\]/).pop() });
         const contentSha256 = await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
-        controller.activateDocument(document.id);
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
       } catch (e) {
@@ -5894,15 +6106,14 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         });
         await writeToHandle(handle, capture.content);
         browserFileHandles.set(capture.documentId, handle);
-        document.displayName = handle.name;
+        document.updateMetadata({ displayName: handle.name });
         const contentSha256 = await hashText(capture.content);
-        document.recordSave({ editRevision: capture.editRevision, contentSha256, diskSha256: contentSha256 });
-        controller.activateDocument(document.id);
+        controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
         setStatus("Saved to " + handle.name, false, document.id);
       } catch (e) { /* user cancelled */ }
     } else {
-      download();
+      await downloadAsSave(capture);
     }
   }
 
@@ -5938,6 +6149,14 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     return { message: (nativeApp ? "Saved " : "Downloaded ") + name };
   }
 
+  async function downloadAsSave(capture) {
+    await download(capture);
+    const contentSha256 = await hashText(capture.content);
+    controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
+    syncActiveSurface();
+    setStatus("Saved " + capture.displayName, false, capture.documentId);
+  }
+
   /* ── Exports ────────────────────────────────── */
   const pageStyles = () => [...document.querySelectorAll("style")].map((s) => s.textContent).join("\n");
 
@@ -5947,23 +6166,28 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     "body{background:var(--bg);padding:40px 24px}" +
     "#preview{margin:0 auto;padding:0}";
 
-  // a copy of the rendered document without the hover download buttons
-  function cleanPreviewClone() {
-    const clone = preview.cloneNode(true);
-    clone.querySelectorAll(".blk-tools").forEach((n) => n.remove());
+  // Build an export-only tree from HTML rendered for the captured document.
+  function cleanPreviewClone(capture) {
+    if (!capture || typeof capture.renderedHtml !== "string" || !capture.renderedHtml) {
+      throw new Error("captured export HTML is unavailable");
+    }
+    const clone = document.createElement("article");
+    clone.id = "preview";
+    clone.innerHTML = capture.renderedHtml;
     return clone;
   }
 
   async function exportHtml(capture) {
     capture = capture || captureActiveDocument("html");
-    const title = (preview.querySelector("h1") || {}).textContent || baseName(capture);
+    const clone = cleanPreviewClone(capture);
+    const title = (clone.querySelector("h1") || {}).textContent || baseName(capture);
     const doc =
       '<!DOCTYPE html>\n<html lang="en" data-theme="' + theme + '">\n<head>\n' +
       '<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1">\n' +
       "<title>" + escapeHtml(title.trim()) + "</title>\n" +
       "<style>" + pageStyles() + "</style>\n<style>" + EXPORT_RESET + "</style>\n" +
-      '</head>\n<body>\n<article id="preview" style="' + escapeHtml(preview.getAttribute("style") || "") + '">\n' +
-      cleanPreviewClone().innerHTML +
+      '</head>\n<body>\n<article id="preview">\n' +
+      clone.innerHTML +
       "\n</article>\n</body>\n</html>\n";
     const name = baseName(capture) + ".html";
     await saveBlob(new Blob([doc], { type: "text/html;charset=utf-8" }), name, capture);
@@ -5978,9 +6202,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const P = 36;
     const holder = document.createElement("div");
     holder.style.cssText = "position:fixed;left:-20000px;top:0;";
-    const clone = cleanPreviewClone();
-    const width = Math.ceil(preview.getBoundingClientRect().width) || 760;
-    clone.setAttribute("style", (preview.getAttribute("style") || "") + ";padding:0;margin:0;max-width:none;width:" + width + "px");
+    const clone = cleanPreviewClone(capture);
+    const width = 760;
+    clone.setAttribute("style", "padding:0;margin:0;max-width:none;width:" + width + "px");
     holder.appendChild(clone);
     document.body.appendChild(holder);
     try {
@@ -6168,9 +6392,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     filenameEl.value = name;
     const active = controller.activeDocument();
     if (!active) return;
-    active.displayName = name;
-    active.path = null;
-    active.canonicalPath = null;
+    active.updateMetadata({ displayName: name, path: null, canonicalPath: null });
+    controller.checkpointDocument(active.id, "rename-checkpoint");
     browserFileHandles.delete(active.id);
     controller.activateDocument(active.id);
   });
@@ -6671,13 +6894,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       return window.__TAURI__.event.listen("file-opened", handler);
     },
   } : {
-    listenFileOpened() { return () => {}; },
-    async loadRecoveryManifest() { return null; },
-    async loadRecoveryDocument() { return null; },
-    async writeRecoveryDocument() {},
-    async writeRecoveryManifest() {},
-    async deleteRecoveryDocument() {},
-    async recoveryDirectory() { return "browser storage"; },
+    ...MDEdit.createBrowserRecoveryIo(localStorage),
     async readDocument() { throw new Error("native document reads are unavailable"); },
   };
 
@@ -6695,8 +6912,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     statusElement: statusEl,
     captureSharedWorkspace,
     applySharedWorkspace,
-    onActivate(documentId) {
-      controller.activateDocument(documentId);
+    onActivate(documentId, options) {
+      controller.activateDocument(documentId, options);
       syncActiveSurface();
     },
     onClose(documentId) {
@@ -6727,12 +6944,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   recoveryScheduler = new MDEdit.RecoveryScheduler({
     async write(documentId, revision) {
       const model = controller && controller.session && controller.session.documents.get(documentId);
-      if (!(model instanceof MDEdit.DocumentModel) || model.editRevision !== revision) return;
-      const snapshot = { ...model.toSnapshot(), snapshotRevision: revision };
+      if (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision) return;
+      const snapshot = model.toSnapshot();
       await sessionIo.writeRecoveryDocument(documentId, revision, JSON.stringify(snapshot));
-      if (controller.session.documents.get(documentId) === model && model.editRevision === revision) {
+      if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {
         model.persistedRevision = revision;
-        model.snapshotRevision = revision;
       }
     },
     onStatus(documentId, status, error) {
@@ -6751,7 +6967,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     },
     legacyStorage: {
       getItem(key) { try { return localStorage.getItem(key); } catch (_) { return null; } },
-      removeItem(key) { if (nativeApp) try { localStorage.removeItem(key); } catch (_) {} },
+      removeItem(key) { localStorage.removeItem(key); },
     },
     hashText,
     idFactory: () => window.crypto.randomUUID(),
@@ -6762,12 +6978,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
           async commit(_sameCapture, isCurrent) {
             if (!isCurrent()) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
-            render(capture.content, isCurrent);
+            mermaidPending = render(capture.content, isCurrent);
             await mermaidPending;
             return isCurrent() ? preview.innerHTML : null;
           },
         };
       },
+      renderForExport,
     },
     exporter: {
       export(capture) {
@@ -6846,8 +7063,10 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
     await controller.restore();
     let active = controller.activeDocument();
     if (active && !active.content && !active.dirty && controller.session.documents.size === 1) {
-      active.content = WELCOME;
-      active.savedContentSha256 = await hashText(WELCOME);
+      controller.onEditorInput(active.id, WELCOME);
+      const welcomeCapture = controller.captureActiveDocument();
+      const welcomeSha256 = await hashText(WELCOME);
+      controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
     }
     if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
       const paths = await window.__TAURI__.core.invoke("take_pending_files").catch(() => []);

@@ -9,6 +9,7 @@ const {
   captureEditorState,
   tabDescriptor,
 } = require("../src/workspace-view.js");
+const { SessionController } = require("../src/session-controller.js");
 
 function dataKey(name) {
   return name.slice(5).replace(/-([a-z])/g, (_match, letter) => letter.toUpperCase());
@@ -517,6 +518,50 @@ test("keyboard activation keeps focus after a synchronous controller rerender", 
   assert.equal(fixture.document.activeElement, last);
   assert.equal(last.getAttribute("aria-selected"), "true");
   assert.equal(last.scrollIntoViewCalls.length, 1);
+});
+
+test("WorkspaceView keyboard navigation through SessionController keeps tab focus across frames", () => {
+  const frames = [];
+  let controller;
+  const fixture = makeFixture({
+    onActivate(id, options) { controller.activateDocument(id, options); },
+  });
+  fixture.view.renderSession = (session) => fixture.view.renderTabs(session, session.activeDocumentId);
+  fixture.view.renderDocument = () => {};
+  controller = new SessionController({
+    io: {
+      listenFileOpened() { return () => {}; },
+      async loadRecoveryManifest() { return null; },
+      async loadRecoveryDocument() { return null; },
+      async writeRecoveryManifest() {},
+      async recoveryDirectory() { return "memory"; },
+    },
+    scheduler: { changed() { return true; }, async flush() {} },
+    view: fixture.view,
+    dialogs: {},
+    legacyStorage: { getItem() { return null; }, removeItem() {} },
+    hashText: async (text) => `sha:${text}`,
+    idFactory: (() => { let id = 0; return () => `doc-${++id}`; })(),
+    requestAnimationFrame(callback) { frames.push(callback); },
+  });
+  const firstDocument = controller.createUntitled();
+  controller.createUntitled();
+  controller.createUntitled();
+  frames.splice(0).forEach((callback) => callback());
+  controller.activateDocument(firstDocument.id, { focusEditor: false });
+  frames.splice(0).forEach((callback) => callback());
+
+  let selected = find(fixture.elements.tabList.children[0], (element) => element.getAttribute("role") === "tab");
+  selected.focus();
+  selected.dispatchEvent({ type: "keydown", key: "ArrowRight", bubbles: true });
+  frames.splice(0).forEach((callback) => callback());
+  selected = find(fixture.elements.tabList.children[1], (element) => element.getAttribute("role") === "tab");
+  assert.equal(fixture.document.activeElement, selected);
+
+  selected.dispatchEvent({ type: "keydown", key: "ArrowRight", bubbles: true });
+  frames.splice(0).forEach((callback) => callback());
+  selected = find(fixture.elements.tabList.children[2], (element) => element.getAttribute("role") === "tab");
+  assert.equal(fixture.document.activeElement, selected);
 });
 
 test("closing a focused tab restores focus to the active neighbor and never steals outside focus", () => {
