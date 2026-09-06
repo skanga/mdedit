@@ -42,6 +42,32 @@ function memoryStorage() {
   };
 }
 
+function fakeClock() {
+  let now = 0;
+  let nextId = 0;
+  const timers = new Map();
+  return {
+    setTimeout(callback, delay) {
+      const id = ++nextId;
+      timers.set(id, { callback, at: now + delay });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    advance(milliseconds) {
+      now += milliseconds;
+      for (;;) {
+        const due = [...timers.entries()]
+          .filter(([, timer]) => timer.at <= now)
+          .sort((left, right) => left[1].at - right[1].at || left[0] - right[0]);
+        if (due.length === 0) break;
+        const [id, timer] = due[0];
+        timers.delete(id);
+        timer.callback();
+      }
+    },
+  };
+}
+
 async function outcomeByImmediate(promise) {
   return Promise.race([
     promise.then(
@@ -336,6 +362,24 @@ test("browser recovery falls back to previous when the current slot is corrupt",
   await io.writeRecoveryDocument("a", 2, JSON.stringify(snapshot("a", 2)));
   const current = [...storage.values.keys()].find((key) => key.endsWith("document:a:current"));
   storage.setItem(current, "broken json");
+  assert.match(await io.loadRecoveryDocument("a", 1), /"snapshotRevision":1/);
+});
+
+test("wrong-document current slot cannot evict the valid previous snapshot on failed install", async () => {
+  const storage = memoryStorage();
+  const io = createBrowserRecoveryIo(storage);
+  await io.writeRecoveryDocument("a", 1, JSON.stringify(snapshot("a", 1)));
+  await io.writeRecoveryDocument("a", 2, JSON.stringify(snapshot("a", 2)));
+  const current = [...storage.values.keys()].find((key) => key.endsWith("document:a:current"));
+  storage.setItem(current, JSON.stringify(snapshot("wrong", 9)));
+  const setItem = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (key === current && String(value).includes('"snapshotRevision":3')) throw new Error("install quota");
+    setItem.call(storage, key, value);
+  };
+
+  await assert.rejects(io.writeRecoveryDocument("a", 3, JSON.stringify(snapshot("a", 3))), /install quota/);
+  storage.setItem = setItem;
   assert.match(await io.loadRecoveryDocument("a", 1), /"snapshotRevision":1/);
 });
 
@@ -1943,9 +1987,178 @@ test("initial manifest failure is reported after its document snapshot succeeds"
   const schedulerCalls = fixture.calls.scheduler.length;
   controller.onEditorInput(document.id, "blocked edit");
   assert.equal(fixture.calls.scheduler.length, schedulerCalls);
+  const future = controller.createUntitled();
+  assert.equal(future.recoveryStatus, "failed");
   fail = false;
   assert.equal(await controller.retryRecovery(document.id), true);
   assert.equal(fixture.calls.manifestWrites.length, 1);
+  assert.deepEqual(JSON.parse(fixture.calls.manifestWrites[0][1]).tabs.map((tab) => tab.documentId), [document.id, future.id]);
+  assert.equal(document.recoveryStatus, "clean");
+  assert.equal(future.recoveryStatus, "clean");
+});
+
+test("an edit during whole-session retry remains deferred and pending after manifest success", async () => {
+  const retryGate = deferred();
+  const retryStarted = deferred();
+  let first = true;
+  const fixture = makeDependencies({
+    io: { async writeRecoveryManifest(generation, json) {
+      if (first) {
+        first = false;
+        throw new Error("initial manifest failure");
+      }
+      retryStarted.resolve();
+      await retryGate.promise;
+      fixture.calls.manifestWrites.push([generation, json]);
+    } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  const retrying = controller.retryRecovery();
+  await retryStarted.promise;
+  const schedulerBefore = fixture.calls.scheduler.length;
+  controller.onEditorInput(document.id, "changed while retry manifest is held");
+  assert.equal(document.recoveryStatus, "failed");
+  assert.equal(fixture.calls.scheduler.length, schedulerBefore);
+
+  retryGate.resolve();
+  assert.equal(await retrying, true);
+  assert.equal(document.recoveryStatus, "pending");
+  assert.deepEqual(fixture.calls.scheduler.at(-1), ["changed", document.id, document.snapshotRevision]);
+});
+
+test("held manifest publication defers edits and rejection blocks the whole session", async () => {
+  const manifestGate = deferred();
+  let hold = false;
+  const fixture = makeDependencies({
+    io: { async writeRecoveryManifest(generation, json) {
+      if (hold) return manifestGate.promise;
+      fixture.calls.manifestWrites.push([generation, json]);
+    } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  hold = true;
+  const persisting = controller.persistManifest();
+  await settle();
+  const before = fixture.calls.scheduler.length;
+  controller.onEditorInput(a.id, "during manifest");
+  const b = controller.session.createUntitled();
+  controller._presentActivatedDocument(b);
+  assert.equal(fixture.calls.scheduler.length, before);
+  manifestGate.reject(new Error("manifest rejected"));
+  await assert.rejects(persisting, /manifest rejected/);
+  assert.equal(a.recoveryStatus, "failed");
+  assert.equal(b.recoveryStatus, "failed");
+  const blockedCalls = fixture.calls.scheduler.length;
+  controller.onEditorInput(b.id, "blocked too");
+  assert.equal(fixture.calls.scheduler.length, blockedCalls);
+});
+
+test("successful held manifest schedules only the latest deferred revision", async () => {
+  const manifestGate = deferred();
+  const manifestStarted = deferred();
+  let hold = false;
+  const fixture = makeDependencies({
+    io: { async writeRecoveryManifest(generation, json) {
+      if (hold) {
+        manifestStarted.resolve();
+        await manifestGate.promise;
+      }
+      fixture.calls.manifestWrites.push([generation, json]);
+    } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  hold = true;
+  const persisting = controller.persistManifest();
+  await manifestStarted.promise;
+  const schedulerBefore = fixture.calls.scheduler.length;
+  const changedBefore = fixture.calls.scheduler.filter(([kind]) => kind === "changed").length;
+  controller.onEditorInput(document.id, "first deferred edit");
+  controller.onEditorInput(document.id, "latest deferred edit");
+  assert.equal(fixture.calls.scheduler.filter(([kind]) => kind === "changed").length, changedBefore);
+
+  hold = false;
+  manifestGate.resolve();
+  await persisting;
+  const deferredChanges = fixture.calls.scheduler.slice(schedulerBefore).filter(
+    ([kind, id, revision]) => kind === "changed" && id === document.id
+      && revision === document.snapshotRevision,
+  );
+  assert.equal(deferredChanges.length, 1);
+  assert.equal(document.recoveryStatus, "pending");
+});
+
+test("real scheduler cannot rotate a durable snapshot while a manifest publish is held", async () => {
+  const storage = memoryStorage();
+  const browserIo = createBrowserRecoveryIo(storage);
+  const clock = fakeClock();
+  const documentWrites = [];
+  let manifestGate = null;
+  let manifestStarted = null;
+  let controller;
+  const fixture = makeDependencies();
+  fixture.dependencies.io = {
+    ...fixture.dependencies.io,
+    ...browserIo,
+    async writeRecoveryDocument(documentId, revision, json) {
+      documentWrites.push([documentId, revision]);
+      return browserIo.writeRecoveryDocument(documentId, revision, json);
+    },
+    async writeRecoveryManifest(generation, json) {
+      if (manifestGate) {
+        manifestStarted.resolve();
+        await manifestGate.promise;
+      }
+      return browserIo.writeRecoveryManifest(generation, json);
+    },
+  };
+  fixture.dependencies.scheduler = new RecoveryScheduler({
+    clock,
+    async write(documentId, revision) {
+      const document = controller.session.documents.get(documentId);
+      await fixture.dependencies.io.writeRecoveryDocument(
+        documentId,
+        revision,
+        JSON.stringify(document.toSnapshot()),
+      );
+      document.persistedRevision = revision;
+    },
+    onStatus(documentId, status, error) {
+      if (controller) controller.onRecoveryStatus(documentId, status, error);
+    },
+  });
+  controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  const durableManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  const durableRevision = durableManifest.tabs[0].snapshotRevision;
+  const writesBeforeBarrier = documentWrites.length;
+
+  manifestGate = deferred();
+  manifestStarted = deferred();
+  const persisting = controller.persistManifest();
+  await manifestStarted.promise;
+  controller.onEditorInput(document.id, "first blocked edit");
+  controller.onEditorInput(document.id, "second blocked edit");
+  clock.advance(20_000);
+  await settle();
+  assert.equal(documentWrites.length, writesBeforeBarrier);
+
+  manifestGate.reject(new Error("held manifest rejected"));
+  await assert.rejects(persisting, /held manifest rejected/);
+  const reloadedManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  assert.equal(reloadedManifest.tabs[0].snapshotRevision, durableRevision);
+  assert.ok(await browserIo.loadRecoveryDocument(document.id, durableRevision));
+  assert.equal(document.recoveryStatus, "failed");
 });
 
 test("a failed outgoing recovery flush is reported to that document without rolling activation back", async () => {

@@ -122,7 +122,10 @@
         DocumentModel.fromSnapshot(value);
         rotate(keys, text, (raw) => {
           if (typeof raw !== "string") return null;
-          try { DocumentModel.fromSnapshot(JSON.parse(raw)); return raw; } catch (_) { return null; }
+          try {
+            const currentDocument = DocumentModel.fromSnapshot(JSON.parse(raw));
+            return currentDocument.id === documentId ? raw : null;
+          } catch (_) { return null; }
         });
         cleanup(documentPrefix(documentId), new Set([keys.current, keys.previous]));
       },
@@ -233,6 +236,9 @@
       this._recoveryManifestQueued = false;
       this._pendingManifestCandidates = new Set();
       this._recoveryBlocks = new Map();
+      this._sessionRecoveryFailure = null;
+      this._manifestBarrier = null;
+      this._deferredRecoveryRevisions = new Map();
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
@@ -906,7 +912,7 @@
       if (!changed) return false;
 
       this._invalidatePreview(documentId);
-      if (!this._recoveryBlocks.has(documentId)) this.scheduler.changed(documentId, document.snapshotRevision);
+      this._scheduleRecoveryRevision(document);
       this._setDocumentStatus(documentId, {
         dirty: document.dirty,
         fileStatus: document.fileStatus,
@@ -925,9 +931,8 @@
 
     onRecoveryStatus(documentId, status, error) {
       const document = this.session && this.session.documents.get(documentId);
-      if (this._recoveryBlocks.has(documentId)) {
-        const blocked = this._recoveryBlocks.get(documentId);
-        this._setDocumentStatus(documentId, { recoveryStatus: "failed", message: blocked.message });
+      if (this._sessionRecoveryFailure) {
+        this._publishBlockedStatus(document);
         return;
       }
       if (document instanceof DocumentModel) document.recoveryStatus = status;
@@ -949,15 +954,19 @@
     }
 
     async retryRecovery(documentId) {
-      const ids = documentId ? [documentId] : [...this._recoveryBlocks.keys()];
+      const ids = this.session ? [...this.session.documents.keys()] : (documentId ? [documentId] : []);
+      this._manifestBarrier = { retry: true };
       for (const id of ids) {
         if (typeof this.scheduler.retry === "function") {
           try { await this.scheduler.retry(id); } catch (_) { /* latest immutable retry below owns reporting */ }
         }
       }
       try {
-        const result = await this._persistManifestNow(this._lifecycleToken, { allowBlocked: true });
-        if (result) this._recoveryBlocks.clear();
+        let result = false;
+        while (!result) result = await this._persistManifestNow(this._lifecycleToken, { allowBlocked: true });
+        this._sessionRecoveryFailure = null;
+        this._recoveryBlocks.clear();
+        this._releaseManifestBarrier(true);
         return result;
       } catch (reason) {
         for (const id of ids) this._blockRecovery(id, reason);
@@ -970,7 +979,58 @@
       const document = this.session && this.session.documents.get(documentId);
       const message = `Recovery failed for ${document ? document.displayName : documentId}: ${error.message}`;
       this._recoveryBlocks.set(documentId, { error, message });
+      this._sessionRecoveryFailure = error;
+      if (document instanceof DocumentModel) document.recoveryStatus = "failed";
       this._setDocumentStatus(documentId, { recoveryStatus: "failed", message });
+    }
+
+    _publishBlockedStatus(document) {
+      if (!(document instanceof DocumentModel) || !this._sessionRecoveryFailure) return;
+      document.recoveryStatus = "failed";
+      this._setDocumentStatus(document.id, {
+        recoveryStatus: "failed",
+        message: `Recovery failed for this session: ${this._sessionRecoveryFailure.message}`,
+      });
+    }
+
+    _scheduleRecoveryRevision(document) {
+      if (!(document instanceof DocumentModel)) return false;
+      if (this._manifestBarrier) {
+        const previous = this._deferredRecoveryRevisions.get(document.id) ?? -1;
+        this._deferredRecoveryRevisions.set(document.id, Math.max(previous, document.snapshotRevision));
+        if (this._sessionRecoveryFailure) this._publishBlockedStatus(document);
+        return false;
+      }
+      if (this._sessionRecoveryFailure) {
+        this._publishBlockedStatus(document);
+        return false;
+      }
+      this.scheduler.changed(document.id, document.snapshotRevision);
+      return true;
+    }
+
+    _releaseManifestBarrier(scheduleDeferred) {
+      this._manifestBarrier = null;
+      if (!scheduleDeferred || this._sessionRecoveryFailure) return;
+      const deferred = [...this._deferredRecoveryRevisions];
+      this._deferredRecoveryRevisions.clear();
+      for (const [id, revision] of deferred) {
+        const document = this.session && this.session.documents.get(id);
+        if (!(document instanceof DocumentModel)) continue;
+        if (revision <= document.persistedRevision) {
+          document.recoveryStatus = "clean";
+          this._setDocumentStatus(id, { recoveryStatus: "clean" });
+          continue;
+        }
+        document.recoveryStatus = "pending";
+        this.scheduler.changed(id, Math.max(revision, document.snapshotRevision));
+        this._setDocumentStatus(id, { recoveryStatus: "pending" });
+      }
+      for (const document of this.session ? this.session.documents.values() : []) {
+        if (!(document instanceof DocumentModel) || this._deferredRecoveryRevisions.has(document.id)) continue;
+        if (document.recoveryStatus === "failed") document.recoveryStatus = "clean";
+        this._setDocumentStatus(document.id, { recoveryStatus: document.recoveryStatus });
+      }
     }
 
     renderDocument(documentId = this.session && this.session.activeDocumentId) {
@@ -1069,9 +1129,7 @@
       });
       const needsCheckpoint = changed
         || capture.document.persistedRevision < capture.document.snapshotRevision;
-      if (needsCheckpoint && !this._recoveryBlocks.has(capture.documentId)) {
-        this.scheduler.changed(capture.documentId, capture.document.snapshotRevision);
-      }
+      if (needsCheckpoint) this._scheduleRecoveryRevision(capture.document);
       this._setDocumentStatus(capture.documentId, {
         dirty: capture.document.dirty,
         fileStatus: capture.document.fileStatus,
@@ -1092,8 +1150,7 @@
       if (this._disposed || !this.session) return false;
       const document = this.session.documents.get(documentId);
       if (!(document instanceof DocumentModel)) return false;
-      if (this._recoveryBlocks.has(documentId)) return false;
-      this.scheduler.changed(documentId, document.snapshotRevision);
+      if (!this._scheduleRecoveryRevision(document)) return false;
       if (this._restoreState === "restored") {
         this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, {
           phase,
@@ -1211,16 +1268,14 @@
         documentId: tab.documentId,
         snapshotRevision: tab.snapshotRevision,
       }));
-      if (!allowBlocked) {
-        const blocked = capturedDocuments.find((capture) => this._recoveryBlocks.has(capture.documentId));
-        if (blocked) return Promise.reject(this._recoveryBlocks.get(blocked.documentId).error);
-      }
+      if (!allowBlocked && this._sessionRecoveryFailure) return Promise.reject(this._sessionRecoveryFailure);
       const coverage = new Map(capturedDocuments.map((capture) => [capture.documentId, capture.snapshotRevision]));
       this._pendingManifestCandidates.add(coverage);
       const json = JSON.stringify(candidate);
       const write = this._manifestWrites.catch(() => {}).then(
         async () => {
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          if (!allowBlocked && this._sessionRecoveryFailure) throw this._sessionRecoveryFailure;
           for (const capture of capturedDocuments) {
             if (!(capture.document instanceof DocumentModel)) continue;
             this.scheduler.changed(capture.documentId, capture.snapshotRevision);
@@ -1236,13 +1291,16 @@
               || capture.document.snapshotRevision !== capture.snapshotRevision)
             || JSON.stringify(this.session.toManifest()) !== json;
           if (obsolete) {
-            this._queueRecoveryManifest();
+            if (!allowBlocked) this._queueRecoveryManifest();
             return false;
           }
+          if (!this._manifestBarrier) this._manifestBarrier = { candidate: coverage };
           try {
             await this.io.writeRecoveryManifest(candidate.generation, json);
+            this._releaseManifestBarrier(true);
           } catch (reason) {
-            for (const capture of capturedDocuments) this._blockRecovery(capture.documentId, reason);
+            this._manifestBarrier = null;
+            for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
             throw reason;
           }
           return true;
@@ -1288,7 +1346,7 @@
               ...((captured && captured.find) || {}),
             },
           });
-          if (!this._recoveryBlocks.has(document.id)) this.scheduler.changed(document.id, document.snapshotRevision);
+          this._scheduleRecoveryRevision(document);
         } catch (reason) {
           this._setDocumentStatus(document.id, {
             status: "failed",
@@ -1298,7 +1356,7 @@
       }
 
       let flushing;
-      if (this._recoveryBlocks.has(document.id)) return;
+      if (this._sessionRecoveryFailure || this._manifestBarrier) return;
       try {
         flushing = this.scheduler.flush(document.id, document.snapshotRevision);
       } catch (reason) {
@@ -1322,6 +1380,9 @@
 
     _presentActivatedDocument(document, { focusEditor = true } = {}) {
       if (this._disposed || !document) return;
+      if (document instanceof DocumentModel && (this._manifestBarrier || this._sessionRecoveryFailure)) {
+        this._scheduleRecoveryRevision(document);
+      }
       const id = document.id;
       const viewToken = ++this._viewToken;
       this._renderSession();
