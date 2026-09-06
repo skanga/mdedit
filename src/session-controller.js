@@ -76,11 +76,19 @@
       if (typeof raw !== "string") return null;
       try { const value = JSON.parse(raw); return predicate(value) ? raw : null; } catch (_) { return null; }
     };
-    const rotate = (keys, json) => {
+    const validManifest = (raw) => valid(raw, (value) => {
+      SessionModel.fromManifest(value, { idFactory: () => "validation-id" });
+      return true;
+    });
+    const validDocument = (raw, documentId, revision) => valid(raw, (value) => {
+      const document = DocumentModel.fromSnapshot(value);
+      return document.id === documentId && document.snapshotRevision === revision;
+    });
+    const rotate = (keys, json, currentValidator) => {
       JSON.parse(json);
       storage.setItem(keys.temp, json);
       try {
-        const current = storage.getItem(keys.current);
+        const current = currentValidator(storage.getItem(keys.current));
         if (current !== null) storage.setItem(keys.previous, current);
         storage.setItem(keys.current, json);
       } finally {
@@ -99,27 +107,31 @@
     return {
       listenFileOpened() { return () => {}; },
       async loadRecoveryManifest() {
-        return valid(storage.getItem(manifestSlots.current), (value) => Number.isSafeInteger(value.generation))
-          || valid(storage.getItem(manifestSlots.previous), (value) => Number.isSafeInteger(value.generation));
+        return validManifest(storage.getItem(manifestSlots.current)) || validManifest(storage.getItem(manifestSlots.previous));
       },
       async loadRecoveryDocument(documentId, revision) {
         const keys = slots(documentPrefix(documentId));
-        const matches = (value) => value.documentId === documentId && value.snapshotRevision === revision;
-        return valid(storage.getItem(keys.current), matches) || valid(storage.getItem(keys.previous), matches);
+        return validDocument(storage.getItem(keys.current), documentId, revision)
+          || validDocument(storage.getItem(keys.previous), documentId, revision);
       },
       async writeRecoveryDocument(documentId, revision, json) {
         const keys = slots(documentPrefix(documentId));
         const text = String(json);
         const value = JSON.parse(text);
         if (value.documentId !== documentId || value.snapshotRevision !== revision) throw new Error("recovery snapshot identity mismatch");
-        rotate(keys, text);
+        DocumentModel.fromSnapshot(value);
+        rotate(keys, text, (raw) => {
+          if (typeof raw !== "string") return null;
+          try { DocumentModel.fromSnapshot(JSON.parse(raw)); return raw; } catch (_) { return null; }
+        });
         cleanup(documentPrefix(documentId), new Set([keys.current, keys.previous]));
       },
       async writeRecoveryManifest(generation, json) {
         const text = String(json);
         const value = JSON.parse(text);
         if (value.generation !== generation) throw new Error("recovery manifest generation mismatch");
-        rotate(manifestSlots, text);
+        SessionModel.fromManifest(value, { idFactory: () => "validation-id" });
+        rotate(manifestSlots, text, validManifest);
         cleanup(`${BROWSER_RECOVERY_PREFIX}manifest`, new Set([manifestSlots.current, manifestSlots.previous]));
       },
       async deleteRecoveryDocument(documentId) {
@@ -220,6 +232,7 @@
       this._manifestWrites = Promise.resolve();
       this._recoveryManifestQueued = false;
       this._pendingManifestCandidates = new Set();
+      this._recoveryBlocks = new Map();
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
@@ -893,7 +906,7 @@
       if (!changed) return false;
 
       this._invalidatePreview(documentId);
-      this.scheduler.changed(documentId, document.snapshotRevision);
+      if (!this._recoveryBlocks.has(documentId)) this.scheduler.changed(documentId, document.snapshotRevision);
       this._setDocumentStatus(documentId, {
         dirty: document.dirty,
         fileStatus: document.fileStatus,
@@ -912,6 +925,11 @@
 
     onRecoveryStatus(documentId, status, error) {
       const document = this.session && this.session.documents.get(documentId);
+      if (this._recoveryBlocks.has(documentId)) {
+        const blocked = this._recoveryBlocks.get(documentId);
+        this._setDocumentStatus(documentId, { recoveryStatus: "failed", message: blocked.message });
+        return;
+      }
       if (document instanceof DocumentModel) document.recoveryStatus = status;
       this._setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
       const covered = document instanceof DocumentModel && [...this._pendingManifestCandidates].some(
@@ -928,6 +946,31 @@
         if (this._disposed || this._restoreState !== "restored") return;
         this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, { phase: "recovery-checkpoint" }));
       });
+    }
+
+    async retryRecovery(documentId) {
+      const ids = documentId ? [documentId] : [...this._recoveryBlocks.keys()];
+      for (const id of ids) {
+        if (typeof this.scheduler.retry === "function") {
+          try { await this.scheduler.retry(id); } catch (_) { /* latest immutable retry below owns reporting */ }
+        }
+      }
+      try {
+        const result = await this._persistManifestNow(this._lifecycleToken, { allowBlocked: true });
+        if (result) this._recoveryBlocks.clear();
+        return result;
+      } catch (reason) {
+        for (const id of ids) this._blockRecovery(id, reason);
+        throw reason;
+      }
+    }
+
+    _blockRecovery(documentId, reason) {
+      const error = normalizeError(reason);
+      const document = this.session && this.session.documents.get(documentId);
+      const message = `Recovery failed for ${document ? document.displayName : documentId}: ${error.message}`;
+      this._recoveryBlocks.set(documentId, { error, message });
+      this._setDocumentStatus(documentId, { recoveryStatus: "failed", message });
     }
 
     renderDocument(documentId = this.session && this.session.activeDocumentId) {
@@ -1026,7 +1069,9 @@
       });
       const needsCheckpoint = changed
         || capture.document.persistedRevision < capture.document.snapshotRevision;
-      if (needsCheckpoint) this.scheduler.changed(capture.documentId, capture.document.snapshotRevision);
+      if (needsCheckpoint && !this._recoveryBlocks.has(capture.documentId)) {
+        this.scheduler.changed(capture.documentId, capture.document.snapshotRevision);
+      }
       this._setDocumentStatus(capture.documentId, {
         dirty: capture.document.dirty,
         fileStatus: capture.document.fileStatus,
@@ -1047,6 +1092,7 @@
       if (this._disposed || !this.session) return false;
       const document = this.session.documents.get(documentId);
       if (!(document instanceof DocumentModel)) return false;
+      if (this._recoveryBlocks.has(documentId)) return false;
       this.scheduler.changed(documentId, document.snapshotRevision);
       if (this._restoreState === "restored") {
         this._persistManifestNow().catch((reason) => this._showRecoveryError(reason, {
@@ -1155,7 +1201,7 @@
       return this._scheduleOperation((token) => this._persistManifestNow(token));
     }
 
-    _persistManifestNow(token = this._lifecycleToken) {
+    _persistManifestNow(token = this._lifecycleToken, { allowBlocked = false } = {}) {
       if (!this._isLifecycleActive(token)) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
       const candidateSession = this.session;
@@ -1165,6 +1211,10 @@
         documentId: tab.documentId,
         snapshotRevision: tab.snapshotRevision,
       }));
+      if (!allowBlocked) {
+        const blocked = capturedDocuments.find((capture) => this._recoveryBlocks.has(capture.documentId));
+        if (blocked) return Promise.reject(this._recoveryBlocks.get(blocked.documentId).error);
+      }
       const coverage = new Map(capturedDocuments.map((capture) => [capture.documentId, capture.snapshotRevision]));
       this._pendingManifestCandidates.add(coverage);
       const json = JSON.stringify(candidate);
@@ -1189,7 +1239,12 @@
             this._queueRecoveryManifest();
             return false;
           }
-          await this.io.writeRecoveryManifest(candidate.generation, json);
+          try {
+            await this.io.writeRecoveryManifest(candidate.generation, json);
+          } catch (reason) {
+            for (const capture of capturedDocuments) this._blockRecovery(capture.documentId, reason);
+            throw reason;
+          }
           return true;
         },
       );
@@ -1233,7 +1288,7 @@
               ...((captured && captured.find) || {}),
             },
           });
-          this.scheduler.changed(document.id, document.snapshotRevision);
+          if (!this._recoveryBlocks.has(document.id)) this.scheduler.changed(document.id, document.snapshotRevision);
         } catch (reason) {
           this._setDocumentStatus(document.id, {
             status: "failed",
@@ -1243,6 +1298,7 @@
       }
 
       let flushing;
+      if (this._recoveryBlocks.has(document.id)) return;
       try {
         flushing = this.scheduler.flush(document.id, document.snapshotRevision);
       } catch (reason) {

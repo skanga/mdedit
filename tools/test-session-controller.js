@@ -267,11 +267,13 @@ test("browser recovery IO stores versioned JSON documents and manifest durably",
   const storage = memoryStorage();
   const io = createBrowserRecoveryIo(storage);
 
-  await io.writeRecoveryDocument("doc/a", 3, '{"documentId":"doc/a","snapshotRevision":3}');
-  await io.writeRecoveryManifest(9, '{"generation":9}');
+  const documentJson = JSON.stringify(snapshot("doc/a", 3));
+  await io.writeRecoveryDocument("doc/a", 3, documentJson);
+  const manifestJson = JSON.stringify(manifest(["doc/a"], "doc/a", { generation: 9 }));
+  await io.writeRecoveryManifest(9, manifestJson);
 
-  assert.equal(await io.loadRecoveryDocument("doc/a", 3), '{"documentId":"doc/a","snapshotRevision":3}');
-  assert.equal(await io.loadRecoveryManifest(), '{"generation":9}');
+  assert.equal(await io.loadRecoveryDocument("doc/a", 3), documentJson);
+  assert.equal(await io.loadRecoveryManifest(), manifestJson);
   assert.match(await io.recoveryDirectory(), /localStorage.*v1/i);
   assert.ok([...storage.values.keys()].every((key) => key.startsWith("mdedit-recovery-v1:")));
 
@@ -284,8 +286,8 @@ test("browser recovery IO propagates storage quota failures", async () => {
   storage.setItem = () => { throw new Error("quota exceeded"); };
   const io = createBrowserRecoveryIo(storage);
 
-  await assert.rejects(io.writeRecoveryDocument("a", 1, '{"documentId":"a","snapshotRevision":1}'), /quota exceeded/);
-  await assert.rejects(io.writeRecoveryManifest(1, '{"generation":1}'), /quota exceeded/);
+  await assert.rejects(io.writeRecoveryDocument("a", 1, JSON.stringify(snapshot("a", 1))), /quota exceeded/);
+  await assert.rejects(io.writeRecoveryManifest(1, JSON.stringify(manifest(["a"], "a", { generation: 1 }))), /quota exceeded/);
 });
 
 test("browser recovery environment survives a SecurityError localStorage getter", async () => {
@@ -294,29 +296,31 @@ test("browser recovery environment survives a SecurityError localStorage getter"
   const environment = createBrowserRecoveryEnvironment(root);
   assert.equal(environment.persistent, false);
   assert.match(environment.error.message, /SecurityError/);
-  await environment.io.writeRecoveryDocument("a", 1, JSON.stringify({ documentId: "a", snapshotRevision: 1 }));
+  await environment.io.writeRecoveryDocument("a", 1, JSON.stringify(snapshot("a", 1)));
   assert.match(await environment.io.loadRecoveryDocument("a", 1), /"snapshotRevision":1/);
 });
 
 test("browser manifest pointer keeps the last valid generation after a failed publish", async () => {
   const storage = memoryStorage();
   const io = createBrowserRecoveryIo(storage);
-  await io.writeRecoveryManifest(1, '{"generation":1}');
+  const firstManifest = JSON.stringify(manifest(["a"], "a", { generation: 1 }));
+  const secondManifest = JSON.stringify(manifest(["a"], "a", { generation: 2 }));
+  await io.writeRecoveryManifest(1, firstManifest);
   const setItem = storage.setItem;
   storage.setItem = (key, value) => {
     if (key.endsWith("manifest:current") && String(value).includes('"generation":2')) throw new Error("pointer quota");
     setItem.call(storage, key, value);
   };
 
-  await assert.rejects(io.writeRecoveryManifest(2, '{"generation":2}'), /pointer quota/);
-  assert.equal(await io.loadRecoveryManifest(), '{"generation":1}');
+  await assert.rejects(io.writeRecoveryManifest(2, secondManifest), /pointer quota/);
+  assert.equal(await io.loadRecoveryManifest(), firstManifest);
 });
 
 test("browser recovery keeps only current and previous snapshots after 100 revisions", async () => {
   const storage = memoryStorage();
   const io = createBrowserRecoveryIo(storage);
   for (let revision = 0; revision < 100; revision += 1) {
-    await io.writeRecoveryDocument("a", revision, JSON.stringify({ documentId: "a", snapshotRevision: revision }));
+    await io.writeRecoveryDocument("a", revision, JSON.stringify(snapshot("a", revision)));
   }
   const documentKeys = [...storage.values.keys()].filter((key) => key.includes("document:a:"));
   assert.ok(documentKeys.length <= 2, documentKeys.join(","));
@@ -328,8 +332,8 @@ test("browser recovery keeps only current and previous snapshots after 100 revis
 test("browser recovery falls back to previous when the current slot is corrupt", async () => {
   const storage = memoryStorage();
   const io = createBrowserRecoveryIo(storage);
-  await io.writeRecoveryDocument("a", 1, JSON.stringify({ documentId: "a", snapshotRevision: 1 }));
-  await io.writeRecoveryDocument("a", 2, JSON.stringify({ documentId: "a", snapshotRevision: 2 }));
+  await io.writeRecoveryDocument("a", 1, JSON.stringify(snapshot("a", 1)));
+  await io.writeRecoveryDocument("a", 2, JSON.stringify(snapshot("a", 2)));
   const current = [...storage.values.keys()].find((key) => key.endsWith("document:a:current"));
   storage.setItem(current, "broken json");
   assert.match(await io.loadRecoveryDocument("a", 1), /"snapshotRevision":1/);
@@ -1918,11 +1922,15 @@ test("snapshot failure prevents publishing a dangling manifest and reports recov
 });
 
 test("initial manifest failure is reported after its document snapshot succeeds", async () => {
+  let fail = true;
   const fixture = makeDependencies({
-    io: { async writeRecoveryManifest() { throw new Error("manifest quota"); } },
+    io: { async writeRecoveryManifest(generation, json) {
+      if (fail) throw new Error("manifest quota");
+      fixture.calls.manifestWrites.push([generation, json]);
+    } },
   });
   const controller = new SessionController(fixture.dependencies);
-  controller.createUntitled();
+  const document = controller.createUntitled();
 
   await controller.restore();
   await settle();
@@ -1932,6 +1940,12 @@ test("initial manifest failure is reported after its document snapshot succeeds"
   assert.equal(fixture.calls.statuses.at(-1)[1].recoveryStatus, "failed");
   assert.match(fixture.calls.statuses.at(-1)[1].message, /manifest quota/);
   assert.ok(fixture.calls.scheduler.some(([kind]) => kind === "flush"));
+  const schedulerCalls = fixture.calls.scheduler.length;
+  controller.onEditorInput(document.id, "blocked edit");
+  assert.equal(fixture.calls.scheduler.length, schedulerCalls);
+  fail = false;
+  assert.equal(await controller.retryRecovery(document.id), true);
+  assert.equal(fixture.calls.manifestWrites.length, 1);
 });
 
 test("a failed outgoing recovery flush is reported to that document without rolling activation back", async () => {
