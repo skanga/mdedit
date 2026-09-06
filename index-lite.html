@@ -6079,13 +6079,15 @@ return Pe}()
         this.requestAnimationFrame(() => {
           if (this._disposed || viewToken !== this._viewToken || !this.session
               || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
-          this.renderDocument(id).catch((reason) => {
-            if (!this.session || this.session.documents.get(id) !== document) return;
-            this._setDocumentStatus(id, {
-              status: "failed",
-              message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+          if (!(document instanceof DocumentModel) || document.workspace.viewMode !== "edit") {
+            this.renderDocument(id).catch((reason) => {
+              if (!this.session || this.session.documents.get(id) !== document) return;
+              this._setDocumentStatus(id, {
+                status: "failed",
+                message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+              });
             });
-          });
+          }
           if (persist && this._restoreState === "restored") {
             this._persistManifestNow().catch((reason) => {
               if (!this.session || this.session.documents.get(id) !== document) return;

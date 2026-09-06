@@ -2518,6 +2518,7 @@ test("Edit-only activation clears shared preview without inserting a cached prev
   await controller.renderDocument(a.id);
   controller.createUntitled();
   a.updateWorkspace({ ...a.workspace, viewMode: "edit" });
+  frames.length = 0;
   fixture.calls.preview.length = 0;
 
   controller.activateDocument(a.id);
@@ -2525,6 +2526,11 @@ test("Edit-only activation clears shared preview without inserting a cached prev
   assert.equal(fixture.calls.preview.length, 1);
   assert.equal(fixture.calls.preview[0][0], null);
   assert.equal(fixture.calls.preview[0][1].documentId, a.id);
+
+  frames.shift()();
+  frames.shift()();
+  await settle();
+  assert.equal(fixture.calls.preview.length, 1);
 
   await controller.renderDocument(a.id);
   assert.equal(fixture.calls.preview.at(-1)[0], largePreview);

@@ -46,6 +46,8 @@ test("tabs retain content, selection, view, and accessible state", async ({ page
     afterHasFirst: false,
     viewMode: "edit",
   });
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(page.locator("#preview")).toBeEmpty();
 
   const firstEditor = page.locator(`textarea[data-document-id="${firstId}"]`);
   await expect(firstEditor).toHaveValue(longContent);
