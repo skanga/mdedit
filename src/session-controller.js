@@ -72,11 +72,12 @@
       this._unlisten = null;
       this._listenerReady = Promise.resolve(null);
       this._listenerFailure = null;
-      this._pendingOpenRequests = [];
-      this._openChain = Promise.resolve();
+      this._pendingOperations = [];
+      this._operationChain = Promise.resolve();
       this._manifestWrites = Promise.resolve();
       this._restorePromise = null;
       this._restoreState = "idle";
+      this._lifecycleToken = 0;
       this._disposed = false;
       this._disposePromise = null;
       this._loadQueue = [];
@@ -116,11 +117,22 @@
       }
       this._listenerReady = Promise.resolve(registration).then(
         (unlisten) => {
+          if (this._disposed) {
+            if (typeof unlisten === "function") {
+              try {
+                Promise.resolve(unlisten()).catch(() => {});
+              } catch (_) {
+                // Disposal remains complete even if late unsubscription fails.
+              }
+            }
+            return null;
+          }
           this._unlisten = unlisten;
           return unlisten;
         },
         (reason) => {
           const error = normalizeError(reason);
+          if (this._disposed) throw error;
           this._started = false;
           this._unlisten = null;
           this._listenerFailure = error;
@@ -136,65 +148,96 @@
       if (this._restorePromise) return this._restorePromise;
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       this._restoreState = "restoring";
-      this._restorePromise = this._restore();
+      const token = ++this._lifecycleToken;
+      this._restorePromise = this._restore(token);
       return this._restorePromise;
     }
 
-    async _restore() {
+    async _restore(token) {
       const earlierListenerFailure = this._listenerFailure;
       this._listenerFailure = null;
       try {
         await this.start();
       } catch (reason) {
-        if (this._listenerFailure === reason) this._listenerFailure = null;
-        await this._showRecoveryError(reason, { phase: "file-open-listener" });
+        if (this._isLifecycleActive(token)) {
+          if (this._listenerFailure === reason) this._listenerFailure = null;
+          this._showRecoveryError(reason, { phase: "file-open-listener" });
+        }
       }
       if (earlierListenerFailure) {
-        await this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
+        this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
       }
+      if (!this._isLifecycleActive(token)) return this.session;
 
       let rawManifest;
       try {
         rawManifest = await this.io.loadRecoveryManifest();
       } catch (reason) {
-        await this._showRecoveryError(reason, { phase: "manifest" });
-        this._assignEmptySession();
-        return this._finishRestore();
+        if (!this._isLifecycleActive(token)) return this.session;
+        this._showRecoveryError(reason, { phase: "manifest" });
+        this._assignEmptySession(token);
+        return this._finishRestore(token);
       }
+      if (!this._isLifecycleActive(token)) return this.session;
 
       if (rawManifest === null) {
-        await this.importLegacyDraft();
-        if (!this.session) this._assignEmptySession();
+        await this.importLegacyDraft(token);
+        if (!this._isLifecycleActive(token)) return this.session;
+        if (!this.session) this._assignEmptySession(token);
       } else {
         try {
-          await this.restoreManifest(rawManifest);
+          await this.restoreManifest(rawManifest, token);
         } catch (reason) {
-          await this._showRecoveryError(reason, { phase: "manifest" });
-          this._assignEmptySession();
+          if (!this._isLifecycleActive(token)) return this.session;
+          this._showRecoveryError(reason, { phase: "manifest" });
+          this._assignEmptySession(token);
         }
       }
-      return this._finishRestore();
+      return this._finishRestore(token);
     }
 
-    async _finishRestore() {
-      await this._drainPendingOpens();
-      if (!this._disposed && (!this.session || this.session.documents.size === 0)) {
-        this._createFreshSession();
+    async _finishRestore(token) {
+      const completions = [];
+      while (this._isLifecycleActive(token) && this._pendingOperations.length > 0) {
+        const request = this._pendingOperations.shift();
+        try {
+          completions.push({ request, value: await request.run() });
+        } catch (reason) {
+          completions.push({ request, error: reason });
+        }
       }
-      if (!this._disposed) this._restoreState = "restored";
+      if (!this._isLifecycleActive(token)) {
+        for (const { request } of completions) request.dispose();
+        return this.session;
+      }
+      if (!this.session || this.session.documents.size === 0) this._createFreshSession(token);
+
+      // Publish the lifecycle transition before resolving queued callers. Their
+      // continuations can safely submit direct follow-up work without missing
+      // the final drain pass.
+      this._restoreState = "restored";
+      for (const completion of completions) {
+        if (Object.prototype.hasOwnProperty.call(completion, "error")) {
+          completion.request.reject(completion.error);
+        } else {
+          completion.request.resolve(completion.value);
+        }
+      }
       return this.session;
     }
 
-    async restoreManifest(rawManifest) {
+    async restoreManifest(rawManifest, token = this._lifecycleToken) {
       const manifest = typeof rawManifest === "string" ? JSON.parse(rawManifest) : rawManifest;
       const session = SessionModel.fromManifest(manifest, { idFactory: this.idFactory });
+      if (!this._isLifecycleActive(token)) return session;
       this.session = session;
 
       for (const stub of session.documents.values()) stub.loadStatus = "loading";
       this._renderSession();
 
       const initiallyActiveId = session.activeDocumentId;
-      await this.loadSnapshot(initiallyActiveId);
+      await this.loadSnapshot(initiallyActiveId, token, session);
+      if (!this._isLifecycleActive(token) || this.session !== session) return session;
 
       const inactiveIds = session.tabOrder.filter((id) => id !== initiallyActiveId);
       const prioritizedIds = this._loadPriority.filter((id) => inactiveIds.includes(id));
@@ -206,33 +249,36 @@
       this._loadPriority = [];
 
       const workerCount = Math.min(this.inactiveLoadConcurrency, this._loadQueue.length);
-      const workers = Array.from({ length: workerCount }, () => this._loadWorker());
+      const workers = Array.from({ length: workerCount }, () => this._loadWorker(token, session));
       await Promise.all(workers);
+      if (!this._isLifecycleActive(token) || this.session !== session) return session;
       this._loadQueue = [];
       return session;
     }
 
-    async _loadWorker() {
-      while (this._loadQueue.length > 0) {
+    async _loadWorker(token, session) {
+      while (this._isLifecycleActive(token) && this.session === session && this._loadQueue.length > 0) {
         const id = this._loadQueue.shift();
         this._loadingIds.add(id);
         try {
-          await this.loadSnapshot(id);
+          await this.loadSnapshot(id, token, session);
         } finally {
-          this._loadingIds.delete(id);
+          if (this._isLifecycleActive(token)) this._loadingIds.delete(id);
         }
       }
     }
 
-    async loadSnapshot(documentOrId) {
-      if (!this.session) throw new Error("session has not been restored");
+    async loadSnapshot(documentOrId, token = this._lifecycleToken, session = this.session) {
+      if (!this._isLifecycleActive(token)) return null;
+      if (!session) throw new Error("session has not been restored");
       const id = typeof documentOrId === "string" ? documentOrId : documentOrId && documentOrId.id;
-      const stub = this.session.documents.get(id);
+      const stub = session.documents.get(id);
       if (!stub) throw new Error("unknown document id");
       const expectedRevision = stub.snapshotRevision;
 
       try {
         const rawSnapshot = await this.io.loadRecoveryDocument(id, expectedRevision);
+        if (!this._isLifecycleActive(token) || this.session !== session) return null;
         const value = typeof rawSnapshot === "string" ? JSON.parse(rawSnapshot) : rawSnapshot;
         const document = DocumentModel.fromSnapshot(value);
         if (document.id !== id) throw new Error(`recovery snapshot identity mismatch for ${id}`);
@@ -240,32 +286,34 @@
           throw new Error(`recovery snapshot revision mismatch for ${id}`);
         }
         const contentSha256 = await this.hashText(document.content);
+        if (!this._isLifecycleActive(token) || this.session !== session) return null;
         document.reconcileDirty(contentSha256, document.editRevision);
 
         const canonicalOwner = document.canonicalPath === null
           ? null
-          : this.session.findByCanonicalPath(document.canonicalPath);
+          : session.findByCanonicalPath(document.canonicalPath);
         if (canonicalOwner && canonicalOwner.id !== id) {
           throw new Error(`recovery snapshot canonical path is already owned by ${canonicalOwner.id}`);
         }
-        if (this.session.documents.get(id) !== stub) {
+        if (session.documents.get(id) !== stub) {
           throw new Error(`recovery snapshot identity changed while loading ${id}`);
         }
 
         document.loadStatus = "loaded";
-        this.session.documents.set(id, document);
+        session.documents.set(id, document);
         this._renderSession();
-        if (this.session.activeDocumentId === id) this._renderDocument(document);
+        if (session.activeDocumentId === id) this._renderDocument(document);
         return document;
       } catch (reason) {
+        if (!this._isLifecycleActive(token) || this.session !== session) return null;
         const error = normalizeError(reason);
-        if (this.session.documents.get(id) === stub) {
+        if (session.documents.get(id) === stub) {
           stub.loadStatus = "failed";
           stub.loadError = error;
         }
         this._renderSession();
-        if (this.session.activeDocumentId === id) this._renderDocument(stub);
-        await this._showRecoveryError(error, {
+        if (session.activeDocumentId === id) this._renderDocument(stub);
+        this._showRecoveryError(error, {
           phase: "snapshot",
           documentId: id,
           displayName: stub.displayName,
@@ -275,9 +323,10 @@
       }
     }
 
-    async importLegacyDraft() {
+    async importLegacyDraft(token = this._lifecycleToken) {
       const previousSession = this.session;
       let document = null;
+      let durable = false;
       try {
         const rawDraft = this.legacyStorage.getItem(LEGACY_DRAFT_KEY);
         if (!rawDraft) return null;
@@ -288,6 +337,7 @@
         }
 
         const savedContentSha256 = await this.hashText("");
+        if (!this._isLifecycleActive(token)) return null;
         document = new DocumentModel({
           id: this.idFactory(),
           displayName: typeof draft.name === "string" && draft.name.length > 0 ? draft.name : "untitled.md",
@@ -308,12 +358,25 @@
         this.session = migrationSession;
         this.scheduler.changed(document.id, document.editRevision);
         await this.scheduler.flush(document.id, document.editRevision);
-        await this._persistManifestNow();
-        this.legacyStorage.removeItem(LEGACY_DRAFT_KEY);
+        if (!this._isLifecycleActive(token)) return null;
+        await this._persistManifestNow(token);
+        if (!this._isLifecycleActive(token)) return null;
+        durable = true;
+        try {
+          this.legacyStorage.removeItem(LEGACY_DRAFT_KEY);
+        } catch (reason) {
+          this._showRecoveryError(reason, {
+            phase: "legacy-cleanup",
+            documentId: document.id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        }
         this._renderSession();
         this._renderDocument(document);
         return document;
       } catch (reason) {
+        if (durable || !this._isLifecycleActive(token)) return document;
         if (document && typeof this.scheduler.forget === "function") {
           try {
             this.scheduler.forget(document.id);
@@ -322,7 +385,7 @@
           }
         }
         this.session = previousSession;
-        await this._showRecoveryError(reason, {
+        this._showRecoveryError(reason, {
           phase: "legacy-migration",
           documentId: document && document.id,
           displayName: document && document.displayName,
@@ -335,15 +398,11 @@
     openPaths(paths) {
       if (!Array.isArray(paths)) throw new TypeError("paths must be an array");
       if (this._disposed) return Promise.resolve(this._disposedOpenResult(paths));
-      if (this._restoreState !== "restored") {
-        return new Promise((resolve, reject) => {
-          this._pendingOpenRequests.push({ paths: [...paths], resolve, reject });
-        });
-      }
-
-      const opening = this._openChain.catch(() => {}).then(() => this._openPathsNow(paths));
-      this._openChain = opening;
-      return opening;
+      const copiedPaths = [...paths];
+      return this._scheduleOperation(
+        () => this._openPathsNow(copiedPaths),
+        (resolve) => resolve(this._disposedOpenResult(copiedPaths)),
+      );
     }
 
     async _openPathsNow(paths) {
@@ -362,7 +421,7 @@
             failed.push({ path, error: new Error("session controller is disposed") });
             continue;
           }
-          const document = this.openReadResult(result);
+          const document = this._openReadResultNow(result);
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
             opened.push(document);
@@ -370,25 +429,10 @@
         } catch (reason) {
           const error = normalizeError(reason);
           failed.push({ path, error });
-          await this._showOpenError(path, error);
+          this._showOpenError(path, error);
         }
       }
       return { opened, failed };
-    }
-
-    async _drainPendingOpens() {
-      while (this._pendingOpenRequests.length > 0) {
-        const request = this._pendingOpenRequests.shift();
-        if (this._disposed) {
-          request.resolve(this._disposedOpenResult(request.paths));
-          continue;
-        }
-        try {
-          request.resolve(await this._openPathsNow(request.paths));
-        } catch (reason) {
-          request.reject(reason);
-        }
-      }
     }
 
     _disposedOpenResult(paths) {
@@ -398,12 +442,61 @@
       };
     }
 
+    _scheduleOperation(run, onDispose) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._restoreState === "restored") {
+        const operation = this._operationChain.catch(() => {}).then(() => {
+          if (this._disposed) throw new Error("session controller is disposed");
+          return run();
+        });
+        this._operationChain = operation;
+        return operation;
+      }
+
+      let request;
+      const promise = new Promise((resolvePromise, rejectPromise) => {
+        let settled = false;
+        request = {
+          run,
+          resolve(value) {
+            if (settled) return;
+            settled = true;
+            resolvePromise(value);
+          },
+          reject(reason) {
+            if (settled) return;
+            settled = true;
+            rejectPromise(reason);
+          },
+          dispose() {
+            if (settled) return;
+            if (onDispose) onDispose(request.resolve, request.reject);
+            else request.reject(new Error("session controller is disposed"));
+          },
+        };
+      });
+      this._pendingOperations.push(request);
+
+      if (this._restoreState === "idle") {
+        this.restore().catch((reason) => {
+          const index = this._pendingOperations.indexOf(request);
+          if (index >= 0) this._pendingOperations.splice(index, 1);
+          request.reject(reason);
+        });
+      }
+      return promise;
+    }
+
     openReadResult(result) {
       if (!result || typeof result !== "object") throw new TypeError("read result is required");
       if (typeof result.canonicalPath !== "string" || result.canonicalPath.length === 0) {
         throw new TypeError("read result canonicalPath must be a non-empty string");
       }
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      return this._scheduleOperation(() => this._openReadResultNow(result));
+    }
 
+    _openReadResultNow(result) {
       const session = this._ensureSession();
       const existing = session.findByCanonicalPath(result.canonicalPath);
       if (existing) {
@@ -464,6 +557,11 @@
     }
 
     createUntitled() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      return this._scheduleOperation(() => this._createUntitledNow());
+    }
+
+    _createUntitledNow() {
       const document = this._ensureSession().createUntitled();
       this._renderSession();
       this._renderDocument(document);
@@ -471,19 +569,24 @@
     }
 
     persistManifest() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (this._restoreState === "restoring" && this._restorePromise) {
-        return this._restorePromise.then(() => this._persistManifestNow());
+        return this._restorePromise.then(() => this._persistManifestNow(this._lifecycleToken));
       }
-      return this._persistManifestNow();
+      return this._persistManifestNow(this._lifecycleToken);
     }
 
-    _persistManifestNow() {
+    _persistManifestNow(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
       const value = this.session.toManifest();
       const generation = value.generation;
       const json = JSON.stringify(value);
       const write = this._manifestWrites.catch(() => {}).then(
-        () => this.io.writeRecoveryManifest(generation, json),
+        () => {
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          return this.io.writeRecoveryManifest(generation, json);
+        },
       );
       this._manifestWrites = write;
       return write;
@@ -494,56 +597,60 @@
       return this.session;
     }
 
-    _createFreshSession() {
+    _createFreshSession(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return null;
       this.session = new SessionModel({ idFactory: this.idFactory });
-      return this.createUntitled();
+      return this._createUntitledNow();
     }
 
-    _assignEmptySession() {
+    _assignEmptySession(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return null;
       this.session = new SessionModel({ idFactory: this.idFactory });
-      this._renderSession();
       return this.session;
     }
 
     _renderSession() {
+      if (this._disposed) return;
       if (typeof this.view.renderSession === "function") this.view.renderSession(this.session);
       else if (typeof this.view.renderTabs === "function") this.view.renderTabs(this.session);
     }
 
     _renderDocument(document) {
+      if (this._disposed) return;
       if (typeof this.view.renderDocument === "function") this.view.renderDocument(document, this.session);
       else if (typeof this.view.showDocument === "function") this.view.showDocument(document, this.session);
       else if (typeof this.view.activateDocument === "function") this.view.activateDocument(document, this.session);
     }
 
-    async _showRecoveryError(reason, context) {
+    _showRecoveryError(reason, context) {
       const error = normalizeError(reason);
-      let recoveryDirectory = null;
-      try {
-        recoveryDirectory = await this.io.recoveryDirectory();
-      } catch (_) {
-        // The original recovery failure remains the useful error.
-      }
       const details = {
         ...context,
         error,
         message: error.message,
-        recoveryDirectory,
+        recoveryDirectory: null,
       };
-      if (typeof this.view.showRecoveryError === "function") {
+      const reporting = Promise.resolve().then(async () => {
         try {
-          await Promise.resolve(this.view.showRecoveryError(details));
+          details.recoveryDirectory = await this.io.recoveryDirectory();
+        } catch (_) {
+          // The original recovery failure remains the useful error.
+        }
+        if (this._disposed || typeof this.view.showRecoveryError !== "function") return;
+        try {
+          Promise.resolve(this.view.showRecoveryError(details)).catch(() => {});
         } catch (_) {
           // Recovery presentation is best-effort and cannot block restoration.
         }
-      }
+      });
+      reporting.catch(() => {});
       return details;
     }
 
-    async _showOpenError(path, error) {
+    _showOpenError(path, error) {
       if (typeof this.dialogs.showOpenError !== "function") return;
       try {
-        await Promise.resolve(this.dialogs.showOpenError(path, error));
+        Promise.resolve(this.dialogs.showOpenError(path, error)).catch(() => {});
       } catch (_) {
         // Dialog failures must not block the remaining selected files.
       }
@@ -558,32 +665,31 @@
     dispose() {
       if (this._disposePromise) return this._disposePromise;
       this._disposed = true;
+      this._lifecycleToken += 1;
       this._restoreState = "disposed";
       this._loadQueue = [];
       this._loadPriority = [];
-      while (this._pendingOpenRequests.length > 0) {
-        const request = this._pendingOpenRequests.shift();
-        request.resolve(this._disposedOpenResult(request.paths));
+      this._loadingIds.clear();
+      while (this._pendingOperations.length > 0) {
+        this._pendingOperations.shift().dispose();
       }
 
       this._disposePromise = (async () => {
-        try {
-          await this._listenerReady;
-        } catch (_) {
-          // A failed listener has nothing to unsubscribe.
-        }
         const unlisten = this._unlisten;
         this._unlisten = null;
         this._started = false;
         this._listenerReady = Promise.resolve(null);
         if (typeof unlisten === "function") await Promise.resolve(unlisten());
-        await this._openChain.catch(() => {});
       })();
       return this._disposePromise;
     }
 
     destroy() {
       return this.dispose();
+    }
+
+    _isLifecycleActive(token) {
+      return !this._disposed && token === this._lifecycleToken;
     }
   }
 
