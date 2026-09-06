@@ -1910,10 +1910,104 @@ test("closing a document during its checkpoint preserves old recovery until an e
   await settle();
   await controller._manifestWrites;
   const durableAfter = JSON.parse(await browserIo.loadRecoveryManifest());
-  assert.ok(await browserIo.loadRecoveryDocument(closing.id, durableBefore.tabs[0].snapshotRevision));
+  assert.equal(await browserIo.loadRecoveryDocument(closing.id, durableBefore.tabs[0].snapshotRevision), null);
   assert.equal(durableAfter.tabs.some((tab) => tab.documentId === closing.id), false);
   assert.equal(durableAfter.activeDocumentId, replacement.id);
   assert.notEqual(replacement.recoveryStatus, "failed");
+});
+
+test("closed recovery is deleted only after an excluding manifest is durable", async () => {
+  const manifestGate = deferred();
+  const manifestStarted = deferred();
+  const order = [];
+  let hold = false;
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryManifest(generation, json) {
+        const value = JSON.parse(json);
+        if (hold) {
+          manifestStarted.resolve();
+          await manifestGate.promise;
+        }
+        order.push(["manifest", value.tabs.map((tab) => tab.documentId)]);
+      },
+      async deleteRecoveryDocument(id) { order.push(["delete", id]); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const closing = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  order.length = 0;
+  hold = true;
+  const stale = controller.persistManifest();
+  await manifestStarted.promise;
+  assert.equal(controller.closeDocument(closing.id), true);
+  assert.equal(order.some(([kind]) => kind === "delete"), false);
+  hold = false;
+  manifestGate.resolve();
+  await stale;
+  await settle();
+  await controller._manifestWrites;
+
+  assert.deepEqual(order[0], ["manifest", [closing.id]]);
+  const excludingIndex = order.findIndex(([kind, ids]) => kind === "manifest" && !ids.includes(closing.id));
+  assert.ok(excludingIndex >= 1);
+  assert.deepEqual(order[excludingIndex + 1], ["delete", closing.id]);
+  assert.equal(order.filter(([kind]) => kind === "delete").length, 1);
+});
+
+test("failed excluding manifest defers recovery deletion until retry succeeds", async () => {
+  const order = [];
+  let fail = false;
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryManifest(generation, json) {
+        if (fail) throw new Error("manifest unavailable");
+        order.push(["manifest", JSON.parse(json).tabs.map((tab) => tab.documentId)]);
+      },
+      async deleteRecoveryDocument(id) { order.push(["delete", id]); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const closing = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  order.length = 0;
+  fail = true;
+  assert.equal(controller.closeDocument(closing.id), true);
+  await settle();
+  assert.equal(order.some(([kind]) => kind === "delete"), false);
+
+  fail = false;
+  assert.equal(await controller.retryRecovery(), true);
+  assert.deepEqual(order.at(-2)[0], "manifest");
+  assert.deepEqual(order.at(-1), ["delete", closing.id]);
+});
+
+test("recovery cleanup failure is non-blocking and retries after the next manifest", async () => {
+  let deleteAttempts = 0;
+  const fixture = makeDependencies({
+    io: {
+      async deleteRecoveryDocument() {
+        deleteAttempts += 1;
+        if (deleteAttempts === 1) throw new Error("cleanup unavailable");
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const closing = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  assert.equal(controller.closeDocument(closing.id), true);
+  await settle();
+  await controller._manifestWrites;
+  assert.equal(deleteAttempts, 1);
+  assert.equal(controller.activeDocument().recoveryStatus === "failed", false);
+  assert.equal(fixture.calls.recoveryErrors.at(-1).phase, "recovery-cleanup");
+
+  await controller.persistManifest();
+  assert.equal(deleteAttempts, 2);
 });
 
 test("a deferred render cannot replace the preview after another document activates", async () => {

@@ -242,6 +242,7 @@
       this._retryCatchUpNeeded = false;
       this._durableRecoveryTabs = new Map();
       this._checkpointWrites = Promise.resolve();
+      this._pendingRecoveryDeletions = new Set();
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
@@ -1078,6 +1079,7 @@
         if (!candidate) return false;
         await this.io.writeRecoveryManifest(candidate.generation, JSON.stringify(candidate));
         this._rememberDurableManifest(candidate);
+        await this._cleanupRecoveryAfterManifest(candidate);
         if (this.session.documents.get(capture.documentId) === capture.document) {
           capture.document.persistedRevision = Math.max(
             capture.document.persistedRevision,
@@ -1118,6 +1120,22 @@
         displayName: tab.displayName,
         snapshotRevision: tab.snapshotRevision,
       })]));
+    }
+
+    async _cleanupRecoveryAfterManifest(manifest) {
+      const included = new Set(manifest.tabs.map((tab) => tab.documentId));
+      for (const documentId of [...this._pendingRecoveryDeletions]) {
+        if (included.has(documentId) || (this.session && this.session.documents.has(documentId))) continue;
+        try {
+          await this.io.deleteRecoveryDocument(documentId);
+          this._pendingRecoveryDeletions.delete(documentId);
+        } catch (reason) {
+          this._showRecoveryError(reason, {
+            phase: "recovery-cleanup",
+            documentId,
+          });
+        }
+      }
     }
 
     _releaseManifestBarrier(scheduleDeferred) {
@@ -1316,6 +1334,7 @@
       if (document.dirty) return false;
       if (this.session.activeDocumentId === documentId) this._captureAndFlushOutgoing(document);
       const { nextActiveId } = this.session.remove(documentId);
+      this._pendingRecoveryDeletions.add(documentId);
       this._invalidatePreview(documentId);
       this._latestRenderTokens.delete(documentId);
       if (typeof this.scheduler.forget === "function") this.scheduler.forget(documentId);
@@ -1457,6 +1476,7 @@
             if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
             await this.io.writeRecoveryManifest(candidate.generation, json);
             this._rememberDurableManifest(candidate);
+            await this._cleanupRecoveryAfterManifest(candidate);
           } catch (reason) {
             if (this._manifestBarrier === barrier) this._manifestBarrier = null;
             for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
