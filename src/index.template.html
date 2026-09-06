@@ -1489,31 +1489,50 @@
       const suppliedHandles = Array.from((await handles) || []);
       const accepted = [];
       const sourceKeys = [];
+      const acceptedIndexes = [];
       suppliedFiles.forEach((file, index) => {
         if (!isSupportedFile(file)) return;
         accepted.push(file);
         sourceKeys.push(suppliedHandles[index] || file);
+        acceptedIndexes.push(index);
       });
-      return { accepted, sourceKeys };
+      return { suppliedFiles, suppliedHandles, accepted, sourceKeys, acceptedIndexes };
     })();
     const result = await controller.openBrowserFiles(
       acceptedBatch.then((batch) => batch.accepted),
       acceptedBatch.then((batch) => batch.sourceKeys),
     );
-    const { sourceKeys } = await acceptedBatch;
+    const batch = await acceptedBatch;
     result.results.forEach((outcome, index) => {
-      const handle = sourceKeys[index];
-      if (outcome.document && handle && handle !== outcome.file) {
+      const handle = batch.sourceKeys[index];
+      if (outcome.document && !outcome.reserved && handle && handle !== outcome.file) {
         browserFileHandles.set(outcome.id, handle);
       }
     });
+    const acceptedByIndex = new Map(batch.acceptedIndexes.map(
+      (inputIndex, index) => [inputIndex, result.results[index]],
+    ));
+    const results = batch.suppliedFiles.map((file, index) => {
+      if (acceptedByIndex.has(index)) return acceptedByIndex.get(index);
+      const error = new Error("Unsupported file type");
+      return {
+        file,
+        handle: batch.suppliedHandles[index] || null,
+        document: null,
+        id: null,
+        existing: false,
+        error,
+        name: file && file.name ? file.name : "browser file",
+      };
+    });
+    const unsupported = results.filter((outcome) => outcome.error && /Unsupported file type/.test(outcome.error.message));
     syncActiveSurface();
     const active = controller.activeDocument();
     if (active && result.opened.length) {
       setStatus("Opened " + active.displayName
         + (browserFileHandles.has(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
     }
-    return result;
+    return { ...result, failed: [...result.failed, ...unsupported], results };
   }
 
   async function openPicker() {
@@ -1627,10 +1646,21 @@
           suggestedName: capture.displayName || "untitled.md",
           types: [{ description: "Markdown", accept: { "text/markdown": [".md"] } }],
         });
-        await writeToHandle(handle, capture.content);
+        const source = await controller.reserveBrowserSource(capture.documentId, handle);
+        if (!source.reserved) {
+          syncActiveSurface();
+          setStatus("That file is already open in " + (source.document ? source.document.displayName : "another tab"));
+          return source;
+        }
         let currentFile = null;
-        try { currentFile = await handle.getFile(); } catch (_) { /* handle identity is sufficient */ }
-        await controller.rebindBrowserSource(capture.documentId, handle, currentFile);
+        try {
+          await writeToHandle(handle, capture.content);
+          try { currentFile = await handle.getFile(); } catch (_) { /* handle identity is sufficient */ }
+          await controller.commitBrowserSourceReservation(source.reservation, currentFile);
+        } catch (error) {
+          await controller.releaseBrowserSourceReservation(source.reservation).catch(() => {});
+          throw error;
+        }
         browserFileHandles.set(capture.documentId, handle);
         document.updateMetadata({ displayName: handle.name });
         const contentSha256 = await hashText(capture.content);

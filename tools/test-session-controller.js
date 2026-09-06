@@ -645,6 +645,52 @@ test("rebindBrowserSource transfers a saved document from handle A to B", async 
   assert.notEqual(oldFileIdentity.results[0].id, document.id);
 });
 
+test("browser source reservation reports an existing B owner without transferring ownership", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const handleA = {};
+  const handleB = {};
+  const a = await controller.openBrowserFiles([{ name: "a.md", async text() { return "a"; } }], [handleA]);
+  const b = await controller.openBrowserFiles([{ name: "b.md", async text() { return "b"; } }], [handleB]);
+
+  const reservation = await controller.reserveBrowserSource(a.results[0].id, handleB);
+
+  assert.equal(reservation.reserved, false);
+  assert.equal(reservation.collision, true);
+  assert.equal(reservation.document, b.results[0].document);
+  assert.equal(controller.activeDocument(), b.results[0].document);
+});
+
+test("an open during Save As reservation resolves to its owner and untitled commit gains identity", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  await controller.restore();
+  const untitled = controller.activeDocument();
+  const handleB = {};
+  const reserved = await controller.reserveBrowserSource(untitled.id, handleB);
+
+  const during = await controller.openBrowserFiles([{ name: "b.md", async text() { return "during"; } }], [handleB]);
+  assert.equal(during.results[0].id, untitled.id);
+  assert.equal(controller.session.documents.size, 1);
+
+  await controller.commitBrowserSourceReservation(reserved.reservation);
+  assert.ok(untitled.canonicalPath);
+  const reopened = await controller.openBrowserFiles([{ name: "b.md", async text() { return "after"; } }], [handleB]);
+  assert.equal(reopened.results[0].id, untitled.id);
+});
+
+test("releasing a failed Save As reservation preserves A and leaves B unowned", async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const handleA = {};
+  const handleB = {};
+  const a = await controller.openBrowserFiles([{ name: "a.md", async text() { return "a"; } }], [handleA]);
+  const reserved = await controller.reserveBrowserSource(a.results[0].id, handleB);
+  await controller.releaseBrowserSourceReservation(reserved.reservation);
+
+  const reopenedA = await controller.openBrowserFiles([{ name: "a.md", async text() { return "a2"; } }], [handleA]);
+  const openedB = await controller.openBrowserFiles([{ name: "b.md", async text() { return "b"; } }], [handleB]);
+  assert.equal(reopenedA.results[0].id, a.results[0].id);
+  assert.notEqual(openedB.results[0].id, a.results[0].id);
+});
+
 test("dispose rejects a browser open immediately when its lazy batch never resolves", async () => {
   const controller = new SessionController(makeDependencies().dependencies);
   const never = new Promise(() => {});
@@ -654,6 +700,24 @@ test("dispose rejects a browser open immediately when its lazy batch never resol
   await controller.dispose();
 
   await assert.rejects(opening, /disposed/);
+});
+
+test("late browser read completion after dispose emits no open error or UI callback", async () => {
+  for (const rejectLate of [false, true]) {
+    const read = deferred();
+    const fixture = makeDependencies();
+    const controller = new SessionController(fixture.dependencies);
+    const opening = controller.openBrowserFiles([{ name: "late.md", text() { return read.promise; } }]);
+    await settle();
+    await controller.dispose();
+    await assert.rejects(opening, /disposed/);
+    const errors = fixture.calls.openErrors.length;
+    if (rejectLate) read.reject(new Error("late failure"));
+    else read.resolve("late success");
+    await settle();
+    assert.equal(fixture.calls.openErrors.length, errors);
+    assert.ok(!controller.session || controller.session.documents.size === 0);
+  }
 });
 
 test("a delayed first browser batch joins restore and leaves no startup placeholder", async () => {
@@ -4057,7 +4121,9 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.openBrowserFiles\s*\(/);
   assert.match(template, /controller\.openBrowserFiles\([\s\S]*sourceKeys/);
   assert.match(template, /result\.results/);
-  assert.match(template, /writeToHandle\(handle, capture\.content\)[\s\S]*rebindBrowserSource/);
+  assert.match(template, /acceptedIndexes/);
+  assert.match(template, /Unsupported file type/);
+  assert.match(template, /reserveBrowserSource[\s\S]*writeToHandle\(handle, capture\.content\)[\s\S]*commitBrowserSourceReservation/);
   assert.match(template, /Failed:/);
   assert.doesNotMatch(template, /openFromFile/);
   assert.match(template, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/);
