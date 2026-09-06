@@ -1475,18 +1475,35 @@
   }
 
   /* ── File loading ───────────────────────────── */
-  async function openFromFile(file, handle) {
-    const text = await file.text();
-    const document = await Promise.resolve(controller.createUntitled());
-    document.updateMetadata({ displayName: file.name || document.displayName });
-    controller.onEditorInput(document.id, text.replace(/\r\n/g, "\n"));
-    const capture = controller.captureActiveDocument();
-    const contentSha256 = await hashText(capture.content);
-    controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
-    if (handle) browserFileHandles.set(document.id, handle);
-    controller.activateDocument(document.id);
+  function isSupportedFile(file) {
+    if (!file || typeof file.name !== "string") return false;
+    return /\.(md|markdown|mdown|mkd|txt)$/i.test(file.name)
+      || file.type === "text/markdown" || file.type === "text/plain";
+  }
+
+  async function openBrowserFiles(files, handles = []) {
+    const accepted = [];
+    const acceptedHandles = [];
+    Array.from(files || []).forEach((file, index) => {
+      if (!isSupportedFile(file)) return;
+      accepted.push(file);
+      acceptedHandles.push(handles[index] || null);
+    });
+    const result = await controller.openBrowserFiles(accepted);
+    const failedFiles = new Set(result.failed.map(({ file }) => file));
+    let openedIndex = 0;
+    accepted.forEach((file, index) => {
+      if (failedFiles.has(file)) return;
+      const document = result.opened[openedIndex++];
+      if (document && acceptedHandles[index]) browserFileHandles.set(document.id, acceptedHandles[index]);
+    });
     syncActiveSurface();
-    setStatus("Opened " + document.displayName + (handle ? " — Save writes back to the original file" : ""), false, document.id);
+    const active = controller.activeDocument();
+    if (active && result.opened.length) {
+      setStatus("Opened " + active.displayName
+        + (browserFileHandles.has(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
+    }
+    return result;
   }
 
   async function openPicker() {
@@ -1503,17 +1520,16 @@
           types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] } }],
           excludeAcceptAllOption: false,
         });
-        for (const handle of handles) await openFromFile(await handle.getFile(), handle);
+        const files = [];
+        for (const handle of handles) files.push(await handle.getFile());
+        await openBrowserFiles(files, handles);
       } catch (e) { /* user cancelled */ }
     } else {
       $("file-input").click();
     }
   }
   $("file-input").addEventListener("change", async (e) => {
-    for (const file of e.target.files || []) {
-      try { await openFromFile(file, null); }
-      catch (error) { setStatus("Could not open " + file.name + " — " + error.message); }
-    }
+    await openBrowserFiles(e.target.files || []);
     e.target.value = "";
   });
 
@@ -1777,23 +1793,34 @@
     e.preventDefault();
     dragDepth = 0;
     overlay.classList.remove("on");
-    for (const item of e.dataTransfer.items || []) {
-      if (!item || item.kind !== "file") continue;
-      let opened = false;
-      if (item.getAsFileSystemHandle) {
-        try {
-          const handle = await item.getAsFileSystemHandle();
-          if (handle && handle.kind === "file") {
-            await openFromFile(await handle.getFile(), handle);
-            opened = true;
-          }
-        } catch (err) { /* fall through to plain File */ }
+    const files = [];
+    const handles = [];
+    const items = Array.from((e.dataTransfer && e.dataTransfer.items) || []);
+    if (items.length) {
+      for (const item of items) {
+        if (!item || item.kind !== "file") continue;
+        let file = null;
+        let handle = null;
+        if (item.getAsFileSystemHandle) {
+          try {
+            handle = await item.getAsFileSystemHandle();
+            if (handle && handle.kind === "file") file = await handle.getFile();
+            else handle = null;
+          } catch (err) { handle = null; }
+        }
+        if (!file && item.getAsFile) file = item.getAsFile();
+        if (file) {
+          files.push(file);
+          handles.push(handle);
+        }
       }
-      if (!opened) {
-        const file = item.getAsFile();
-        if (file) await openFromFile(file, null);
+    } else {
+      for (const file of (e.dataTransfer && e.dataTransfer.files) || []) {
+        files.push(file);
+        handles.push(null);
       }
     }
+    await openBrowserFiles(files, handles);
   });
 
   /* ── Editor behaviour ───────────────────────── */
@@ -1802,6 +1829,37 @@
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
   const INDENT = "  ";
+  function keyboardCommand(event) {
+    return MDEdit.commandForKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      isMac,
+    });
+  }
+
+  function shortcutFocusOptions(event) {
+    const target = event && event.target;
+    const tabFocused = Boolean(target && $("document-tabs").contains(target));
+    return {
+      focusEditor: isActiveEditorEvent(event),
+      preserveTabFocus: tabFocused,
+    };
+  }
+
+  async function runTabCommand(command, event) {
+    const active = controller && controller.activeDocument();
+    if (!active) return;
+    if (command === "next-tab") controller.activateAdjacentDocument(1, shortcutFocusOptions(event));
+    else if (command === "previous-tab") controller.activateAdjacentDocument(-1, shortcutFocusOptions(event));
+    else if (command === "move-tab-left") controller.moveActiveDocument(-1);
+    else if (command === "move-tab-right") controller.moveActiveDocument(1);
+    else if (command === "close-tab") await controller.closeDocument(active.id);
+    syncActiveSurface();
+  }
+
   function replaceRange(surface, start, end, text) {
     surface.focus();
     surface.setSelectionRange(start, end);
@@ -1848,6 +1906,13 @@
 
   $("editor-surfaces").addEventListener("keydown", (e) => {
     if (!isActiveEditorEvent(e)) return;
+    const command = keyboardCommand(e);
+    if (command) {
+      e.preventDefault();
+      e.stopPropagation();
+      runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
     const surface = e.target;
     if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
     e.preventDefault();
@@ -2012,6 +2077,12 @@
 
   /* ── Keyboard shortcuts ─────────────────────── */
   window.addEventListener("keydown", (e) => {
+    const command = keyboardCommand(e);
+    if (command) {
+      e.preventDefault();
+      runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
     const mod = isMac ? e.metaKey : e.ctrlKey;
     if (!mod) return;
     const k = e.key.toLowerCase();
@@ -2053,6 +2124,10 @@
       "<kbd>" + MOD + "S</kbd><span>Save</span>" +
       "<kbd>" + (isMac ? "⌘⇧S" : "Ctrl+Shift+S") + "</kbd><span>Save as</span>" +
       "<kbd>" + MOD + "O</kbd><span>Open a file</span>" +
+      "<kbd>Ctrl+Tab</kbd><span>Next document</span>" +
+      "<kbd>Ctrl+Shift+Tab</kbd><span>Previous document</span>" +
+      "<kbd>Alt+Shift+←/→</kbd><span>Move document tab</span>" +
+      "<kbd>" + MOD + "W</kbd><span>Close document</span>" +
       "<kbd>" + MOD + "F</kbd><span>Find &amp; replace</span>" +
       "<kbd>Tab</kbd><span>Indent</span>" +
       "<kbd>⇧Tab</kbd><span>Outdent</span>" +
@@ -2409,6 +2484,9 @@
       await controller.closeDocument(documentId);
       syncActiveSurface();
     },
+    onCommand(command, event) {
+      runTabCommand(command, event).catch((error) => setStatus(error.message));
+    },
     onAdd() { newDoc(); },
     onEditorInput(documentId, content) {
       controller.onEditorInput(documentId, content);
@@ -2579,7 +2657,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
       controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
     }
     if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
-      const paths = await window.__TAURI__.core.invoke("take_pending_files").catch(() => []);
+      const paths = await nativeApp.takePendingFiles().catch(() => []);
       if (paths.length) await controller.openPaths(paths);
     }
     active = controller.activeDocument();

@@ -9,6 +9,7 @@
  *   nativeApp.pickFiles()                           -> path strings, [] on cancel
  *   nativeApp.readFile(path)                        -> file text (utf-8)
  *   nativeApp.readDocument(path)                    -> session-backed document text
+ *   nativeApp.takePendingFiles()                    -> queued startup paths
  *   nativeApp.saveAs({ defaultDir, suggestedName, data })
  *                                                -> chosen path, null on cancel
  *   nativeApp.chooseSavePath({ defaultDir, suggestedName })
@@ -80,6 +81,9 @@ function makeNativeApp(tauri) {
     },
     async recoveryDirectory() {
       return tauri.core.invoke("recovery_directory");
+    },
+    async takePendingFiles() {
+      return normalizePaths(await tauri.core.invoke("take_pending_files"));
     },
     async chooseSavePath({ defaultDir = "", suggestedName } = {}) {
       const p = await tauri.dialog.save({

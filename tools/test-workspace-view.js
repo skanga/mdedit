@@ -7,6 +7,7 @@ const vm = require("node:vm");
 const {
   WorkspaceView,
   captureEditorState,
+  commandForKey,
   tabDescriptor,
 } = require("../src/workspace-view.js");
 const { SessionController } = require("../src/session-controller.js");
@@ -286,6 +287,30 @@ test("browser wrapper merges workspace exports into window.MDEdit", () => {
   assert.equal(typeof sandbox.window.MDEdit.WorkspaceView, "function");
   assert.equal(typeof sandbox.window.MDEdit.tabDescriptor, "function");
   assert.equal(typeof sandbox.window.MDEdit.captureEditorState, "function");
+  assert.equal(typeof sandbox.window.MDEdit.commandForKey, "function");
+});
+
+test("commandForKey maps only the exact tab-management shortcuts", () => {
+  const fixture = [
+    [{ key: "Tab", ctrlKey: true }, "next-tab"],
+    [{ key: "Tab", ctrlKey: true, shiftKey: true }, "previous-tab"],
+    [{ key: "ArrowLeft", altKey: true, shiftKey: true }, "move-tab-left"],
+    [{ key: "ArrowRight", altKey: true, shiftKey: true }, "move-tab-right"],
+    [{ key: "w", ctrlKey: true }, "close-tab"],
+    [{ key: "w", ctrlKey: true, isMac: true }, "close-tab"],
+    [{ key: "W", metaKey: true, isMac: true }, "close-tab"],
+  ];
+  for (const [event, expected] of fixture) assert.equal(commandForKey(event), expected);
+
+  for (const event of [
+    { key: "Tab", metaKey: true, isMac: true },
+    { key: "Tab", ctrlKey: true, altKey: true },
+    { key: "ArrowLeft", altKey: true },
+    { key: "ArrowRight", altKey: true, shiftKey: true, ctrlKey: true },
+    { key: "w", metaKey: true, isMac: false },
+    { key: "w", ctrlKey: true, shiftKey: true },
+    { key: "q", ctrlKey: true },
+  ]) assert.equal(commandForKey(event), null, JSON.stringify(event));
 });
 
 test("tabDescriptor exposes stable tab semantics and document status", () => {
@@ -487,6 +512,57 @@ test("delegated tab, close, add, and keyboard events emit intents without mutati
   assert.equal(two.dirty, false);
 });
 
+test("tab-strip shortcuts emit one command and prevent browser handling", () => {
+  const calls = [];
+  const { elements, view } = makeFixture({
+    onCommand: (command, event) => calls.push([command, event.key]),
+  });
+  view.renderTabs([doc("one"), doc("two")], "one");
+  const first = find(elements.tabList.children[0], (el) => el.getAttribute("role") === "tab");
+
+  const next = { type: "keydown", key: "Tab", ctrlKey: true, bubbles: true };
+  first.dispatchEvent(next);
+  const move = { type: "keydown", key: "ArrowRight", altKey: true, shiftKey: true, bubbles: true };
+  first.dispatchEvent(move);
+  const close = { type: "keydown", key: "w", ctrlKey: true, bubbles: true };
+  first.dispatchEvent(close);
+
+  assert.deepEqual(calls, [
+    ["next-tab", "Tab"],
+    ["move-tab-right", "ArrowRight"],
+    ["close-tab", "w"],
+  ]);
+  for (const event of [next, move, close]) {
+    assert.equal(event.defaultPrevented, true);
+    assert.equal(event.propagationStopped, true);
+  }
+});
+
+test("active, close, dirty, conflict, and recovery announcements share the live region without duplicates", () => {
+  const { elements, view } = makeFixture();
+  const documents = [doc("one", { displayName: "One.md" }), doc("two", { displayName: "Two.md" })];
+  view.renderTabs(documents, "two");
+
+  view.announceActiveDocument(documents[1], documents);
+  assert.equal(elements.statusElement.textContent, "Two.md, tab 2 of 2");
+  const activeWrites = elements.statusElement.textContentWrites;
+  view.announceActiveDocument(documents[1], documents);
+  assert.equal(elements.statusElement.textContentWrites, activeWrites);
+
+  view.setDocumentStatus("two", { dirty: true, fileStatus: "normal" });
+  assert.equal(elements.statusElement.textContent, "Two.md: Unsaved changes");
+  view.setDocumentStatus("two", { dirty: true, fileStatus: "externally-changed" });
+  assert.equal(elements.statusElement.textContent, "Two.md: File changed outside MDedit; Unsaved changes");
+  view.setDocumentStatus("two", { recoveryStatus: "failed", message: "Recovery write failed" });
+  assert.equal(elements.statusElement.textContent, "Two.md: Recovery write failed");
+
+  view.announceCloseOutcome({ closed: true }, "One.md");
+  assert.equal(elements.statusElement.textContent, "Closed One.md");
+  const closeWrites = elements.statusElement.textContentWrites;
+  view.announceCloseOutcome({ closed: true }, "One.md");
+  assert.equal(elements.statusElement.textContentWrites, closeWrites);
+});
+
 test("renderTabs preserves control focus and scrolls the focused or active tab into view", () => {
   const { document, elements, view } = makeFixture();
   const documents = [doc("one"), doc("two")];
@@ -562,6 +638,50 @@ test("WorkspaceView keyboard navigation through SessionController keeps tab focu
   frames.splice(0).forEach((callback) => callback());
   selected = find(fixture.elements.tabList.children[2], (element) => element.getAttribute("role") === "tab");
   assert.equal(fixture.document.activeElement, selected);
+});
+
+test("Ctrl+Tab through SessionController moves tab-strip focus to the newly active tab", () => {
+  const frames = [];
+  let controller;
+  const fixture = makeFixture({
+    onCommand(command, event) {
+      const delta = command === "next-tab" ? 1 : -1;
+      controller.activateAdjacentDocument(delta, { focusEditor: false, preserveTabFocus: true });
+    },
+  });
+  fixture.view.renderSession = (session) => fixture.view.renderTabs(session, session.activeDocumentId);
+  fixture.view.renderDocument = () => {};
+  controller = new SessionController({
+    io: {
+      listenFileOpened() { return () => {}; },
+      async loadRecoveryManifest() { return null; },
+      async loadRecoveryDocument() { return null; },
+      async writeRecoveryManifest() {},
+      async recoveryDirectory() { return "memory"; },
+    },
+    scheduler: { changed() { return true; }, async flush() {} },
+    view: fixture.view,
+    dialogs: {},
+    legacyStorage: { getItem() { return null; }, removeItem() {} },
+    hashText: async (text) => `sha:${text}`,
+    idFactory: (() => { let id = 0; return () => `doc-${++id}`; })(),
+    requestAnimationFrame(callback) { frames.push(callback); },
+  });
+  controller.createUntitled();
+  controller.createUntitled();
+  frames.splice(0).forEach((callback) => callback());
+  controller.activateDocument("doc-1", { focusEditor: false });
+  frames.splice(0).forEach((callback) => callback());
+  const first = find(fixture.elements.tabList.children[0], (element) => element.getAttribute("role") === "tab");
+  first.focus();
+
+  first.dispatchEvent({ type: "keydown", key: "Tab", ctrlKey: true, bubbles: true });
+  frames.splice(0).forEach((callback) => callback());
+
+  const second = find(fixture.elements.tabList.children[1], (element) => element.getAttribute("role") === "tab");
+  assert.equal(controller.activeDocument().id, "doc-2");
+  assert.equal(fixture.document.activeElement, second);
+  assert.equal(second.getAttribute("tabindex"), "0");
 });
 
 test("closing a focused tab restores focus to the active neighbor and never steals outside focus", () => {
@@ -884,6 +1004,12 @@ test("template provides the accessible tab strip, editor host, and dialog contra
   assert.match(template, /\.document-tab-close\s*\{[^}]*min-width:\s*32px[^}]*min-height:\s*32px/s);
   assert.match(template, /\.editor-surface\[hidden\]\s*\{\s*display:\s*none/);
   assert.match(template, /<span id="status" role="status" aria-live="polite"><\/span>/);
+  assert.match(template, /<input type="file" id="file-input"[^>]*\bmultiple\b/);
+  assert.match(template, /function shortcutFocusOptions\(event\)[\s\S]*focusEditor: isActiveEditorEvent\(event\)[\s\S]*preserveTabFocus: tabFocused/);
+  assert.match(template, /\$\("editor-surfaces"\)\.addEventListener\("keydown", \(e\) => \{[\s\S]*const command = keyboardCommand\(e\);[\s\S]*e\.stopPropagation\(\);[\s\S]*if \(e\.key !== "Tab"/);
+  assert.match(template, /const items = Array\.from\(\(e\.dataTransfer && e\.dataTransfer\.items\)[\s\S]*for \(const item of items\)[\s\S]*files\.push\(file\)[\s\S]*await openBrowserFiles\(files, handles\)/);
+  assert.match(template, /else \{\s*for \(const file of \(e\.dataTransfer && e\.dataTransfer\.files\) \|\| \[\]\)/);
+  assert.doesNotMatch(template, /Promise\.all\([^)]*(?:getFile|\.text\()/);
 });
 
 test("template and builder keep application modules in dependency order", () => {

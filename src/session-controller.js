@@ -311,6 +311,7 @@
       this._previewCache = new Map();
       this._previewCacheBytes = 0;
       this._reservedCanonicalPaths = new Map();
+      this._browserFileIdentities = new WeakMap();
       this._documentOperation = null;
       this._nativeCloseAllowed = false;
 
@@ -718,6 +719,64 @@
       );
     }
 
+    openBrowserFiles(files) {
+      const copiedFiles = files === null || files === undefined ? [] : Array.from(files);
+      if (this._disposed) {
+        return Promise.resolve({
+          opened: [],
+          failed: copiedFiles.map((file) => ({ file, error: new Error("session controller is disposed") })),
+        });
+      }
+      return this._scheduleOperation(
+        (token) => this._openBrowserFilesNow(copiedFiles, token),
+        (resolve) => resolve({
+          opened: [],
+          failed: copiedFiles.map((file) => ({ file, error: new Error("session controller is disposed") })),
+        }),
+      );
+    }
+
+    async _openBrowserFilesNow(files, token = this._lifecycleToken) {
+      const opened = [];
+      const openedIds = new Set();
+      const failed = [];
+
+      for (const file of files) {
+        try {
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          if (!file || typeof file !== "object" || typeof file.text !== "function") {
+            throw new TypeError("browser file must provide text()");
+          }
+          const content = String(await file.text()).replace(/\r\n/g, "\n");
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          const sha256 = await this.hashText(content);
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          let canonicalPath = this._browserFileIdentities.get(file);
+          if (!canonicalPath) {
+            canonicalPath = `browser-file:${this.idFactory()}`;
+            this._browserFileIdentities.set(file, canonicalPath);
+          }
+          const document = this._openReadResultNow({
+            browserFile: true,
+            path: null,
+            canonicalPath,
+            displayName: typeof file.name === "string" && file.name ? file.name : "untitled.md",
+            content,
+            sha256,
+          }, token);
+          if (!openedIds.has(document.id)) {
+            openedIds.add(document.id);
+            opened.push(document);
+          }
+        } catch (reason) {
+          const error = normalizeError(reason);
+          failed.push({ file, error });
+          this._showOpenError(file && file.name ? file.name : "browser file", error);
+        }
+      }
+      return { opened, failed };
+    }
+
     async _openPathsNow(paths, token = this._lifecycleToken) {
       const opened = [];
       const openedIds = new Set();
@@ -881,12 +940,16 @@
     }
 
     _documentFromReadResult(result) {
-      if (typeof result.path !== "string" || result.path.length === 0) {
+      const browserFile = result.browserFile === true;
+      if ((!browserFile && (typeof result.path !== "string" || result.path.length === 0))
+          || (browserFile && result.path !== null)) {
         throw new TypeError("read result path must be a non-empty string");
       }
       return new DocumentModel({
         id: this.idFactory(),
-        displayName: displayNameFromPath(result.path),
+        displayName: typeof result.displayName === "string" && result.displayName
+          ? result.displayName
+          : displayNameFromPath(result.path),
         path: result.path,
         canonicalPath: result.canonicalPath,
         content: result.content,
@@ -933,6 +996,47 @@
 
     activate(id) {
       return this.activateDocument(id);
+    }
+
+    activateAdjacentDocument(delta, options = {}) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session || this.session.tabOrder.length === 0) throw new Error("session has not been created");
+      if (!Number.isSafeInteger(delta)) throw new TypeError("delta must be a safe integer");
+      const current = this.session.tabOrder.indexOf(this.session.activeDocumentId);
+      const length = this.session.tabOrder.length;
+      const next = ((current + delta) % length + length) % length;
+      const nextId = this.session.tabOrder[next];
+      if (nextId === this.session.activeDocumentId) return this.activeDocument();
+      return this.activateDocument(nextId, options);
+    }
+
+    cycleActiveDocument(delta, options = {}) {
+      return this.activateAdjacentDocument(delta, options);
+    }
+
+    moveActiveDocument(delta) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session || this.session.activeDocumentId === null) throw new Error("session has not been created");
+      if (!Number.isSafeInteger(delta)) throw new TypeError("delta must be a safe integer");
+      const generation = this.session.generation;
+      const document = this.session.move(this.session.activeDocumentId, delta);
+      if (this.session.generation === generation) return document;
+      this._renderSession();
+      if (typeof this.view.announceActiveDocument === "function") {
+        this.view.announceActiveDocument(document, this.session);
+      }
+      if (this._restoreState === "restored") {
+        this._persistManifestNow().catch((reason) => {
+          if (!this.session || this.session.documents.get(document.id) !== document) return;
+          this._showRecoveryError(reason, {
+            phase: "manifest-tab-order",
+            documentId: document.id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        });
+      }
+      return document;
     }
 
     activeDocument() {
@@ -1791,10 +1895,17 @@
     }
 
     closeDocument(documentId) {
+      const document = this.session && this.session.documents.get(documentId);
+      const displayName = document && document.displayName ? document.displayName : String(documentId);
       return this._runDocumentOperation(
         `close:${documentId}`,
         () => this._closeDocumentNow(documentId),
-      );
+      ).then((result) => {
+        if (typeof this.view.announceCloseOutcome === "function") {
+          this.view.announceCloseOutcome(result, displayName);
+        }
+        return result;
+      });
     }
 
     async _closeDocumentNow(documentId) {
@@ -1833,7 +1944,7 @@
       } else {
         active = this.session.documents.get(nextActiveId);
       }
-      this._presentActivatedDocument(active, { persist: false });
+      this._presentActivatedDocument(active, { persist: false, announce: false });
       await this._persistManifestNow(this._lifecycleToken);
       return active;
     }
@@ -2286,7 +2397,12 @@
       });
     }
 
-    _presentActivatedDocument(document, { focusEditor = true, persist = true } = {}) {
+    _presentActivatedDocument(document, {
+      focusEditor = true,
+      persist = true,
+      announce = true,
+      preserveTabFocus = false,
+    } = {}) {
       if (this._disposed || !document) return;
       if (document instanceof DocumentModel && (this._manifestBarrier || this._sessionRecoveryFailure)) {
         this._scheduleRecoveryRevision(document);
@@ -2294,6 +2410,10 @@
       const id = document.id;
       const viewToken = ++this._viewToken;
       this._renderSession();
+      if (preserveTabFocus && typeof this.view.focusActiveTab === "function") this.view.focusActiveTab();
+      if (announce && typeof this.view.announceActiveDocument === "function") {
+        this.view.announceActiveDocument(document, this.session);
+      }
       if (document instanceof DocumentModel && typeof this.view.ensureEditor === "function") {
         const editor = this.view.ensureEditor(document);
         if (editor && typeof editor.value === "string" && editor.value !== document.content) {

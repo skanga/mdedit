@@ -6518,6 +6518,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this._previewCache = new Map();
       this._previewCacheBytes = 0;
       this._reservedCanonicalPaths = new Map();
+      this._browserFileIdentities = new WeakMap();
       this._documentOperation = null;
       this._nativeCloseAllowed = false;
 
@@ -6925,6 +6926,64 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       );
     }
 
+    openBrowserFiles(files) {
+      const copiedFiles = files === null || files === undefined ? [] : Array.from(files);
+      if (this._disposed) {
+        return Promise.resolve({
+          opened: [],
+          failed: copiedFiles.map((file) => ({ file, error: new Error("session controller is disposed") })),
+        });
+      }
+      return this._scheduleOperation(
+        (token) => this._openBrowserFilesNow(copiedFiles, token),
+        (resolve) => resolve({
+          opened: [],
+          failed: copiedFiles.map((file) => ({ file, error: new Error("session controller is disposed") })),
+        }),
+      );
+    }
+
+    async _openBrowserFilesNow(files, token = this._lifecycleToken) {
+      const opened = [];
+      const openedIds = new Set();
+      const failed = [];
+
+      for (const file of files) {
+        try {
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          if (!file || typeof file !== "object" || typeof file.text !== "function") {
+            throw new TypeError("browser file must provide text()");
+          }
+          const content = String(await file.text()).replace(/\r\n/g, "\n");
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          const sha256 = await this.hashText(content);
+          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
+          let canonicalPath = this._browserFileIdentities.get(file);
+          if (!canonicalPath) {
+            canonicalPath = `browser-file:${this.idFactory()}`;
+            this._browserFileIdentities.set(file, canonicalPath);
+          }
+          const document = this._openReadResultNow({
+            browserFile: true,
+            path: null,
+            canonicalPath,
+            displayName: typeof file.name === "string" && file.name ? file.name : "untitled.md",
+            content,
+            sha256,
+          }, token);
+          if (!openedIds.has(document.id)) {
+            openedIds.add(document.id);
+            opened.push(document);
+          }
+        } catch (reason) {
+          const error = normalizeError(reason);
+          failed.push({ file, error });
+          this._showOpenError(file && file.name ? file.name : "browser file", error);
+        }
+      }
+      return { opened, failed };
+    }
+
     async _openPathsNow(paths, token = this._lifecycleToken) {
       const opened = [];
       const openedIds = new Set();
@@ -7088,12 +7147,16 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
 
     _documentFromReadResult(result) {
-      if (typeof result.path !== "string" || result.path.length === 0) {
+      const browserFile = result.browserFile === true;
+      if ((!browserFile && (typeof result.path !== "string" || result.path.length === 0))
+          || (browserFile && result.path !== null)) {
         throw new TypeError("read result path must be a non-empty string");
       }
       return new DocumentModel({
         id: this.idFactory(),
-        displayName: displayNameFromPath(result.path),
+        displayName: typeof result.displayName === "string" && result.displayName
+          ? result.displayName
+          : displayNameFromPath(result.path),
         path: result.path,
         canonicalPath: result.canonicalPath,
         content: result.content,
@@ -7140,6 +7203,47 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
     activate(id) {
       return this.activateDocument(id);
+    }
+
+    activateAdjacentDocument(delta, options = {}) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session || this.session.tabOrder.length === 0) throw new Error("session has not been created");
+      if (!Number.isSafeInteger(delta)) throw new TypeError("delta must be a safe integer");
+      const current = this.session.tabOrder.indexOf(this.session.activeDocumentId);
+      const length = this.session.tabOrder.length;
+      const next = ((current + delta) % length + length) % length;
+      const nextId = this.session.tabOrder[next];
+      if (nextId === this.session.activeDocumentId) return this.activeDocument();
+      return this.activateDocument(nextId, options);
+    }
+
+    cycleActiveDocument(delta, options = {}) {
+      return this.activateAdjacentDocument(delta, options);
+    }
+
+    moveActiveDocument(delta) {
+      if (this._disposed) throw new Error("session controller is disposed");
+      if (!this.session || this.session.activeDocumentId === null) throw new Error("session has not been created");
+      if (!Number.isSafeInteger(delta)) throw new TypeError("delta must be a safe integer");
+      const generation = this.session.generation;
+      const document = this.session.move(this.session.activeDocumentId, delta);
+      if (this.session.generation === generation) return document;
+      this._renderSession();
+      if (typeof this.view.announceActiveDocument === "function") {
+        this.view.announceActiveDocument(document, this.session);
+      }
+      if (this._restoreState === "restored") {
+        this._persistManifestNow().catch((reason) => {
+          if (!this.session || this.session.documents.get(document.id) !== document) return;
+          this._showRecoveryError(reason, {
+            phase: "manifest-tab-order",
+            documentId: document.id,
+            displayName: document.displayName,
+            snapshotRevision: document.snapshotRevision,
+          });
+        });
+      }
+      return document;
     }
 
     activeDocument() {
@@ -7998,10 +8102,17 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
 
     closeDocument(documentId) {
+      const document = this.session && this.session.documents.get(documentId);
+      const displayName = document && document.displayName ? document.displayName : String(documentId);
       return this._runDocumentOperation(
         `close:${documentId}`,
         () => this._closeDocumentNow(documentId),
-      );
+      ).then((result) => {
+        if (typeof this.view.announceCloseOutcome === "function") {
+          this.view.announceCloseOutcome(result, displayName);
+        }
+        return result;
+      });
     }
 
     async _closeDocumentNow(documentId) {
@@ -8040,7 +8151,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       } else {
         active = this.session.documents.get(nextActiveId);
       }
-      this._presentActivatedDocument(active, { persist: false });
+      this._presentActivatedDocument(active, { persist: false, announce: false });
       await this._persistManifestNow(this._lifecycleToken);
       return active;
     }
@@ -8493,7 +8604,12 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       });
     }
 
-    _presentActivatedDocument(document, { focusEditor = true, persist = true } = {}) {
+    _presentActivatedDocument(document, {
+      focusEditor = true,
+      persist = true,
+      announce = true,
+      preserveTabFocus = false,
+    } = {}) {
       if (this._disposed || !document) return;
       if (document instanceof DocumentModel && (this._manifestBarrier || this._sessionRecoveryFailure)) {
         this._scheduleRecoveryRevision(document);
@@ -8501,6 +8617,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       const id = document.id;
       const viewToken = ++this._viewToken;
       this._renderSession();
+      if (preserveTabFocus && typeof this.view.focusActiveTab === "function") this.view.focusActiveTab();
+      if (announce && typeof this.view.announceActiveDocument === "function") {
+        this.view.announceActiveDocument(document, this.session);
+      }
       if (document instanceof DocumentModel && typeof this.view.ensureEditor === "function") {
         const editor = this.view.ensureEditor(document);
         if (editor && typeof editor.value === "string" && editor.value !== document.content) {
@@ -8800,6 +8920,24 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     };
   }
 
+  function commandForKey(event) {
+    if (!event || typeof event.key !== "string") return null;
+    const key = event.key.toLowerCase();
+    const ctrl = Boolean(event.ctrlKey);
+    const meta = Boolean(event.metaKey);
+    const alt = Boolean(event.altKey);
+    const shift = Boolean(event.shiftKey);
+
+    if (ctrl && !meta && !alt && key === "tab") {
+      return shift ? "previous-tab" : "next-tab";
+    }
+    if (alt && shift && !ctrl && !meta && key === "arrowleft") return "move-tab-left";
+    if (alt && shift && !ctrl && !meta && key === "arrowright") return "move-tab-right";
+    const platformClose = (ctrl && !meta) || (event.isMac === true && meta && !ctrl);
+    if (platformClose && !alt && !shift && key === "w") return "close-tab";
+    return null;
+  }
+
   function requireElement(value, name) {
     if (!value || typeof value.addEventListener !== "function") {
       throw new TypeError(`${name} element is required`);
@@ -8864,6 +9002,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this.onActivate = callbackFrom(options, intents, ["onActivate", "activate", "activateDocument"]);
       this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
       this.onAdd = callbackFrom(options, intents, ["onAdd", "add", "addDocument"]);
+      this.onCommand = callbackFrom(options, intents, ["onCommand", "command"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
       this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
       this.applySharedWorkspace = callbackFrom(options, intents, ["applySharedWorkspace"]);
@@ -9125,23 +9264,59 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!record) return false;
       const runtime = this._runtimeStatuses.get(id);
       this._applyTabStatus(record, runtime);
+      if (hasBaseStatus && !hasRuntimeStatus && record.baseStatusText) {
+        this._announce(`${record.displayName}: ${record.baseStatusText}`);
+      }
       if (hasRuntimeStatus) {
         const clean = status === null || status === "clean"
           || Boolean(objectStatus && (objectStatus.recoveryStatus === "clean" || objectStatus.status === "clean"));
         const message = runtime
           ? `${record.displayName}: ${runtime.message}`
           : clean ? `${record.displayName}: Recovery is current` : "";
-        if (message && this.statusElement && this.statusElement.textContent !== message) {
-          this.statusElement.textContent = message;
-        }
+        if (message) this._announce(message);
       }
       return true;
+    }
+
+    announceActiveDocument(document, sessionOrDocuments) {
+      if (!document) return false;
+      let ordered = sessionOrDocuments;
+      if (sessionOrDocuments && !Array.isArray(sessionOrDocuments)
+          && Array.isArray(sessionOrDocuments.tabOrder) && sessionOrDocuments.documents) {
+        ordered = sessionOrDocuments.tabOrder
+          .map((id) => sessionOrDocuments.documents.get(id))
+          .filter(Boolean);
+      }
+      if (!Array.isArray(ordered)) ordered = [];
+      const index = ordered.findIndex((candidate) => candidate && candidate.id === document.id);
+      if (index < 0) return false;
+      return this._announce(`${document.displayName}, tab ${index + 1} of ${ordered.length}`);
+    }
+
+    announceCloseOutcome(result, displayName) {
+      if (!result || typeof displayName !== "string") return false;
+      let message;
+      if (result.closed) message = `Closed ${displayName}`;
+      else if (result.canceled) message = `Close canceled for ${displayName}`;
+      else if (result.stale) message = `${displayName} was not closed because it changed during save`;
+      else message = `${displayName} was not closed`;
+      return this._announce(message);
     }
 
     focusActiveEditor() {
       const editor = this.editorFor(this._activeDocumentId);
       if (!editor || typeof editor.focus !== "function") return false;
       editor.focus();
+      return true;
+    }
+
+    focusActiveTab() {
+      const record = this._tabs.get(this._activeDocumentId);
+      if (!record || typeof record.tab.focus !== "function") return false;
+      record.tab.focus();
+      if (typeof record.tab.scrollIntoView === "function") {
+        record.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
       return true;
     }
 
@@ -9278,6 +9453,13 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     _onTabKeydown(event) {
       const target = eventActionTarget(event.target, "data-action");
       if (!target || target.getAttribute("role") !== "tab") return;
+      const command = commandForKey(event);
+      if (command) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        this.onCommand(command, event);
+        return;
+      }
       const currentId = target.getAttribute("data-document-id");
       const index = this._tabOrder.indexOf(currentId);
       if (index < 0) return;
@@ -9378,6 +9560,12 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       record.recovery.textContent = visibleFailure ? runtime.message : "";
     }
 
+    _announce(message) {
+      if (!message || !this.statusElement || this.statusElement.textContent === message) return false;
+      this.statusElement.textContent = message;
+      return true;
+    }
+
     _setLegacySurfacesHidden(hidden) {
       for (const legacy of this._legacySurfaces) legacy.surface.hidden = hidden;
     }
@@ -9387,7 +9575,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
   }
 
-  return { WorkspaceView, captureEditorState, tabDescriptor };
+  return { WorkspaceView, captureEditorState, commandForKey, tabDescriptor };
 });
 </script>
 <script>/* Native file access bridge for the desktop (Tauri) shell.
@@ -9401,6 +9589,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
  *   nativeApp.pickFiles()                           -> path strings, [] on cancel
  *   nativeApp.readFile(path)                        -> file text (utf-8)
  *   nativeApp.readDocument(path)                    -> session-backed document text
+ *   nativeApp.takePendingFiles()                    -> queued startup paths
  *   nativeApp.saveAs({ defaultDir, suggestedName, data })
  *                                                -> chosen path, null on cancel
  *   nativeApp.chooseSavePath({ defaultDir, suggestedName })
@@ -9472,6 +9661,9 @@ function makeNativeApp(tauri) {
     },
     async recoveryDirectory() {
       return tauri.core.invoke("recovery_directory");
+    },
+    async takePendingFiles() {
+      return normalizePaths(await tauri.core.invoke("take_pending_files"));
     },
     async chooseSavePath({ defaultDir = "", suggestedName } = {}) {
       const p = await tauri.dialog.save({
@@ -9948,18 +10140,35 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   /* ── File loading ───────────────────────────── */
-  async function openFromFile(file, handle) {
-    const text = await file.text();
-    const document = await Promise.resolve(controller.createUntitled());
-    document.updateMetadata({ displayName: file.name || document.displayName });
-    controller.onEditorInput(document.id, text.replace(/\r\n/g, "\n"));
-    const capture = controller.captureActiveDocument();
-    const contentSha256 = await hashText(capture.content);
-    controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
-    if (handle) browserFileHandles.set(document.id, handle);
-    controller.activateDocument(document.id);
+  function isSupportedFile(file) {
+    if (!file || typeof file.name !== "string") return false;
+    return /\.(md|markdown|mdown|mkd|txt)$/i.test(file.name)
+      || file.type === "text/markdown" || file.type === "text/plain";
+  }
+
+  async function openBrowserFiles(files, handles = []) {
+    const accepted = [];
+    const acceptedHandles = [];
+    Array.from(files || []).forEach((file, index) => {
+      if (!isSupportedFile(file)) return;
+      accepted.push(file);
+      acceptedHandles.push(handles[index] || null);
+    });
+    const result = await controller.openBrowserFiles(accepted);
+    const failedFiles = new Set(result.failed.map(({ file }) => file));
+    let openedIndex = 0;
+    accepted.forEach((file, index) => {
+      if (failedFiles.has(file)) return;
+      const document = result.opened[openedIndex++];
+      if (document && acceptedHandles[index]) browserFileHandles.set(document.id, acceptedHandles[index]);
+    });
     syncActiveSurface();
-    setStatus("Opened " + document.displayName + (handle ? " — Save writes back to the original file" : ""), false, document.id);
+    const active = controller.activeDocument();
+    if (active && result.opened.length) {
+      setStatus("Opened " + active.displayName
+        + (browserFileHandles.has(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
+    }
+    return result;
   }
 
   async function openPicker() {
@@ -9976,17 +10185,16 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
           types: [{ description: "Markdown", accept: { "text/markdown": [".md", ".markdown", ".mdown", ".mkd"], "text/plain": [".txt"] } }],
           excludeAcceptAllOption: false,
         });
-        for (const handle of handles) await openFromFile(await handle.getFile(), handle);
+        const files = [];
+        for (const handle of handles) files.push(await handle.getFile());
+        await openBrowserFiles(files, handles);
       } catch (e) { /* user cancelled */ }
     } else {
       $("file-input").click();
     }
   }
   $("file-input").addEventListener("change", async (e) => {
-    for (const file of e.target.files || []) {
-      try { await openFromFile(file, null); }
-      catch (error) { setStatus("Could not open " + file.name + " — " + error.message); }
-    }
+    await openBrowserFiles(e.target.files || []);
     e.target.value = "";
   });
 
@@ -10250,23 +10458,34 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     e.preventDefault();
     dragDepth = 0;
     overlay.classList.remove("on");
-    for (const item of e.dataTransfer.items || []) {
-      if (!item || item.kind !== "file") continue;
-      let opened = false;
-      if (item.getAsFileSystemHandle) {
-        try {
-          const handle = await item.getAsFileSystemHandle();
-          if (handle && handle.kind === "file") {
-            await openFromFile(await handle.getFile(), handle);
-            opened = true;
-          }
-        } catch (err) { /* fall through to plain File */ }
+    const files = [];
+    const handles = [];
+    const items = Array.from((e.dataTransfer && e.dataTransfer.items) || []);
+    if (items.length) {
+      for (const item of items) {
+        if (!item || item.kind !== "file") continue;
+        let file = null;
+        let handle = null;
+        if (item.getAsFileSystemHandle) {
+          try {
+            handle = await item.getAsFileSystemHandle();
+            if (handle && handle.kind === "file") file = await handle.getFile();
+            else handle = null;
+          } catch (err) { handle = null; }
+        }
+        if (!file && item.getAsFile) file = item.getAsFile();
+        if (file) {
+          files.push(file);
+          handles.push(handle);
+        }
       }
-      if (!opened) {
-        const file = item.getAsFile();
-        if (file) await openFromFile(file, null);
+    } else {
+      for (const file of (e.dataTransfer && e.dataTransfer.files) || []) {
+        files.push(file);
+        handles.push(null);
       }
     }
+    await openBrowserFiles(files, handles);
   });
 
   /* ── Editor behaviour ───────────────────────── */
@@ -10275,6 +10494,37 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
   const INDENT = "  ";
+  function keyboardCommand(event) {
+    return MDEdit.commandForKey({
+      key: event.key,
+      ctrlKey: event.ctrlKey,
+      metaKey: event.metaKey,
+      altKey: event.altKey,
+      shiftKey: event.shiftKey,
+      isMac,
+    });
+  }
+
+  function shortcutFocusOptions(event) {
+    const target = event && event.target;
+    const tabFocused = Boolean(target && $("document-tabs").contains(target));
+    return {
+      focusEditor: isActiveEditorEvent(event),
+      preserveTabFocus: tabFocused,
+    };
+  }
+
+  async function runTabCommand(command, event) {
+    const active = controller && controller.activeDocument();
+    if (!active) return;
+    if (command === "next-tab") controller.activateAdjacentDocument(1, shortcutFocusOptions(event));
+    else if (command === "previous-tab") controller.activateAdjacentDocument(-1, shortcutFocusOptions(event));
+    else if (command === "move-tab-left") controller.moveActiveDocument(-1);
+    else if (command === "move-tab-right") controller.moveActiveDocument(1);
+    else if (command === "close-tab") await controller.closeDocument(active.id);
+    syncActiveSurface();
+  }
+
   function replaceRange(surface, start, end, text) {
     surface.focus();
     surface.setSelectionRange(start, end);
@@ -10321,6 +10571,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   $("editor-surfaces").addEventListener("keydown", (e) => {
     if (!isActiveEditorEvent(e)) return;
+    const command = keyboardCommand(e);
+    if (command) {
+      e.preventDefault();
+      e.stopPropagation();
+      runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
     const surface = e.target;
     if (e.key !== "Tab" || e.altKey || e.ctrlKey || e.metaKey) return;
     e.preventDefault();
@@ -10485,6 +10742,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   /* ── Keyboard shortcuts ─────────────────────── */
   window.addEventListener("keydown", (e) => {
+    const command = keyboardCommand(e);
+    if (command) {
+      e.preventDefault();
+      runTabCommand(command, e).catch((error) => setStatus(error.message));
+      return;
+    }
     const mod = isMac ? e.metaKey : e.ctrlKey;
     if (!mod) return;
     const k = e.key.toLowerCase();
@@ -10526,6 +10789,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       "<kbd>" + MOD + "S</kbd><span>Save</span>" +
       "<kbd>" + (isMac ? "⌘⇧S" : "Ctrl+Shift+S") + "</kbd><span>Save as</span>" +
       "<kbd>" + MOD + "O</kbd><span>Open a file</span>" +
+      "<kbd>Ctrl+Tab</kbd><span>Next document</span>" +
+      "<kbd>Ctrl+Shift+Tab</kbd><span>Previous document</span>" +
+      "<kbd>Alt+Shift+←/→</kbd><span>Move document tab</span>" +
+      "<kbd>" + MOD + "W</kbd><span>Close document</span>" +
       "<kbd>" + MOD + "F</kbd><span>Find &amp; replace</span>" +
       "<kbd>Tab</kbd><span>Indent</span>" +
       "<kbd>⇧Tab</kbd><span>Outdent</span>" +
@@ -10882,6 +11149,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       await controller.closeDocument(documentId);
       syncActiveSurface();
     },
+    onCommand(command, event) {
+      runTabCommand(command, event).catch((error) => setStatus(error.message));
+    },
     onAdd() { newDoc(); },
     onEditorInput(documentId, content) {
       controller.onEditorInput(documentId, content);
@@ -11052,7 +11322,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
       controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
     }
     if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
-      const paths = await window.__TAURI__.core.invoke("take_pending_files").catch(() => []);
+      const paths = await nativeApp.takePendingFiles().catch(() => []);
       if (paths.length) await controller.openPaths(paths);
     }
     active = controller.activeDocument();

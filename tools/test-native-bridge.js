@@ -27,6 +27,7 @@ function fakeTauri() {
           write_recovery_manifest: undefined,
           delete_recovery_document: undefined,
           recovery_directory: "C:\\recovery",
+          take_pending_files: ["C:\\notes\\a.md", "C:\\notes\\b.md"],
         };
         return responses[command];
       },
@@ -69,6 +70,17 @@ test("pickFiles returns every selection and normalizes strings, arrays, and canc
 
   tauri.dialog.open = async () => null;
   assert.deepEqual(await app.pickFiles(), []);
+});
+
+test("takePendingFiles normalizes one, many, and no queued paths", async () => {
+  const { tauri } = fakeTauri();
+  const app = makeNativeApp(tauri);
+  tauri.core.invoke = async () => "C:\\notes\\one.md";
+  assert.deepEqual(await app.takePendingFiles(), ["C:\\notes\\one.md"]);
+  tauri.core.invoke = async () => ["C:\\notes\\a.md", "C:\\notes\\b.md"];
+  assert.deepEqual(await app.takePendingFiles(), ["C:\\notes\\a.md", "C:\\notes\\b.md"]);
+  tauri.core.invoke = async () => null;
+  assert.deepEqual(await app.takePendingFiles(), []);
 });
 
 test("readFile returns utf-8 text via readTextFile", async () => {
@@ -143,6 +155,7 @@ test("document bridge methods invoke the expected Tauri commands and forward res
   assert.equal(await app.writeRecoveryManifest(6, "{}"), undefined);
   assert.equal(await app.deleteRecoveryDocument("doc-1"), undefined);
   assert.equal(await app.recoveryDirectory(), "C:\\recovery");
+  assert.deepEqual(await app.takePendingFiles(), ["C:\\notes\\a.md", "C:\\notes\\b.md"]);
 
   assert.deepEqual(calls.invoke, [
     ["read_document", { path: "C:\\notes\\doc.md" }],
@@ -154,6 +167,7 @@ test("document bridge methods invoke the expected Tauri commands and forward res
     ["write_recovery_manifest", { generation: 6, json: "{}" }],
     ["delete_recovery_document", { documentId: "doc-1" }],
     ["recovery_directory", undefined],
+    ["take_pending_files", undefined],
   ]);
 });
 
@@ -178,6 +192,7 @@ test("document bridge methods propagate invoke rejections unchanged", async () =
     error
   );
   await assert.rejects(app.canonicalizeDocumentPath("C:\\notes\\doc.md"), error);
+  await assert.rejects(app.takePendingFiles(), error);
   await assert.rejects(app.loadRecoveryManifest(), error);
   await assert.rejects(app.loadRecoveryDocument("doc-1", 4), error);
   await assert.rejects(app.writeRecoveryDocument("doc-1", 5, "{}"), error);

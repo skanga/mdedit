@@ -138,6 +138,7 @@ function makeDependencies(overrides = {}) {
     preview: [],
     statuses: [],
     activation: [],
+    announcements: [],
     frames: [],
   };
   let fileOpenedHandler = null;
@@ -217,6 +218,12 @@ function makeDependencies(overrides = {}) {
     },
     setDocumentStatus(documentId, status) {
       calls.statuses.push([documentId, status]);
+    },
+    announceActiveDocument(document, session) {
+      calls.announcements.push(["active", document.id, [...session.tabOrder]]);
+    },
+    announceCloseOutcome(result, displayName) {
+      calls.announcements.push(["close", result, displayName]);
     },
     async showRecoveryError(details) {
       calls.recoveryErrors.push(details);
@@ -489,6 +496,75 @@ test("openPaths continues after an individual read failure and activates the fin
   assert.equal(controller.activeDocument().savedContentSha256, "sha:last.md");
   assert.equal(controller.activeDocument().expectedDiskSha256, "sha:last.md");
   assert.equal(fixture.calls.openErrors.length, 1);
+});
+
+test("openBrowserFiles reads a then b in supplied order and leaves b active", async () => {
+  const reads = [];
+  const files = [
+    { name: "a.md", async text() { reads.push("a:start"); reads.push("a:end"); return "alpha"; } },
+    { name: "b.md", async text() { reads.push("b:start"); reads.push("b:end"); return "beta"; } },
+  ];
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const result = await controller.openBrowserFiles(files);
+
+  assert.deepEqual(reads, ["a:start", "a:end", "b:start", "b:end"]);
+  assert.deepEqual(result.opened.map((document) => document.displayName), ["a.md", "b.md"]);
+  assert.equal(result.failed.length, 0);
+  assert.equal(controller.activeDocument().displayName, "b.md");
+  assert.equal(controller.activeDocument().content, "beta");
+  assert.equal(controller.activeDocument().path, null);
+});
+
+test("openBrowserFiles waits for each delayed read, continues errors, and preserves success order", async () => {
+  const first = deferred();
+  const third = deferred();
+  const calls = [];
+  const files = [
+    { name: "first.md", text() { calls.push("first"); return first.promise; } },
+    { name: "bad.md", async text() { calls.push("bad"); throw new Error("unreadable browser file"); } },
+    { name: "third.md", text() { calls.push("third"); return third.promise; } },
+  ];
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const opening = controller.openBrowserFiles(files);
+  await settle();
+  assert.deepEqual(calls, ["first"]);
+  first.resolve("one\r\ntwo");
+  await settle();
+  assert.deepEqual(calls, ["first", "bad", "third"]);
+  third.resolve("three");
+  const result = await opening;
+
+  assert.deepEqual(result.opened.map((document) => document.displayName), ["first.md", "third.md"]);
+  assert.equal(result.opened[0].content, "one\ntwo");
+  assert.equal(result.failed.length, 1);
+  assert.equal(result.failed[0].file, files[1]);
+  assert.match(result.failed[0].error.message, /unreadable browser file/);
+  assert.equal(controller.activeDocument(), result.opened[1]);
+  assert.deepEqual(fixture.calls.openErrors.map(([name]) => name), ["bad.md"]);
+});
+
+test("browser file identity dedupes the same object but not distinct same-name files", async () => {
+  let sharedReads = 0;
+  const shared = { name: "same.md", async text() { sharedReads += 1; return "shared"; } };
+  const other = { name: "same.md", async text() { return "other"; } };
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const first = await controller.openBrowserFiles([shared, shared]);
+  const second = await controller.openBrowserFiles([other]);
+
+  assert.equal(sharedReads, 2);
+  assert.equal(first.opened.length, 1);
+  assert.equal(second.opened.length, 1);
+  assert.equal(controller.session.documents.size, 2);
+  assert.notEqual(first.opened[0].canonicalPath, second.opened[0].canonicalPath);
+  assert.equal(first.opened[0].path, null);
+  assert.equal(second.opened[0].path, null);
+  assert.equal(controller.activeDocument(), second.opened[0]);
 });
 
 test("no manifest imports the legacy pathless draft as dirty and removes it after durability", async () => {
@@ -2320,6 +2396,59 @@ test("keyboard activation can preserve tab focus while restoring workspace", () 
   assert.notEqual(a.id, b.id);
 });
 
+test("activateAdjacentDocument cycles in tab order with the existing capture and focus policy", async () => {
+  const frames = [];
+  const fixture = makeDependencies({ requestAnimationFrame(callback) { frames.push(callback); } });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+  const c = controller.createUntitled();
+  await controller.restore();
+  frames.splice(0).forEach((callback) => callback());
+  fixture.calls.activation.length = 0;
+  fixture.calls.announcements.length = 0;
+
+  const wrapped = controller.activateAdjacentDocument(1, { focusEditor: false, preserveTabFocus: true });
+  frames.splice(0).forEach((callback) => callback());
+
+  assert.equal(wrapped, a);
+  assert.equal(controller.activeDocument(), a);
+  assert.deepEqual(controller.session.tabOrder, [a.id, b.id, c.id]);
+  assert.deepEqual(fixture.calls.activation.slice(0, 3).map(([kind]) => kind), ["capture", "ensure", "activate-editor"]);
+  assert.equal(fixture.calls.activation.some(([kind]) => kind === "focus"), false);
+  assert.deepEqual(fixture.calls.announcements.at(-1), ["active", a.id, [a.id, b.id, c.id]]);
+});
+
+test("moveActiveDocument persists only real moves and leaves boundary moves unchanged", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+  const c = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  fixture.calls.manifestWrites.length = 0;
+  fixture.calls.renderedSessions.length = 0;
+  fixture.calls.announcements.length = 0;
+  const boundaryGeneration = controller.session.generation;
+
+  assert.equal(controller.moveActiveDocument(1), c);
+  await settle();
+  assert.equal(controller.session.generation, boundaryGeneration);
+  assert.deepEqual(controller.session.tabOrder, [a.id, b.id, c.id]);
+  assert.equal(fixture.calls.manifestWrites.length, 0);
+  assert.equal(fixture.calls.renderedSessions.length, 0);
+  assert.equal(fixture.calls.announcements.length, 0);
+
+  assert.equal(controller.moveActiveDocument(-1), c);
+  await settle();
+  assert.deepEqual(controller.session.tabOrder, [a.id, c.id, b.id]);
+  assert.equal(controller.session.generation, boundaryGeneration + 1);
+  assert.equal(fixture.calls.renderedSessions.length, 1);
+  assert.equal(fixture.calls.manifestWrites.length, 1);
+  assert.deepEqual(fixture.calls.announcements.at(-1), ["active", c.id, [a.id, c.id, b.id]]);
+});
+
 test("workspace-only activation checkpoints use increasing snapshot revisions", async () => {
   let selection = 1;
   let controller;
@@ -3247,6 +3376,21 @@ test("closing the final tab checkpoints a clean replacement before its manifest"
     < order.findIndex(([kind, id]) => kind === "manifest" && id === replacement.id));
 });
 
+test("a successful close announces one close outcome without a duplicate activation announcement", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+  const closing = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  fixture.calls.announcements.length = 0;
+
+  const result = await controller.closeDocument(closing.id);
+
+  assert.equal(result.closed, true);
+  assert.deepEqual(fixture.calls.announcements, [["close", result, closing.displayName]]);
+});
+
 test("clean quit asks once and only an explicit Close allows native shutdown", async () => {
   let dialogs = 0;
   let flushes = 0;
@@ -3773,6 +3917,14 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.saveAs\(capture\.documentId\)/);
   assert.match(template, /onCloseRequested\s*\(/);
   assert.match(template, /MDEdit\.createNativeCloseRequestHandler\(controller, currentWindow\)/);
+  assert.match(template, /MDEdit\.commandForKey\s*\(/);
+  assert.match(template, /controller\.activateAdjacentDocument\s*\(/);
+  assert.match(template, /controller\.moveActiveDocument\s*\(/);
+  assert.match(template, /controller\.openBrowserFiles\s*\(/);
+  assert.match(template, /nativeApp\.takePendingFiles\s*\(/);
+  assert.doesNotMatch(template, /core\.invoke\("take_pending_files"/);
+  assert.equal((template.match(/await nativeApp\.takePendingFiles\s*\(/g) || []).length, 1);
+  assert.ok(template.indexOf("await controller.restore()") < template.indexOf("nativeApp.takePendingFiles()"));
   assert.match(template, /addEventListener\("beforeunload", \(e\) => \{\s*e\.preventDefault\(\);\s*e\.returnValue = "";/);
   assert.doesNotMatch(template, /beforeunload[\s\S]{0,150}hasUnsavedOrRecoveryRisk/);
 });
@@ -3792,8 +3944,13 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /renderForExport/, filename);
     assert.match(html, /capture\.renderedHtml/, filename);
     assert.doesNotMatch(html, /cleanPreviewClone\(\)/, filename);
+    assert.match(html, /id="file-input"[^>]*\bmultiple\b/, filename);
     assert.match(html, /addEventListener\("change", async \(e\)/, filename);
-    assert.match(html, /for \(const file of e\.target\.files \|\| \[\]\)[\s\S]{0,120}await openFromFile/, filename);
+    assert.match(html, /openBrowserFiles\s*\(/, filename);
+    assert.match(html, /dataTransfer\.items/, filename);
+    assert.match(html, /isSupportedFile/, filename);
+    assert.match(html, /commandForKey\s*\(/, filename);
+    assert.equal((html.match(/await nativeApp\.takePendingFiles\s*\(/g) || []).length, 1, filename);
     assert.match(html, /downloadAsSave\(capture\)[\s\S]{0,300}recordCapturedSave\(capture/, filename);
     assert.match(html, /await saveAs\(capture\)/, filename);
     assert.match(html, /async function saveAs\(capture\)/, filename);

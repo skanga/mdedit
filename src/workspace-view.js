@@ -80,6 +80,24 @@
     };
   }
 
+  function commandForKey(event) {
+    if (!event || typeof event.key !== "string") return null;
+    const key = event.key.toLowerCase();
+    const ctrl = Boolean(event.ctrlKey);
+    const meta = Boolean(event.metaKey);
+    const alt = Boolean(event.altKey);
+    const shift = Boolean(event.shiftKey);
+
+    if (ctrl && !meta && !alt && key === "tab") {
+      return shift ? "previous-tab" : "next-tab";
+    }
+    if (alt && shift && !ctrl && !meta && key === "arrowleft") return "move-tab-left";
+    if (alt && shift && !ctrl && !meta && key === "arrowright") return "move-tab-right";
+    const platformClose = (ctrl && !meta) || (event.isMac === true && meta && !ctrl);
+    if (platformClose && !alt && !shift && key === "w") return "close-tab";
+    return null;
+  }
+
   function requireElement(value, name) {
     if (!value || typeof value.addEventListener !== "function") {
       throw new TypeError(`${name} element is required`);
@@ -144,6 +162,7 @@
       this.onActivate = callbackFrom(options, intents, ["onActivate", "activate", "activateDocument"]);
       this.onClose = callbackFrom(options, intents, ["onClose", "close", "closeDocument"]);
       this.onAdd = callbackFrom(options, intents, ["onAdd", "add", "addDocument"]);
+      this.onCommand = callbackFrom(options, intents, ["onCommand", "command"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
       this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
       this.applySharedWorkspace = callbackFrom(options, intents, ["applySharedWorkspace"]);
@@ -405,23 +424,59 @@
       if (!record) return false;
       const runtime = this._runtimeStatuses.get(id);
       this._applyTabStatus(record, runtime);
+      if (hasBaseStatus && !hasRuntimeStatus && record.baseStatusText) {
+        this._announce(`${record.displayName}: ${record.baseStatusText}`);
+      }
       if (hasRuntimeStatus) {
         const clean = status === null || status === "clean"
           || Boolean(objectStatus && (objectStatus.recoveryStatus === "clean" || objectStatus.status === "clean"));
         const message = runtime
           ? `${record.displayName}: ${runtime.message}`
           : clean ? `${record.displayName}: Recovery is current` : "";
-        if (message && this.statusElement && this.statusElement.textContent !== message) {
-          this.statusElement.textContent = message;
-        }
+        if (message) this._announce(message);
       }
       return true;
+    }
+
+    announceActiveDocument(document, sessionOrDocuments) {
+      if (!document) return false;
+      let ordered = sessionOrDocuments;
+      if (sessionOrDocuments && !Array.isArray(sessionOrDocuments)
+          && Array.isArray(sessionOrDocuments.tabOrder) && sessionOrDocuments.documents) {
+        ordered = sessionOrDocuments.tabOrder
+          .map((id) => sessionOrDocuments.documents.get(id))
+          .filter(Boolean);
+      }
+      if (!Array.isArray(ordered)) ordered = [];
+      const index = ordered.findIndex((candidate) => candidate && candidate.id === document.id);
+      if (index < 0) return false;
+      return this._announce(`${document.displayName}, tab ${index + 1} of ${ordered.length}`);
+    }
+
+    announceCloseOutcome(result, displayName) {
+      if (!result || typeof displayName !== "string") return false;
+      let message;
+      if (result.closed) message = `Closed ${displayName}`;
+      else if (result.canceled) message = `Close canceled for ${displayName}`;
+      else if (result.stale) message = `${displayName} was not closed because it changed during save`;
+      else message = `${displayName} was not closed`;
+      return this._announce(message);
     }
 
     focusActiveEditor() {
       const editor = this.editorFor(this._activeDocumentId);
       if (!editor || typeof editor.focus !== "function") return false;
       editor.focus();
+      return true;
+    }
+
+    focusActiveTab() {
+      const record = this._tabs.get(this._activeDocumentId);
+      if (!record || typeof record.tab.focus !== "function") return false;
+      record.tab.focus();
+      if (typeof record.tab.scrollIntoView === "function") {
+        record.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+      }
       return true;
     }
 
@@ -558,6 +613,13 @@
     _onTabKeydown(event) {
       const target = eventActionTarget(event.target, "data-action");
       if (!target || target.getAttribute("role") !== "tab") return;
+      const command = commandForKey(event);
+      if (command) {
+        if (typeof event.preventDefault === "function") event.preventDefault();
+        if (typeof event.stopPropagation === "function") event.stopPropagation();
+        this.onCommand(command, event);
+        return;
+      }
       const currentId = target.getAttribute("data-document-id");
       const index = this._tabOrder.indexOf(currentId);
       if (index < 0) return;
@@ -658,6 +720,12 @@
       record.recovery.textContent = visibleFailure ? runtime.message : "";
     }
 
+    _announce(message) {
+      if (!message || !this.statusElement || this.statusElement.textContent === message) return false;
+      this.statusElement.textContent = message;
+      return true;
+    }
+
     _setLegacySurfacesHidden(hidden) {
       for (const legacy of this._legacySurfaces) legacy.surface.hidden = hidden;
     }
@@ -667,5 +735,5 @@
     }
   }
 
-  return { WorkspaceView, captureEditorState, tabDescriptor };
+  return { WorkspaceView, captureEditorState, commandForKey, tabDescriptor };
 });
