@@ -249,6 +249,7 @@
       previewCacheMaxEntries = DEFAULT_PREVIEW_CACHE_MAX_ENTRIES,
       previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
       onRecoveryPerformance = () => {},
+      saveDocumentStrategy = null,
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -276,6 +277,10 @@
       this.previewCacheMaxEntries = previewCacheMaxEntries;
       this.previewCacheMaxBytes = previewCacheMaxBytes;
       this.onRecoveryPerformance = requireFunction(onRecoveryPerformance, "onRecoveryPerformance");
+      if (saveDocumentStrategy !== null && typeof saveDocumentStrategy !== "function") {
+        throw new TypeError("saveDocumentStrategy must be a function or null");
+      }
+      this.saveDocumentStrategy = saveDocumentStrategy;
       this.session = null;
 
       this._started = false;
@@ -1777,7 +1782,10 @@
     }
 
     saveDocument(documentId) {
-      return this._runDocumentOperation(`save:${documentId}`, () => this._saveDocumentNow(documentId));
+      return this._runDocumentOperation(
+        `save:${documentId}`,
+        () => this._saveDocumentWithStrategyNow(documentId),
+      );
     }
 
     saveBrowserDocument(documentId, operations = {}) {
@@ -1805,6 +1813,32 @@
         `conflict:${documentId}`,
         () => this._resolveConflictNow(documentId, action),
       );
+    }
+
+    async _saveDocumentWithStrategyNow(documentId, options = {}) {
+      if (!this.saveDocumentStrategy) return this._saveDocumentNow(documentId, options);
+      const document = this._requireLoadedDocument(documentId);
+      const capture = this._captureDocument(document);
+      try {
+        const result = await this.saveDocumentStrategy({
+          document,
+          capture,
+          showConflict: options.showConflict !== false,
+          saveNative: () => this._saveDocumentNow(documentId, options),
+          saveBrowser: (operations) => this._saveBrowserDocumentNow(
+            documentId,
+            operations,
+            { ...options, capturedDocument: capture },
+          ),
+        });
+        return result && typeof result === "object"
+          ? { ...result, handledBySaveStrategy: true }
+          : result;
+      } catch (reason) {
+        const error = normalizeError(reason);
+        error.handledBySaveStrategy = true;
+        throw error;
+      }
     }
 
     async _saveDocumentNow(documentId, { showConflict = true } = {}) {
@@ -1870,17 +1904,24 @@
       }
     }
 
-    async _saveBrowserDocumentNow(documentId, operations) {
+    async _saveBrowserDocumentNow(
+      documentId,
+      operations,
+      { showConflict = true, capturedDocument = null } = {},
+    ) {
       const document = this._requireLoadedDocument(documentId);
       if (!operations || typeof operations !== "object" || Array.isArray(operations)) {
         throw new TypeError("browser save operations are required");
       }
       if (typeof operations.read !== "function") throw new TypeError("browser save read is required");
       if (typeof operations.write !== "function") throw new TypeError("browser save write is required");
-      const capture = this._captureDocument(document);
+      const capture = capturedDocument || this._captureDocument(document);
+      if (capture.document !== document || capture.documentId !== documentId) {
+        throw new Error("browser save capture does not own the requested document");
+      }
       const resolveAction = (action) => this._resolveBrowserConflictNow(capture, action, operations);
       if (capture.fileStatus === "externally-changed") {
-        return this._presentSaveConflict(capture, null, { resolveAction });
+        return this._presentSaveConflict(capture, null, { showConflict, resolveAction });
       }
 
       const contentSha256 = await this.hashText(capture.content);
@@ -1891,13 +1932,13 @@
         return this._presentSaveConflict(capture, {
           status: "read-error",
           error: normalizeError(reason),
-        }, { resolveAction });
+        }, { showConflict, resolveAction });
       }
       if (current.sha256 !== capture.expectedDiskSha256) {
         return this._presentSaveConflict(capture, {
           status: "conflict",
           actualSha256: current.sha256,
-        }, { resolveAction });
+        }, { showConflict, resolveAction });
       }
 
       this._setDocumentStatus(documentId, {
@@ -2109,19 +2150,21 @@
       let error = null;
       for (const documentId of dirtyIds) {
         try {
-          const result = await this._saveDocumentNow(documentId, { showConflict: showConflicts });
+          const result = await this._saveDocumentWithStrategyNow(documentId, { showConflict: showConflicts });
           if (!result || !result.saved) {
             canceled = Boolean(result && result.canceled);
+            if (result && result.error) error = normalizeError(result.error);
             if (!canceled && result && (result.conflict || result.collision)) {
               error = new Error(result.conflict ? "save conflict" : "save path is already open");
             }
-            break;
+            if (canceled || !(result && result.handledBySaveStrategy)) break;
+            continue;
           }
           const liveDocument = this.session.documents.get(documentId);
           if (liveDocument instanceof DocumentModel && !liveDocument.dirty) savedIds.push(documentId);
         } catch (reason) {
           error = normalizeError(reason);
-          break;
+          if (!reason || !reason.handledBySaveStrategy) break;
         }
       }
       const remainingIds = dirtyIds.filter((id) => {
@@ -2356,7 +2399,7 @@
         choice = await this._showCloseChoice(document);
         if (!choice || choice === "cancel") return { closed: false, canceled: true, documentId };
         if (choice === "save") {
-          const saved = await this._saveDocumentNow(documentId);
+          const saved = await this._saveDocumentWithStrategyNow(documentId);
           if (!saved || !saved.saved || !this.session.documents.has(documentId)) {
             return { closed: false, canceled: Boolean(saved && saved.canceled), result: saved, documentId };
           }

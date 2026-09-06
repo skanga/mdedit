@@ -512,3 +512,135 @@ test("browser handle saves detect external changes and keep both versions availa
   await expect.poll(() => page.evaluate(() => window.__browserHandleTest.state.writes.copy.length)).toBe(2);
   expect(await page.evaluate(() => window.__browserHandleTest.state.writes.copy)).toEqual(["editor-copy", "editor-copy"]);
 });
+
+test("browser Save All and dirty close share guarded handles while canceled Save As stays dirty", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__MDEDIT_TEST_HOOK__ = { restored: false };
+    const state = { a: "a", b: "b", writes: { a: [], b: [] } };
+    const makeHandle = (key) => ({
+      key,
+      name: `${key}.md`,
+      async isSameEntry(other) { return Boolean(other && other.key === key); },
+      async queryPermission() { return "granted"; },
+      async getFile() { return new File([state[key]], `${key}.md`, { type: "text/markdown" }); },
+      async createWritable() {
+        let pending;
+        return {
+          async write(content) { pending = String(content); },
+          async close() { state.writes[key].push(pending); state[key] = pending; },
+        };
+      },
+    });
+    window.__browserBulkTest = { state, handles: [makeHandle("a"), makeHandle("b")] };
+    window.showOpenFilePicker = async () => window.__browserBulkTest.handles;
+    window.showSaveFilePicker = async () => { throw new DOMException("canceled", "AbortError"); };
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("tab", { name: /b\.md/ })).toHaveAttribute("aria-selected", "true");
+  await activeEditor(page).fill("b edited");
+  await expect.poll(() => page.getByRole("tab", { name: /b\.md/ }).evaluate(
+    (tab) => tab.parentElement.classList.contains("is-dirty"),
+  )).toBe(true);
+  await page.getByRole("tab", { name: /a\.md/ }).click();
+  await activeEditor(page).fill("a edited");
+  await expect.poll(() => page.getByRole("tab", { name: /a\.md/ }).evaluate(
+    (tab) => tab.parentElement.classList.contains("is-dirty"),
+  )).toBe(true);
+
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+
+  await expect(page.getByRole("status")).toContainText("Saved 2 documents");
+  expect(await page.evaluate(() => window.__browserBulkTest.state.writes)).toEqual({
+    a: ["a edited"],
+    b: ["b edited"],
+  });
+
+  await activeEditor(page).fill("a close edit");
+  await page.getByRole("button", { name: "Close a.md" }).click();
+  await page.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(page.getByRole("tab", { name: /a\.md/ })).toHaveCount(0);
+  expect(await page.evaluate(() => window.__browserBulkTest.state.writes.a)).toEqual(["a edited", "a close edit"]);
+
+  await page.getByRole("button", { name: "New document" }).click();
+  await activeEditor(page).fill("unsaved draft");
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+  await expect(page.getByRole("status")).toContainText("Save All canceled");
+  await expect(page.getByRole("button", { name: "Save All", exact: true })).toBeEnabled();
+  await expect(activeEditor(page)).toHaveValue("unsaved draft");
+});
+
+test("browser Save All continues after conflict and Save All and Quit only succeeds after every handle saves", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__MDEDIT_TEST_HOOK__ = { restored: false };
+    const state = { a: "a", b: "b", writes: { a: [], b: [] } };
+    const makeHandle = (key) => ({
+      key,
+      name: `${key}.md`,
+      async isSameEntry(other) { return Boolean(other && other.key === key); },
+      async queryPermission() { return "granted"; },
+      async getFile() { return new File([state[key]], `${key}.md`, { type: "text/markdown" }); },
+      async createWritable() {
+        let pending;
+        return {
+          async write(content) { pending = String(content); },
+          async close() { state.writes[key].push(pending); state[key] = pending; },
+        };
+      },
+    });
+    window.__browserQuitTest = { state, handles: [makeHandle("a"), makeHandle("b")] };
+    window.showOpenFilePicker = async () => window.__browserQuitTest.handles;
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("tab", { name: /b\.md/ })).toHaveAttribute("aria-selected", "true");
+  await activeEditor(page).fill("b edited");
+  await expect.poll(() => page.getByRole("tab", { name: /b\.md/ }).evaluate(
+    (tab) => tab.parentElement.classList.contains("is-dirty"),
+  )).toBe(true);
+  await page.getByRole("tab", { name: /a\.md/ }).click();
+  await activeEditor(page).fill("a edited");
+  await expect.poll(() => page.getByRole("tab", { name: /a\.md/ }).evaluate(
+    (tab) => tab.parentElement.classList.contains("is-dirty"),
+  )).toBe(true);
+  await page.evaluate(() => { window.__browserQuitTest.state.a = "a external"; });
+
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+  await page.getByRole("button", { name: "Keep Editing" }).click();
+
+  await expect(page.getByRole("status")).toContainText("1 saved; 1 remain unsaved: a.md");
+  expect(await page.evaluate(() => window.__browserQuitTest.state.writes)).toEqual({ a: [], b: ["b edited"] });
+
+  await page.evaluate(() => {
+    window.__browserQuitTest.pendingQuit = window.__MDEDIT_TEST_HOOK__.controller.requestQuit();
+  });
+  await page.getByRole("button", { name: "Save All & Quit" }).click();
+  const blocked = await page.evaluate(() => window.__browserQuitTest.pendingQuit);
+  expect(blocked.allowClose).toBe(false);
+  expect(await page.evaluate(() => window.__browserQuitTest.state.writes.a)).toEqual([]);
+
+  await page.locator("#btn-save").click();
+  await page.getByRole("button", { name: "Reload Disk Version" }).click();
+  await page.getByRole("button", { name: "Discard and Reload" }).click();
+  await expect(activeEditor(page)).toHaveValue("a external");
+  await activeEditor(page).evaluate((editor) => {
+    editor.value = "a final";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+  await page.getByRole("tab", { name: /b\.md/ }).click();
+  await activeEditor(page).evaluate((editor) => {
+    editor.value = "b final";
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  });
+
+  await page.evaluate(() => {
+    window.__browserQuitTest.pendingQuit = window.__MDEDIT_TEST_HOOK__.controller.requestQuit();
+  });
+  await page.getByRole("button", { name: "Save All & Quit" }).click();
+  const successful = await page.evaluate(() => window.__browserQuitTest.pendingQuit);
+  expect(successful.allowClose).toBe(true);
+  expect(await page.evaluate(() => window.__browserQuitTest.state.writes)).toEqual({
+    a: ["a final"],
+    b: ["b edited", "b final"],
+  });
+});

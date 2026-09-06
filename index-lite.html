@@ -3653,6 +3653,7 @@ return Pe}()
       previewCacheMaxEntries = DEFAULT_PREVIEW_CACHE_MAX_ENTRIES,
       previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
       onRecoveryPerformance = () => {},
+      saveDocumentStrategy = null,
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -3680,6 +3681,10 @@ return Pe}()
       this.previewCacheMaxEntries = previewCacheMaxEntries;
       this.previewCacheMaxBytes = previewCacheMaxBytes;
       this.onRecoveryPerformance = requireFunction(onRecoveryPerformance, "onRecoveryPerformance");
+      if (saveDocumentStrategy !== null && typeof saveDocumentStrategy !== "function") {
+        throw new TypeError("saveDocumentStrategy must be a function or null");
+      }
+      this.saveDocumentStrategy = saveDocumentStrategy;
       this.session = null;
 
       this._started = false;
@@ -5181,7 +5186,10 @@ return Pe}()
     }
 
     saveDocument(documentId) {
-      return this._runDocumentOperation(`save:${documentId}`, () => this._saveDocumentNow(documentId));
+      return this._runDocumentOperation(
+        `save:${documentId}`,
+        () => this._saveDocumentWithStrategyNow(documentId),
+      );
     }
 
     saveBrowserDocument(documentId, operations = {}) {
@@ -5209,6 +5217,32 @@ return Pe}()
         `conflict:${documentId}`,
         () => this._resolveConflictNow(documentId, action),
       );
+    }
+
+    async _saveDocumentWithStrategyNow(documentId, options = {}) {
+      if (!this.saveDocumentStrategy) return this._saveDocumentNow(documentId, options);
+      const document = this._requireLoadedDocument(documentId);
+      const capture = this._captureDocument(document);
+      try {
+        const result = await this.saveDocumentStrategy({
+          document,
+          capture,
+          showConflict: options.showConflict !== false,
+          saveNative: () => this._saveDocumentNow(documentId, options),
+          saveBrowser: (operations) => this._saveBrowserDocumentNow(
+            documentId,
+            operations,
+            { ...options, capturedDocument: capture },
+          ),
+        });
+        return result && typeof result === "object"
+          ? { ...result, handledBySaveStrategy: true }
+          : result;
+      } catch (reason) {
+        const error = normalizeError(reason);
+        error.handledBySaveStrategy = true;
+        throw error;
+      }
     }
 
     async _saveDocumentNow(documentId, { showConflict = true } = {}) {
@@ -5274,17 +5308,24 @@ return Pe}()
       }
     }
 
-    async _saveBrowserDocumentNow(documentId, operations) {
+    async _saveBrowserDocumentNow(
+      documentId,
+      operations,
+      { showConflict = true, capturedDocument = null } = {},
+    ) {
       const document = this._requireLoadedDocument(documentId);
       if (!operations || typeof operations !== "object" || Array.isArray(operations)) {
         throw new TypeError("browser save operations are required");
       }
       if (typeof operations.read !== "function") throw new TypeError("browser save read is required");
       if (typeof operations.write !== "function") throw new TypeError("browser save write is required");
-      const capture = this._captureDocument(document);
+      const capture = capturedDocument || this._captureDocument(document);
+      if (capture.document !== document || capture.documentId !== documentId) {
+        throw new Error("browser save capture does not own the requested document");
+      }
       const resolveAction = (action) => this._resolveBrowserConflictNow(capture, action, operations);
       if (capture.fileStatus === "externally-changed") {
-        return this._presentSaveConflict(capture, null, { resolveAction });
+        return this._presentSaveConflict(capture, null, { showConflict, resolveAction });
       }
 
       const contentSha256 = await this.hashText(capture.content);
@@ -5295,13 +5336,13 @@ return Pe}()
         return this._presentSaveConflict(capture, {
           status: "read-error",
           error: normalizeError(reason),
-        }, { resolveAction });
+        }, { showConflict, resolveAction });
       }
       if (current.sha256 !== capture.expectedDiskSha256) {
         return this._presentSaveConflict(capture, {
           status: "conflict",
           actualSha256: current.sha256,
-        }, { resolveAction });
+        }, { showConflict, resolveAction });
       }
 
       this._setDocumentStatus(documentId, {
@@ -5513,19 +5554,21 @@ return Pe}()
       let error = null;
       for (const documentId of dirtyIds) {
         try {
-          const result = await this._saveDocumentNow(documentId, { showConflict: showConflicts });
+          const result = await this._saveDocumentWithStrategyNow(documentId, { showConflict: showConflicts });
           if (!result || !result.saved) {
             canceled = Boolean(result && result.canceled);
+            if (result && result.error) error = normalizeError(result.error);
             if (!canceled && result && (result.conflict || result.collision)) {
               error = new Error(result.conflict ? "save conflict" : "save path is already open");
             }
-            break;
+            if (canceled || !(result && result.handledBySaveStrategy)) break;
+            continue;
           }
           const liveDocument = this.session.documents.get(documentId);
           if (liveDocument instanceof DocumentModel && !liveDocument.dirty) savedIds.push(documentId);
         } catch (reason) {
           error = normalizeError(reason);
-          break;
+          if (!reason || !reason.handledBySaveStrategy) break;
         }
       }
       const remainingIds = dirtyIds.filter((id) => {
@@ -5760,7 +5803,7 @@ return Pe}()
         choice = await this._showCloseChoice(document);
         if (!choice || choice === "cancel") return { closed: false, canceled: true, documentId };
         if (choice === "save") {
-          const saved = await this._saveDocumentNow(documentId);
+          const saved = await this._saveDocumentWithStrategyNow(documentId);
           if (!saved || !saved.saved || !this.session.documents.has(documentId)) {
             return { closed: false, canceled: Boolean(saved && saved.canceled), result: saved, documentId };
           }
@@ -8232,41 +8275,37 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     return { file, content, sha256: await hashText(content) };
   }
 
+  async function browserSaveDocumentStrategy({ document, capture, saveBrowser }) {
+    const fileHandle = browserFileHandles.get(document.id);
+    if (!fileHandle) return saveAs(capture);
+    try {
+      if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
+        if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("denied");
+      }
+      return await saveBrowser({
+        read: () => readBrowserHandle(fileHandle),
+        write: (content) => writeToHandle(fileHandle, content),
+        saveAs: (conflictCapture) => saveAs(conflictCapture),
+      });
+    } catch (error) {
+      setStatus("Couldn't save " + capture.displayName + " — " + error.message, false, capture.documentId);
+      return { saved: false, error, documentId: capture.documentId };
+    }
+  }
+
   async function save() {
     const document = controller.activeDocument();
     if (!document) return;
     const capture = controller.captureActiveDocument();
-    if (nativeApp) {
-      try {
-        const result = await controller.saveDocument(document.id);
-        syncActiveSurface();
-        if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
-        return result;
-      } catch (e) {
-        setStatus("Couldn't save " + capture.displayName + ": " + e.message, false, capture.documentId);
-        return null;
-      }
+    try {
+      const result = await controller.saveDocument(document.id);
+      syncActiveSurface();
+      if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
+      return result;
+    } catch (e) {
+      setStatus("Couldn't save " + capture.displayName + " — " + e.message, false, capture.documentId);
+      return null;
     }
-    const fileHandle = browserFileHandles.get(document.id);
-    if (fileHandle) {
-      try {
-        if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
-          if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("denied");
-        }
-        const result = await controller.saveBrowserDocument(document.id, {
-          read: () => readBrowserHandle(fileHandle),
-          write: (content) => writeToHandle(fileHandle, content),
-          saveAs: (conflictCapture) => saveAs(conflictCapture),
-        });
-        syncActiveSurface();
-        if (result && result.saved) setStatus("Saved to " + capture.displayName, false, capture.documentId);
-        return result;
-      } catch (e) {
-        setStatus("Couldn't save " + capture.displayName + " — " + e.message, false, capture.documentId);
-        return null;
-      }
-    }
-    return saveAs(capture);
   }
 
   async function saveAllDocuments() {
@@ -8390,6 +8429,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
     syncActiveSurface();
     setStatus("Saved " + capture.displayName, false, capture.documentId);
+    return { saved: true, documentId: capture.documentId, downloaded: true };
   }
 
   /* ── Exports ────────────────────────────────── */
@@ -9311,6 +9351,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   controller = new MDEdit.SessionController({
     io: sessionIo,
+    saveDocumentStrategy: nativeApp ? null : browserSaveDocumentStrategy,
     onRecoveryPerformance(metric) {
       const measurements = window.__MDEDIT_RECOVERY_PERFORMANCE__ || [];
       measurements.push(metric);
@@ -9361,6 +9402,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       },
     },
   });
+  if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.controller = controller;
   resolveControllerReady(controller);
 
   async function installNativeCloseGuard() {

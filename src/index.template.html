@@ -1644,41 +1644,37 @@
     return { file, content, sha256: await hashText(content) };
   }
 
+  async function browserSaveDocumentStrategy({ document, capture, saveBrowser }) {
+    const fileHandle = browserFileHandles.get(document.id);
+    if (!fileHandle) return saveAs(capture);
+    try {
+      if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
+        if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("denied");
+      }
+      return await saveBrowser({
+        read: () => readBrowserHandle(fileHandle),
+        write: (content) => writeToHandle(fileHandle, content),
+        saveAs: (conflictCapture) => saveAs(conflictCapture),
+      });
+    } catch (error) {
+      setStatus("Couldn't save " + capture.displayName + " — " + error.message, false, capture.documentId);
+      return { saved: false, error, documentId: capture.documentId };
+    }
+  }
+
   async function save() {
     const document = controller.activeDocument();
     if (!document) return;
     const capture = controller.captureActiveDocument();
-    if (nativeApp) {
-      try {
-        const result = await controller.saveDocument(document.id);
-        syncActiveSurface();
-        if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
-        return result;
-      } catch (e) {
-        setStatus("Couldn't save " + capture.displayName + ": " + e.message, false, capture.documentId);
-        return null;
-      }
+    try {
+      const result = await controller.saveDocument(document.id);
+      syncActiveSurface();
+      if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
+      return result;
+    } catch (e) {
+      setStatus("Couldn't save " + capture.displayName + " — " + e.message, false, capture.documentId);
+      return null;
     }
-    const fileHandle = browserFileHandles.get(document.id);
-    if (fileHandle) {
-      try {
-        if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
-          if ((await fileHandle.requestPermission({ mode: "readwrite" })) !== "granted") throw new Error("denied");
-        }
-        const result = await controller.saveBrowserDocument(document.id, {
-          read: () => readBrowserHandle(fileHandle),
-          write: (content) => writeToHandle(fileHandle, content),
-          saveAs: (conflictCapture) => saveAs(conflictCapture),
-        });
-        syncActiveSurface();
-        if (result && result.saved) setStatus("Saved to " + capture.displayName, false, capture.documentId);
-        return result;
-      } catch (e) {
-        setStatus("Couldn't save " + capture.displayName + " — " + e.message, false, capture.documentId);
-        return null;
-      }
-    }
-    return saveAs(capture);
   }
 
   async function saveAllDocuments() {
@@ -1802,6 +1798,7 @@
     controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
     syncActiveSurface();
     setStatus("Saved " + capture.displayName, false, capture.documentId);
+    return { saved: true, documentId: capture.documentId, downloaded: true };
   }
 
   /* ── Exports ────────────────────────────────── */
@@ -2727,6 +2724,7 @@
 
   controller = new MDEdit.SessionController({
     io: sessionIo,
+    saveDocumentStrategy: nativeApp ? null : browserSaveDocumentStrategy,
     onRecoveryPerformance(metric) {
       const measurements = window.__MDEDIT_RECOVERY_PERFORMANCE__ || [];
       measurements.push(metric);
@@ -2777,6 +2775,7 @@
       },
     },
   });
+  if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.controller = controller;
   resolveControllerReady(controller);
 
   async function installNativeCloseGuard() {
