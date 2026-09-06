@@ -39,6 +39,22 @@
     return parts[parts.length - 1] || "untitled.md";
   }
 
+  function onceAsync(callback) {
+    if (typeof callback !== "function") return null;
+    let called = false;
+    let result = null;
+    return function unsubscribeOnce() {
+      if (called) return result;
+      called = true;
+      try {
+        result = Promise.resolve(callback());
+      } catch (reason) {
+        result = Promise.reject(reason);
+      }
+      return result;
+    };
+  }
+
   class SessionController {
     constructor({
       io,
@@ -73,9 +89,12 @@
       this._listenerReady = Promise.resolve(null);
       this._listenerFailure = null;
       this._pendingOperations = [];
+      this._activeOperations = new Set();
       this._operationChain = Promise.resolve();
+      this._queuedOperationCount = 0;
       this._manifestWrites = Promise.resolve();
       this._restorePromise = null;
+      this._restoreControl = null;
       this._restoreState = "idle";
       this._lifecycleToken = 0;
       this._disposed = false;
@@ -112,23 +131,23 @@
         rejected.catch(() => {});
         return rejected;
       }
-      if (!registration || typeof registration.then !== "function") {
-        this._unlisten = registration;
-      }
+      const immediateUnlisten = typeof registration === "function" ? onceAsync(registration) : null;
+      if (immediateUnlisten) this._unlisten = immediateUnlisten;
       this._listenerReady = Promise.resolve(registration).then(
         (unlisten) => {
+          const guardedUnlisten = immediateUnlisten || onceAsync(unlisten);
           if (this._disposed) {
-            if (typeof unlisten === "function") {
+            if (guardedUnlisten) {
               try {
-                Promise.resolve(unlisten()).catch(() => {});
+                Promise.resolve(guardedUnlisten()).catch(() => {});
               } catch (_) {
                 // Disposal remains complete even if late unsubscription fails.
               }
             }
             return null;
           }
-          this._unlisten = unlisten;
-          return unlisten;
+          this._unlisten = guardedUnlisten;
+          return guardedUnlisten;
         },
         (reason) => {
           const error = normalizeError(reason);
@@ -149,8 +168,46 @@
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       this._restoreState = "restoring";
       const token = ++this._lifecycleToken;
-      this._restorePromise = this._restore(token);
-      return this._restorePromise;
+      let resolveRestore;
+      let rejectRestore;
+      let settled = false;
+      const publicPromise = new Promise((resolve, reject) => {
+        resolveRestore = resolve;
+        rejectRestore = reject;
+      });
+      publicPromise.catch(() => {});
+      const control = {
+        token,
+        promise: publicPromise,
+        resolve(value) {
+          if (settled) return;
+          settled = true;
+          resolveRestore(value);
+        },
+        reject(reason) {
+          if (settled) return;
+          settled = true;
+          rejectRestore(reason);
+        },
+      };
+      this._restoreControl = control;
+      this._restorePromise = publicPromise;
+      Promise.resolve(this._restore(token)).then(
+        (session) => {
+          if (this._restoreControl === control) this._restoreControl = null;
+          control.resolve(session);
+        },
+        (reason) => {
+          if (this._isLifecycleActive(token)) {
+            this._restoreState = "idle";
+            this._restorePromise = null;
+            this._rejectPendingOperations(reason);
+          }
+          if (this._restoreControl === control) this._restoreControl = null;
+          control.reject(reason);
+        },
+      );
+      return publicPromise;
     }
 
     async _restore(token) {
@@ -197,33 +254,38 @@
     }
 
     async _finishRestore(token) {
-      const completions = [];
-      while (this._isLifecycleActive(token) && this._pendingOperations.length > 0) {
-        const request = this._pendingOperations.shift();
-        try {
-          completions.push({ request, value: await request.run() });
-        } catch (reason) {
-          completions.push({ request, error: reason });
-        }
-      }
-      if (!this._isLifecycleActive(token)) {
-        for (const { request } of completions) request.dispose();
-        return this.session;
-      }
-      if (!this.session || this.session.documents.size === 0) this._createFreshSession(token);
+      try {
+        while (this._isLifecycleActive(token)) {
+          while (this._pendingOperations.length > 0) {
+            const request = this._pendingOperations.shift();
+            this._activeOperations.add(request);
+            try {
+              request.resolve(await request.run(token));
+            } catch (reason) {
+              request.reject(reason);
+            } finally {
+              this._activeOperations.delete(request);
+            }
+            if (!this._isLifecycleActive(token)) return this.session;
+          }
 
-      // Publish the lifecycle transition before resolving queued callers. Their
-      // continuations can safely submit direct follow-up work without missing
-      // the final drain pass.
-      this._restoreState = "restored";
-      for (const completion of completions) {
-        if (Object.prototype.hasOwnProperty.call(completion, "error")) {
-          completion.request.reject(completion.error);
-        } else {
-          completion.request.resolve(completion.value);
+          if (!this.session || this.session.documents.size === 0) this._createFreshSession(token);
+          if (this._pendingOperations.length > 0) continue;
+
+          // No asynchronous boundary is allowed between this final empty-queue
+          // check and publishing restored. Follow-up work therefore either joins
+          // the drain above or enters the normal serialized operation queue.
+          this._restoreState = "restored";
+          return this.session;
         }
+        return this.session;
+      } catch (reason) {
+        if (this._isLifecycleActive(token)) {
+          this._rejectPendingOperations(reason);
+          this._restoreState = "idle";
+        }
+        throw reason;
       }
-      return this.session;
     }
 
     async restoreManifest(rawManifest, token = this._lifecycleToken) {
@@ -400,28 +462,28 @@
       if (this._disposed) return Promise.resolve(this._disposedOpenResult(paths));
       const copiedPaths = [...paths];
       return this._scheduleOperation(
-        () => this._openPathsNow(copiedPaths),
+        (token) => this._openPathsNow(copiedPaths, token),
         (resolve) => resolve(this._disposedOpenResult(copiedPaths)),
       );
     }
 
-    async _openPathsNow(paths) {
+    async _openPathsNow(paths, token = this._lifecycleToken) {
       const opened = [];
       const openedIds = new Set();
       const failed = [];
 
       for (const path of paths) {
-        if (this._disposed) {
+        if (!this._isLifecycleActive(token)) {
           failed.push({ path, error: new Error("session controller is disposed") });
           continue;
         }
         try {
           const result = await this.io.readDocument(path);
-          if (this._disposed) {
+          if (!this._isLifecycleActive(token)) {
             failed.push({ path, error: new Error("session controller is disposed") });
             continue;
           }
-          const document = this._openReadResultNow(result);
+          const document = this._openReadResultNow(result, token);
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
             opened.push(document);
@@ -444,20 +506,29 @@
 
     _scheduleOperation(run, onDispose) {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
-      if (this._restoreState === "restored") {
-        const operation = this._operationChain.catch(() => {}).then(() => {
-          if (this._disposed) throw new Error("session controller is disposed");
-          return run();
-        });
-        this._operationChain = operation;
-        return operation;
-      }
+      const request = this._createOperationRequest(run, onDispose);
+      if (this._restoreState === "restored") return this._queueRestoredOperation(request);
 
+      this._pendingOperations.push(request);
+
+      if (this._restoreState === "idle") {
+        this.restore().catch((reason) => {
+          const index = this._pendingOperations.indexOf(request);
+          if (index >= 0) this._pendingOperations.splice(index, 1);
+          request.reject(reason);
+        });
+      }
+      return request.promise;
+    }
+
+    _createOperationRequest(run, onDispose) {
       let request;
       const promise = new Promise((resolvePromise, rejectPromise) => {
         let settled = false;
         request = {
           run,
+          promise: null,
+          isSettled() { return settled; },
           resolve(value) {
             if (settled) return;
             settled = true;
@@ -475,16 +546,44 @@
           },
         };
       });
-      this._pendingOperations.push(request);
+      promise.catch(() => {});
+      request.promise = promise;
+      return request;
+    }
 
-      if (this._restoreState === "idle") {
-        this.restore().catch((reason) => {
-          const index = this._pendingOperations.indexOf(request);
-          if (index >= 0) this._pendingOperations.splice(index, 1);
+    _queueRestoredOperation(request) {
+      const token = this._lifecycleToken;
+      this._queuedOperationCount += 1;
+      this._activeOperations.add(request);
+      const operation = this._operationChain.catch(() => {}).then(async () => {
+        if (request.isSettled()) return;
+        if (!this._isLifecycleActive(token)) {
+          request.dispose();
+          return;
+        }
+        try {
+          request.resolve(await request.run(token));
+        } catch (reason) {
           request.reject(reason);
-        });
+        }
+      }).finally(() => {
+        this._activeOperations.delete(request);
+        this._queuedOperationCount -= 1;
+      });
+      this._operationChain = operation;
+      return request.promise;
+    }
+
+    _rejectPendingOperations(reason) {
+      while (this._pendingOperations.length > 0) {
+        this._pendingOperations.shift().reject(reason);
       }
-      return promise;
+    }
+
+    _canMutateSynchronously() {
+      return !this._disposed
+        && this._restoreState === "restored"
+        && this._queuedOperationCount === 0;
     }
 
     openReadResult(result) {
@@ -493,10 +592,12 @@
         throw new TypeError("read result canonicalPath must be a non-empty string");
       }
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
-      return this._scheduleOperation(() => this._openReadResultNow(result));
+      if (this._canMutateSynchronously()) return this._openReadResultNow(result, this._lifecycleToken);
+      return this._scheduleOperation((token) => this._openReadResultNow(result, token));
     }
 
-    _openReadResultNow(result) {
+    _openReadResultNow(result, token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
       const session = this._ensureSession();
       const existing = session.findByCanonicalPath(result.canonicalPath);
       if (existing) {
@@ -529,6 +630,7 @@
     }
 
     activateDocument(id) {
+      if (this._disposed) throw new Error("session controller is disposed");
       if (!this.session) throw new Error("session has not been created");
       const document = this.session.activate(id);
       if (!(document instanceof DocumentModel)) {
@@ -558,10 +660,12 @@
 
     createUntitled() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
-      return this._scheduleOperation(() => this._createUntitledNow());
+      if (this._canMutateSynchronously()) return this._createUntitledNow(this._lifecycleToken);
+      return this._scheduleOperation((token) => this._createUntitledNow(token));
     }
 
-    _createUntitledNow() {
+    _createUntitledNow(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
       const document = this._ensureSession().createUntitled();
       this._renderSession();
       this._renderDocument(document);
@@ -570,10 +674,14 @@
 
     persistManifest() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
-      if (this._restoreState === "restoring" && this._restorePromise) {
-        return this._restorePromise.then(() => this._persistManifestNow(this._lifecycleToken));
+      if (this._restoreState !== "restored") {
+        const restoring = this._restoreState === "idle" ? this.restore() : this._restorePromise;
+        return restoring.then(() => {
+          if (this._disposed) throw new Error("session controller is disposed");
+          return this._scheduleOperation((token) => this._persistManifestNow(token));
+        });
       }
-      return this._persistManifestNow(this._lifecycleToken);
+      return this._scheduleOperation((token) => this._persistManifestNow(token));
     }
 
     _persistManifestNow(token = this._lifecycleToken) {
@@ -600,7 +708,7 @@
     _createFreshSession(token = this._lifecycleToken) {
       if (!this._isLifecycleActive(token)) return null;
       this.session = new SessionModel({ idFactory: this.idFactory });
-      return this._createUntitledNow();
+      return this._createUntitledNow(token);
     }
 
     _assignEmptySession(token = this._lifecycleToken) {
@@ -672,6 +780,12 @@
       this._loadingIds.clear();
       while (this._pendingOperations.length > 0) {
         this._pendingOperations.shift().dispose();
+      }
+      for (const request of this._activeOperations) request.dispose();
+      this._activeOperations.clear();
+      if (this._restoreControl) {
+        this._restoreControl.reject(new Error("session controller is disposed"));
+        this._restoreControl = null;
       }
 
       this._disposePromise = (async () => {

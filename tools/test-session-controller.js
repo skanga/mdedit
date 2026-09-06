@@ -504,13 +504,13 @@ test("persistManifest serializes concurrent writes so an older generation cannot
   const controller = new SessionController(fixture.dependencies);
   await controller.createUntitled();
   const older = controller.persistManifest();
-  await controller.createUntitled();
+  const creating = controller.createUntitled();
   const newer = controller.persistManifest();
 
   await settle();
   assert.equal(fixture.calls.manifestWrites.length, 1);
   firstWrite.resolve();
-  await Promise.all([older, newer]);
+  await Promise.all([older, creating, newer]);
 
   assert.deepEqual(fixture.calls.manifestWrites.map(([generation]) => generation), [1, 2]);
   assert.deepEqual(fixture.calls.manifestWrites.map(([, json]) => JSON.parse(json).generation), [1, 2]);
@@ -672,6 +672,68 @@ test("an open chained from the final queued caller runs after the atomic restore
   assert.equal(outcome.status, "fulfilled");
   assert.deepEqual(fixture.calls.reads, ["first.md", "chained.md"]);
   assert.equal(controller.activeDocument().displayName, "chained.md");
+});
+
+test("a completed queued open settles before a later queued read finishes", async () => {
+  const manifestGate = deferred();
+  const slowRead = deferred();
+  const fixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() { return manifestGate.promise; },
+      async readDocument(pathname) {
+        fixture.calls.reads.push(pathname);
+        if (pathname === "slow.md") return slowRead.promise;
+        return readResult(pathname);
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  const first = controller.openPaths(["first.md"]);
+  const second = controller.openPaths(["slow.md"]);
+  manifestGate.resolve(null);
+
+  const firstOutcome = await outcomeByImmediate(first);
+  const secondOutcome = await outcomeByImmediate(second);
+  assert.equal(firstOutcome.status, "fulfilled");
+  assert.equal(firstOutcome.value.opened[0].displayName, "first.md");
+  assert.equal(secondOutcome.status, "unsettled");
+
+  await controller.dispose();
+  assert.notEqual((await outcomeByImmediate(second)).status, "unsettled");
+});
+
+test("restore finalization failure settles queued callers and rejects reentrant pending work", async () => {
+  let controller;
+  let lateOpening;
+  let failFinalization = true;
+  const fixture = makeDependencies({
+    idFactory() {
+      if (failFinalization) {
+        lateOpening = controller.openPaths(["late.md"]);
+        throw new Error("cannot create blank");
+      }
+      return "recovered-id";
+    },
+  });
+  controller = new SessionController(fixture.dependencies);
+
+  const first = controller.openPaths([]);
+  const second = controller.openPaths([]);
+  const restoreOutcome = await outcomeByImmediate(controller.restore());
+
+  assert.equal(restoreOutcome.status, "rejected");
+  assert.match(restoreOutcome.reason.message, /cannot create blank/);
+  assert.equal((await outcomeByImmediate(first)).status, "fulfilled");
+  assert.equal((await outcomeByImmediate(second)).status, "fulfilled");
+  const lateOutcome = await outcomeByImmediate(lateOpening);
+  assert.equal(lateOutcome.status, "rejected");
+  assert.match(lateOutcome.reason.message, /cannot create blank/);
+
+  failFinalization = false;
+  const retried = await outcomeByImmediate(controller.openPaths(["recovered.md"]));
+  assert.equal(retried.status, "fulfilled");
+  assert.equal(controller.activeDocument().displayName, "recovered.md");
 });
 
 test("all failed queued startup opens still leave one clean untitled document", async () => {
@@ -912,6 +974,64 @@ test("persistManifest waits for restore hydration before serializing", async () 
   assert.deepEqual(JSON.parse(fixture.calls.manifestWrites[0][1]).tabs.map((tab) => tab.documentId), ["a", "b"]);
 });
 
+test("persistManifest requested during an empty restore writes the finalized baseline", async () => {
+  const manifestGate = deferred();
+  const fixture = makeDependencies();
+  fixture.dependencies.io.loadRecoveryManifest = async () => manifestGate.promise;
+  const controller = new SessionController(fixture.dependencies);
+
+  const restoring = controller.restore();
+  const persisting = controller.persistManifest();
+  manifestGate.resolve(null);
+  await Promise.all([restoring, persisting]);
+
+  const written = JSON.parse(fixture.calls.manifestWrites[0][1]);
+  assert.equal(written.tabs.length, 1);
+  assert.equal(written.tabs[0].displayName, "Untitled 1");
+  assert.equal(written.activeDocumentId, controller.activeDocument().id);
+});
+
+test("persistManifest queues behind an unawaited mutation and writes its resulting state", async () => {
+  const readGate = deferred();
+  const fixture = makeDependencies();
+  fixture.dependencies.io.readDocument = async () => readGate.promise;
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+
+  const opening = controller.openPaths(["opened.md"]);
+  const creating = controller.createUntitled();
+  const persisting = controller.persistManifest();
+  await settle();
+  assert.equal(fixture.calls.manifestWrites.length, 0);
+
+  readGate.resolve(readResult("opened.md"));
+  const [openResult, created] = await Promise.all([opening, creating]);
+  await persisting;
+
+  const written = JSON.parse(fixture.calls.manifestWrites[0][1]);
+  assert.equal(openResult.opened.length, 1);
+  assert.ok(created instanceof DocumentModel);
+  assert.deepEqual(written.tabs.map((tab) => tab.displayName), ["Untitled 1", "opened.md", "Untitled 2"]);
+  assert.equal(written.activeDocumentId, created.id);
+});
+
+test("idle post-restore document creation APIs return models synchronously", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+
+  const created = controller.createUntitled();
+  assert.equal(typeof created.then, "undefined");
+  assert.ok(created instanceof DocumentModel);
+  created.applyContent("edited immediately");
+
+  const opened = controller.openReadResult(readResult("saved.md", "/saved.md", "saved"));
+  assert.equal(typeof opened.then, "undefined");
+  assert.ok(opened instanceof DocumentModel);
+  assert.equal(opened.content, "saved");
+  assert.equal(controller.activeDocument(), opened);
+});
+
 test("dispose awaits unsubscribe, is idempotent, and stale events cannot open documents", async () => {
   const unsubscribeGate = deferred();
   let handler;
@@ -960,8 +1080,10 @@ test("dispose quiesces deferred hydration and rejects or no-ops later public wor
 
   const disposed = await outcomeByImmediate(controller.dispose());
   assert.equal(disposed.status, "fulfilled");
+  const restoreOutcome = await outcomeByImmediate(restoring);
+  assert.equal(restoreOutcome.status, "rejected");
+  assert.match(restoreOutcome.reason.message, /disposed/i);
   hydrationGate.resolve();
-  await restoring;
   await settle();
 
   assert.equal(controller.session.documents.get("a"), stub);
@@ -973,6 +1095,65 @@ test("dispose quiesces deferred hydration and rejects or no-ops later public wor
   assert.equal(ignored.opened.length, 0);
   assert.deepEqual(fixture.calls.reads, []);
   assert.equal(fixture.calls.manifestWrites.length, 0);
+});
+
+test("dispose settles an active hung open immediately and ignores its late read", async () => {
+  const readGate = deferred();
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  const initialIds = [...controller.session.tabOrder];
+  fixture.dependencies.io.readDocument = async () => readGate.promise;
+
+  const opening = controller.openPaths(["slow.md"]);
+  await settle();
+  await controller.dispose();
+
+  const openOutcome = await outcomeByImmediate(opening);
+  assert.notEqual(openOutcome.status, "unsettled");
+  assert.throws(() => controller.activateDocument(initialIds[0]), /disposed/i);
+
+  readGate.resolve(readResult("slow.md"));
+  await settle();
+  assert.deepEqual(controller.session.tabOrder, initialIds);
+  assert.deepEqual(fixture.calls.renderedDocuments.slice(-1), [initialIds[0]]);
+});
+
+test("immediate and late listener registrations unsubscribe exactly once after disposal", async (t) => {
+  await t.test("synchronous registration", async () => {
+    let unsubscribeCalls = 0;
+    const fixture = makeDependencies({
+      io: {
+        listenFileOpened() {
+          return () => { unsubscribeCalls += 1; };
+        },
+      },
+    });
+    const controller = new SessionController(fixture.dependencies);
+
+    await controller.dispose();
+    await settle();
+
+    assert.equal(unsubscribeCalls, 1);
+  });
+
+  await t.test("asynchronous registration", async () => {
+    const registration = deferred();
+    let unsubscribeCalls = 0;
+    const fixture = makeDependencies({
+      io: {
+        listenFileOpened() { return registration.promise; },
+      },
+    });
+    const controller = new SessionController(fixture.dependencies);
+
+    const disposing = controller.dispose();
+    registration.resolve(() => { unsubscribeCalls += 1; });
+    await disposing;
+    await settle();
+
+    assert.equal(unsubscribeCalls, 1);
+  });
 });
 
 test("legacy key removal failure is cleanup-only after durable migration", async () => {
