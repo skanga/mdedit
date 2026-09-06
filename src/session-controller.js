@@ -164,8 +164,9 @@
     }
 
     restore() {
-      if (this._restorePromise) return this._restorePromise;
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._restorePromise) return this._restorePromise;
+      if (this._restoreState === "restored") return Promise.resolve(this.session);
       this._restoreState = "restoring";
       const token = ++this._lifecycleToken;
       let resolveRestore;
@@ -289,6 +290,7 @@
     }
 
     async restoreManifest(rawManifest, token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
       const manifest = typeof rawManifest === "string" ? JSON.parse(rawManifest) : rawManifest;
       const session = SessionModel.fromManifest(manifest, { idFactory: this.idFactory });
       if (!this._isLifecycleActive(token)) return session;
@@ -386,6 +388,7 @@
     }
 
     async importLegacyDraft(token = this._lifecycleToken) {
+      if (!this._isLifecycleActive(token)) return null;
       const previousSession = this.session;
       let document = null;
       let durable = false;
@@ -458,8 +461,10 @@
     }
 
     openPaths(paths) {
+      if (this._disposed) {
+        return Promise.resolve(this._disposedOpenResult(Array.isArray(paths) ? paths : []));
+      }
       if (!Array.isArray(paths)) throw new TypeError("paths must be an array");
-      if (this._disposed) return Promise.resolve(this._disposedOpenResult(paths));
       const copiedPaths = [...paths];
       return this._scheduleOperation(
         (token) => this._openPathsNow(copiedPaths, token),
@@ -556,19 +561,24 @@
       this._queuedOperationCount += 1;
       this._activeOperations.add(request);
       const operation = this._operationChain.catch(() => {}).then(async () => {
-        if (request.isSettled()) return;
-        if (!this._isLifecycleActive(token)) {
-          request.dispose();
-          return;
-        }
+        let failed = false;
+        let result;
         try {
-          request.resolve(await request.run(token));
+          if (!request.isSettled()) {
+            if (!this._isLifecycleActive(token)) request.dispose();
+            else result = await request.run(token);
+          }
         } catch (reason) {
-          request.reject(reason);
+          failed = true;
+          result = reason;
         }
-      }).finally(() => {
+
+        // Clear busy bookkeeping before exposing completion to the caller, so
+        // a follow-up synchronous document mutation has deterministic timing.
         this._activeOperations.delete(request);
         this._queuedOperationCount -= 1;
+        if (failed) request.reject(result);
+        else request.resolve(result);
       });
       this._operationChain = operation;
       return request.promise;
@@ -587,12 +597,15 @@
     }
 
     openReadResult(result) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (!result || typeof result !== "object") throw new TypeError("read result is required");
       if (typeof result.canonicalPath !== "string" || result.canonicalPath.length === 0) {
         throw new TypeError("read result canonicalPath must be a non-empty string");
       }
-      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      this._startLocalSessionIfIdle();
       if (this._canMutateSynchronously()) return this._openReadResultNow(result, this._lifecycleToken);
+      // Active recovery is the exceptional asynchronous phase: queue the model
+      // creation so recovery cannot overwrite it.
       return this._scheduleOperation((token) => this._openReadResultNow(result, token));
     }
 
@@ -654,13 +667,17 @@
     }
 
     activeDocument() {
+      if (this._disposed) return null;
       if (!this.session || this.session.activeDocumentId === null) return null;
       return this.session.documents.get(this.session.activeDocumentId) || null;
     }
 
     createUntitled() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      this._startLocalSessionIfIdle();
       if (this._canMutateSynchronously()) return this._createUntitledNow(this._lifecycleToken);
+      // Active recovery is the exceptional asynchronous phase: queue the model
+      // creation until recovery owns a stable session.
       return this._scheduleOperation((token) => this._createUntitledNow(token));
     }
 
@@ -703,6 +720,13 @@
     _ensureSession() {
       if (!this.session) this.session = new SessionModel({ idFactory: this.idFactory });
       return this.session;
+    }
+
+    _startLocalSessionIfIdle() {
+      if (this._restoreState !== "idle") return;
+      const session = this._ensureSession();
+      this._restoreState = "restored";
+      this._restorePromise = Promise.resolve(session);
     }
 
     _createFreshSession(token = this._lifecycleToken) {

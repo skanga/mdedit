@@ -1032,6 +1032,55 @@ test("idle post-restore document creation APIs return models synchronously", asy
   assert.equal(controller.activeDocument(), opened);
 });
 
+test("fresh createUntitled returns a usable model synchronously and owns the startup baseline", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const created = controller.createUntitled();
+  assert.ok(created instanceof DocumentModel);
+  assert.equal(typeof created.then, "undefined");
+  created.applyContent("local before restore");
+  const session = controller.session;
+
+  await controller.restore();
+
+  assert.equal(controller.session, session);
+  assert.equal(controller.activeDocument(), created);
+  assert.equal(created.content, "local before restore");
+  assert.equal(fixture.calls.sequence.includes("load-manifest"), false);
+});
+
+test("fresh openReadResult returns a model synchronously without later restore overwrite", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  const opened = controller.openReadResult(readResult("fresh.md", "/fresh.md", "fresh"));
+  assert.ok(opened instanceof DocumentModel);
+  assert.equal(typeof opened.id, "string");
+  assert.equal(typeof opened.then, "undefined");
+
+  await controller.restore();
+
+  assert.equal(controller.activeDocument(), opened);
+  assert.equal(controller.session.documents.size, 1);
+  assert.equal(fixture.calls.sequence.includes("load-manifest"), false);
+});
+
+test("createUntitled is synchronous immediately after awaiting openPaths", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+
+  let created;
+  await controller.openPaths(["opened.md"]).then(() => {
+    created = controller.createUntitled();
+  });
+
+  assert.ok(created instanceof DocumentModel);
+  assert.equal(typeof created.then, "undefined");
+  created.applyContent("edited without another await");
+  assert.equal(controller.activeDocument(), created);
+});
+
 test("dispose awaits unsubscribe, is idempotent, and stale events cannot open documents", async () => {
   const unsubscribeGate = deferred();
   let handler;
@@ -1117,6 +1166,40 @@ test("dispose settles an active hung open immediately and ignores its late read"
   await settle();
   assert.deepEqual(controller.session.tabOrder, initialIds);
   assert.deepEqual(fixture.calls.renderedDocuments.slice(-1), [initialIds[0]]);
+});
+
+test("restore and public entry points guard disposal before cached state or input work", async () => {
+  let legacyReads = 0;
+  const fixture = makeDependencies({
+    legacyStorage: {
+      getItem() {
+        legacyReads += 1;
+        return null;
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  await controller.dispose();
+  const session = controller.session;
+  const sequence = [...fixture.calls.sequence];
+  const renderedSessions = fixture.calls.renderedSessions.length;
+  const renderedDocuments = fixture.calls.renderedDocuments.length;
+
+  await assert.rejects(controller.restore(), /disposed/i);
+  await assert.rejects(controller.openReadResult(null), /disposed/i);
+  assert.deepEqual(await controller.openPaths(null), { opened: [], failed: [] });
+  await assert.rejects(controller.restoreManifest("{bad json"), /disposed/i);
+  assert.equal(await controller.importLegacyDraft(), null);
+  assert.equal(await controller.loadSnapshot(), null);
+  await assert.rejects(controller.start(), /disposed/i);
+  assert.equal(controller.activeDocument(), null);
+
+  assert.equal(controller.session, session);
+  assert.deepEqual(fixture.calls.sequence, sequence);
+  assert.equal(fixture.calls.renderedSessions.length, renderedSessions);
+  assert.equal(fixture.calls.renderedDocuments.length, renderedDocuments);
+  assert.equal(legacyReads, 1);
 });
 
 test("immediate and late listener registrations unsubscribe exactly once after disposal", async (t) => {
