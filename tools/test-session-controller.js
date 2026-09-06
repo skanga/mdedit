@@ -1662,7 +1662,7 @@ test("rapid editor input schedules recovery without immediately persisting a man
   assert.equal(fixture.calls.manifestWrites.length, 1);
 });
 
-test("manifest publication uses the immutable candidate captured before delayed flush", async () => {
+test("session mutation during flush publishes the first candidate before its catch-up", async () => {
   const gate = deferred();
   const fixture = makeDependencies({ scheduler: { async flush(id) { if (id === "generated-1") await gate.promise; } } });
   const controller = new SessionController(fixture.dependencies);
@@ -1678,12 +1678,85 @@ test("manifest publication uses the immutable candidate captured before delayed 
   gate.resolve();
   await persisting;
   await settle();
-  for (const [, raw] of fixture.calls.manifestWrites) {
-    const value = JSON.parse(raw);
-    const aTab = value.tabs.find((tab) => tab.documentId === a.id);
-    if (aTab) assert.notEqual(aTab.snapshotRevision, 0, "obsolete unflushed candidate was published");
-  }
+  const manifests = fixture.calls.manifestWrites.map(([, raw]) => JSON.parse(raw));
+  assert.deepEqual(manifests[0].tabs.map((tab) => tab.documentId), [a.id]);
+  assert.equal(manifests[0].tabs[0].snapshotRevision, 0);
+  assert.ok(manifests.some((value) => value.tabs.some((tab) => tab.documentId === b.id)));
   assert.equal(controller.activeDocument(), b);
+});
+
+test("slow snapshot flush publishes its captured revision before deferred edit catch-up", async () => {
+  const storage = memoryStorage();
+  const browserIo = createBrowserRecoveryIo(storage);
+  const clock = fakeClock();
+  const slowWrite = deferred();
+  const slowWriteStarted = deferred();
+  const catchUpWrite = deferred();
+  const catchUpWriteStarted = deferred();
+  const manifestRevisions = [];
+  let delayRevisionOne = false;
+  let controller;
+  const fixture = makeDependencies();
+  fixture.dependencies.io = {
+    ...fixture.dependencies.io,
+    ...browserIo,
+    async writeRecoveryManifest(generation, json) {
+      manifestRevisions.push(JSON.parse(json).tabs[0].snapshotRevision);
+      return browserIo.writeRecoveryManifest(generation, json);
+    },
+  };
+  fixture.dependencies.scheduler = new RecoveryScheduler({
+    clock,
+    async write(documentId, revision) {
+      const document = controller.session.documents.get(documentId);
+      const json = controller.recoverySnapshotForWrite(documentId, revision)
+        || JSON.stringify(document.toSnapshot());
+      if (delayRevisionOne && revision === 1) {
+        slowWriteStarted.resolve();
+        await slowWrite.promise;
+      }
+      if (revision === 2) {
+        catchUpWriteStarted.resolve();
+        await catchUpWrite.promise;
+      }
+      await browserIo.writeRecoveryDocument(documentId, revision, json);
+      if (document.snapshotRevision === revision) document.persistedRevision = revision;
+    },
+    onStatus(documentId, status, error) {
+      if (controller) controller.onRecoveryStatus(documentId, status, error);
+    },
+  });
+  controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  const initialManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  const initialRevision = initialManifest.tabs[0].snapshotRevision;
+  manifestRevisions.length = 0;
+  delayRevisionOne = true;
+  controller.onEditorInput(document.id, "revision one");
+  const persisting = controller.persistManifest();
+  await slowWriteStarted.promise;
+  controller.onEditorInput(document.id, "revision two");
+  clock.advance(20_000);
+  const heldManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  assert.equal(heldManifest.tabs[0].snapshotRevision, initialRevision);
+  assert.ok(await browserIo.loadRecoveryDocument(document.id, initialRevision));
+  slowWrite.resolve();
+  await persisting;
+  await catchUpWriteStarted.promise;
+
+  assert.deepEqual(manifestRevisions, [1]);
+  assert.ok(await browserIo.loadRecoveryDocument(document.id, 1));
+  assert.equal(await browserIo.loadRecoveryDocument(document.id, 2), null);
+
+  catchUpWrite.resolve();
+  await settle();
+  await controller._manifestWrites;
+  assert.deepEqual(manifestRevisions, [1, 2]);
+  const durableManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  assert.equal(durableManifest.tabs[0].snapshotRevision, 2);
+  assert.ok(await browserIo.loadRecoveryDocument(document.id, 2));
 });
 
 test("a deferred render cannot replace the preview after another document activates", async () => {

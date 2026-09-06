@@ -2443,9 +2443,10 @@
   recoveryScheduler = new MDEdit.RecoveryScheduler({
     async write(documentId, revision) {
       const model = controller && controller.session && controller.session.documents.get(documentId);
-      if (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision) return;
-      const snapshot = model.toSnapshot();
-      await sessionIo.writeRecoveryDocument(documentId, revision, JSON.stringify(snapshot));
+      const controlledSnapshot = controller && controller.recoverySnapshotForWrite(documentId, revision);
+      if (!controlledSnapshot && (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision)) return;
+      const snapshotJson = controlledSnapshot || JSON.stringify(model.toSnapshot());
+      await sessionIo.writeRecoveryDocument(documentId, revision, snapshotJson);
       if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {
         model.persistedRevision = revision;
       }

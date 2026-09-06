@@ -6446,6 +6446,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this._sessionRecoveryFailure = null;
       this._manifestBarrier = null;
       this._deferredRecoveryRevisions = new Map();
+      this._retryCatchUpNeeded = false;
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
@@ -7142,6 +7143,11 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         this._publishBlockedStatus(document);
         return;
       }
+      if (this._manifestBarrier && this._deferredRecoveryRevisions.has(documentId)) {
+        if (document instanceof DocumentModel) document.recoveryStatus = "pending";
+        this._setDocumentStatus(documentId, { recoveryStatus: "pending" });
+        return;
+      }
       if (document instanceof DocumentModel) document.recoveryStatus = status;
       this._setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
       const covered = document instanceof DocumentModel && [...this._pendingManifestCandidates].some(
@@ -7162,18 +7168,18 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
     async retryRecovery(documentId) {
       const ids = this.session ? [...this.session.documents.keys()] : (documentId ? [documentId] : []);
-      this._manifestBarrier = { retry: true };
-      for (const id of ids) {
-        if (typeof this.scheduler.retry === "function") {
-          try { await this.scheduler.retry(id); } catch (_) { /* latest immutable retry below owns reporting */ }
-        }
-      }
       try {
-        let result = false;
-        while (!result) result = await this._persistManifestNow(this._lifecycleToken, { allowBlocked: true });
+        if (this._manifestBarrier) await this._manifestWrites.catch(() => {});
+        this._retryCatchUpNeeded = false;
+        const result = await this._persistManifestNow(this._lifecycleToken, {
+          allowBlocked: true,
+          retryScheduler: true,
+        });
         this._sessionRecoveryFailure = null;
         this._recoveryBlocks.clear();
         this._releaseManifestBarrier(true);
+        if (this._retryCatchUpNeeded) this._queueRecoveryManifest();
+        this._retryCatchUpNeeded = false;
         return result;
       } catch (reason) {
         for (const id of ids) this._blockRecovery(id, reason);
@@ -7214,6 +7220,12 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       }
       this.scheduler.changed(document.id, document.snapshotRevision);
       return true;
+    }
+
+    recoverySnapshotForWrite(documentId, revision) {
+      const snapshot = this._manifestBarrier && this._manifestBarrier.snapshots
+        && this._manifestBarrier.snapshots.get(documentId);
+      return snapshot && snapshot.revision === revision ? snapshot.json : null;
     }
 
     _releaseManifestBarrier(scheduleDeferred) {
@@ -7465,50 +7477,103 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return this._scheduleOperation((token) => this._persistManifestNow(token));
     }
 
-    _persistManifestNow(token = this._lifecycleToken, { allowBlocked = false } = {}) {
+    _persistManifestNow(token = this._lifecycleToken, { allowBlocked = false, retryScheduler = false } = {}) {
       if (!this._isLifecycleActive(token)) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
-      const candidateSession = this.session;
-      const candidate = JSON.parse(JSON.stringify(candidateSession.toManifest()));
-      const capturedDocuments = candidate.tabs.map((tab) => ({
-        document: candidateSession.documents.get(tab.documentId),
-        documentId: tab.documentId,
-        snapshotRevision: tab.snapshotRevision,
-      }));
       if (!allowBlocked && this._sessionRecoveryFailure) return Promise.reject(this._sessionRecoveryFailure);
+      if (this._manifestBarrier) {
+        const activeBarrier = this._manifestBarrier;
+        activeBarrier.needsCatchUp = true;
+        for (const document of this.session.documents.values()) {
+          if (!(document instanceof DocumentModel)) continue;
+          const previous = this._deferredRecoveryRevisions.get(document.id) ?? -1;
+          this._deferredRecoveryRevisions.set(document.id, Math.max(previous, document.snapshotRevision));
+        }
+        if (activeBarrier.allowBlocked) return Promise.resolve(false);
+        if (!activeBarrier.catchUpPromise) {
+          const pendingTransaction = this._manifestWrites;
+          activeBarrier.catchUpPromise = pendingTransaction.then(() => this._persistManifestNow(token, {
+            allowBlocked,
+            retryScheduler,
+          }));
+        }
+        return activeBarrier.catchUpPromise;
+      }
+
+      const barrier = {
+        snapshots: new Map(),
+        needsCatchUp: false,
+        catchUpPromise: null,
+        allowBlocked,
+      };
+      this._manifestBarrier = barrier;
+      const candidateSession = this.session;
+      let candidate;
+      let capturedDocuments;
+      try {
+        candidate = JSON.parse(JSON.stringify(candidateSession.toManifest()));
+        capturedDocuments = candidate.tabs.map((tab) => {
+          const document = candidateSession.documents.get(tab.documentId);
+          const capture = {
+            document,
+            documentId: tab.documentId,
+            snapshotRevision: tab.snapshotRevision,
+          };
+          if (document instanceof DocumentModel) {
+            barrier.snapshots.set(tab.documentId, {
+              revision: tab.snapshotRevision,
+              json: JSON.stringify(document.toSnapshot()),
+            });
+          }
+          return capture;
+        });
+      } catch (reason) {
+        this._manifestBarrier = null;
+        return Promise.reject(reason);
+      }
       const coverage = new Map(capturedDocuments.map((capture) => [capture.documentId, capture.snapshotRevision]));
       this._pendingManifestCandidates.add(coverage);
       const json = JSON.stringify(candidate);
       const write = this._manifestWrites.catch(() => {}).then(
         async () => {
           if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          if (!allowBlocked && this._sessionRecoveryFailure) throw this._sessionRecoveryFailure;
-          for (const capture of capturedDocuments) {
-            if (!(capture.document instanceof DocumentModel)) continue;
-            this.scheduler.changed(capture.documentId, capture.snapshotRevision);
-            await this.scheduler.flush(capture.documentId, capture.snapshotRevision);
-            if (this.session.documents.get(capture.documentId) === capture.document
-                && capture.document.snapshotRevision === capture.snapshotRevision) {
-              capture.document.persistedRevision = Math.max(capture.document.persistedRevision, capture.snapshotRevision);
-            }
+          if (!allowBlocked && this._sessionRecoveryFailure) {
+            if (this._manifestBarrier === barrier) this._manifestBarrier = null;
+            throw this._sessionRecoveryFailure;
           }
-          if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
-          const obsolete = this.session !== candidateSession
-            || capturedDocuments.some((capture) => this.session.documents.get(capture.documentId) !== capture.document
-              || capture.document.snapshotRevision !== capture.snapshotRevision)
-            || JSON.stringify(this.session.toManifest()) !== json;
-          if (obsolete) {
-            if (!allowBlocked) this._queueRecoveryManifest();
-            return false;
-          }
-          if (!this._manifestBarrier) this._manifestBarrier = { candidate: coverage };
           try {
+            if (retryScheduler && typeof this.scheduler.retry === "function") {
+              for (const capture of capturedDocuments) await this.scheduler.retry(capture.documentId);
+            }
+            const controlledFlushes = [];
+            for (const capture of capturedDocuments) {
+              if (!(capture.document instanceof DocumentModel)) continue;
+              this.scheduler.changed(capture.documentId, capture.snapshotRevision);
+              controlledFlushes.push({
+                capture,
+                promise: this.scheduler.flush(capture.documentId, capture.snapshotRevision),
+              });
+            }
+            await Promise.all(controlledFlushes.map(({ promise }) => promise));
+            for (const { capture } of controlledFlushes) {
+              if (this.session.documents.get(capture.documentId) === capture.document) {
+                capture.document.persistedRevision = Math.max(capture.document.persistedRevision, capture.snapshotRevision);
+              }
+            }
+            if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
             await this.io.writeRecoveryManifest(candidate.generation, json);
-            this._releaseManifestBarrier(true);
           } catch (reason) {
-            this._manifestBarrier = null;
+            if (this._manifestBarrier === barrier) this._manifestBarrier = null;
             for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
             throw reason;
+          }
+          const diverged = barrier.needsCatchUp
+            || this.session !== candidateSession
+            || JSON.stringify(this.session.toManifest()) !== json;
+          if (this._manifestBarrier === barrier) this._releaseManifestBarrier(true);
+          if (diverged && !barrier.catchUpPromise) {
+            if (allowBlocked) this._retryCatchUpNeeded = true;
+            else this._queueRecoveryManifest();
           }
           return true;
         },
@@ -9985,9 +10050,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   recoveryScheduler = new MDEdit.RecoveryScheduler({
     async write(documentId, revision) {
       const model = controller && controller.session && controller.session.documents.get(documentId);
-      if (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision) return;
-      const snapshot = model.toSnapshot();
-      await sessionIo.writeRecoveryDocument(documentId, revision, JSON.stringify(snapshot));
+      const controlledSnapshot = controller && controller.recoverySnapshotForWrite(documentId, revision);
+      if (!controlledSnapshot && (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision)) return;
+      const snapshotJson = controlledSnapshot || JSON.stringify(model.toSnapshot());
+      await sessionIo.writeRecoveryDocument(documentId, revision, snapshotJson);
       if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {
         model.persistedRevision = revision;
       }
