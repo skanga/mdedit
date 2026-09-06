@@ -8,6 +8,7 @@ const {
   WorkspaceView,
   captureEditorState,
   commandForKey,
+  openLaunchFiles,
   tabDescriptor,
 } = require("../src/workspace-view.js");
 const { SessionController } = require("../src/session-controller.js");
@@ -288,6 +289,46 @@ test("browser wrapper merges workspace exports into window.MDEdit", () => {
   assert.equal(typeof sandbox.window.MDEdit.tabDescriptor, "function");
   assert.equal(typeof sandbox.window.MDEdit.captureEditorState, "function");
   assert.equal(typeof sandbox.window.MDEdit.commandForKey, "function");
+  assert.equal(typeof sandbox.window.MDEdit.openLaunchFiles, "function");
+});
+
+test("openLaunchFiles awaits handles in order, reports individual failures, and opens once", async () => {
+  let resolveFirst;
+  let resolveThird;
+  const firstRead = new Promise((resolve) => { resolveFirst = resolve; });
+  const thirdRead = new Promise((resolve) => { resolveThird = resolve; });
+  const firstFile = { name: "a.md" };
+  const thirdFile = { name: "c.md" };
+  const calls = [];
+  const errors = [];
+  const handles = [
+    { async getFile() { calls.push("a"); return firstRead; } },
+    { async getFile() { calls.push("bad"); throw new Error("handle denied"); } },
+    { async getFile() { calls.push("c"); return thirdRead; } },
+  ];
+  const opened = [];
+  const opening = openLaunchFiles(
+    handles,
+    async (files, successfulHandles) => {
+      opened.push([files, successfulHandles]);
+      return { opened: files, failed: [] };
+    },
+    (error, _handle, index) => errors.push([index, error.message]),
+  );
+
+  await Promise.resolve();
+  assert.deepEqual(calls, ["a"]);
+  resolveFirst(firstFile);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(calls, ["a", "bad", "c"]);
+  resolveThird(thirdFile);
+  const result = await opening;
+
+  assert.deepEqual(errors, [[1, "handle denied"]]);
+  assert.equal(opened.length, 1);
+  assert.deepEqual(opened[0][0], [firstFile, thirdFile]);
+  assert.deepEqual(opened[0][1], [handles[0], handles[2]]);
+  assert.deepEqual(result, { opened: [firstFile, thirdFile], failed: [] });
 });
 
 test("commandForKey maps only the exact tab-management shortcuts", () => {
@@ -554,13 +595,44 @@ test("active, close, dirty, conflict, and recovery announcements share the live 
   view.setDocumentStatus("two", { dirty: true, fileStatus: "externally-changed" });
   assert.equal(elements.statusElement.textContent, "Two.md: File changed outside MDedit; Unsaved changes");
   view.setDocumentStatus("two", { recoveryStatus: "failed", message: "Recovery write failed" });
-  assert.equal(elements.statusElement.textContent, "Two.md: Recovery write failed");
+  assert.equal(elements.statusElement.textContent, "Two.md: File changed outside MDedit; Unsaved changes; Recovery write failed");
 
   view.announceCloseOutcome({ closed: true }, "One.md");
   assert.equal(elements.statusElement.textContent, "Closed One.md");
   const closeWrites = elements.statusElement.textContentWrites;
   view.announceCloseOutcome({ closed: true }, "One.md");
   assert.equal(elements.statusElement.textContentWrites, closeWrites);
+});
+
+test("controller-shaped status payloads announce combined layers and omit clean recovery noise", () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc("a", { displayName: "a.md" })], "a");
+
+  view.setDocumentStatus("a", {
+    dirty: true,
+    fileStatus: "normal",
+    recoveryStatus: "pending",
+  });
+  assert.equal(elements.statusElement.textContent, "a.md: Unsaved changes; Recovery pending");
+  const status = find(elements.tabList.children[0], (element) => element.classList.contains("document-tab-status"));
+  assert.equal(status.textContent, "Unsaved changes; Recovery pending");
+
+  view.setDocumentStatus("a", {
+    dirty: true,
+    fileStatus: "externally-changed",
+    recoveryStatus: "clean",
+  });
+  assert.equal(elements.statusElement.textContent, "a.md: File changed outside MDedit; Unsaved changes");
+  assert.equal(status.textContent, "File changed outside MDedit; Unsaved changes");
+  assert.doesNotMatch(elements.statusElement.textContent, /Recovery is current/);
+
+  const writes = elements.statusElement.textContentWrites;
+  view.setDocumentStatus("a", {
+    dirty: false,
+    fileStatus: "normal",
+    recoveryStatus: "clean",
+  });
+  assert.equal(elements.statusElement.textContentWrites, writes);
 });
 
 test("renderTabs preserves control focus and scrolls the focused or active tab into view", () => {
@@ -951,7 +1023,7 @@ test("one full status object merges document state, recovery state, and live ann
   assert.equal(shell.classList.contains("is-dirty"), true);
   assert.equal(shell.classList.contains("is-conflict"), true);
   assert.equal(shell.classList.contains("recovery-failed"), true);
-  assert.equal(elements.statusElement.textContent, "Renamed.md: Recovery write failed");
+  assert.equal(elements.statusElement.textContent, "Renamed.md: File changed outside MDedit; Unsaved changes; Recovery write failed");
 
   view.setDocumentStatus("one", {
     displayName: "Renamed.md",
@@ -963,7 +1035,7 @@ test("one full status object merges document state, recovery state, and live ann
   assert.equal(shell.classList.contains("is-dirty"), true);
   assert.equal(shell.classList.contains("is-conflict"), true);
   assert.equal(recovery.hidden, true);
-  assert.equal(elements.statusElement.textContent, "Renamed.md: Recovery is current");
+  assert.equal(elements.statusElement.textContent, "Renamed.md: File changed outside MDedit; Unsaved changes");
   const writes = elements.statusElement.textContentWrites;
   view.setDocumentStatus("one", {
     displayName: "Renamed.md",

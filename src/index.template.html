@@ -1035,6 +1035,8 @@
   $("save-kbd").textContent = isMac ? "⌘S" : "Ctrl+S";
 
   let controller = null;
+  let resolveControllerReady;
+  const controllerReady = new Promise((resolve) => { resolveControllerReady = resolve; });
   let workspaceView = null;
   const browserFileHandles = new Map();
   let statusTimer = null;
@@ -2374,11 +2376,13 @@
   if ("launchQueue" in window && typeof LaunchParams !== "undefined" && "files" in LaunchParams.prototype) {
     launchQueue.setConsumer(async (params) => {
       if (!params.files || !params.files.length) return;
-      try {
-        for (const handle of params.files) await openFromFile(await handle.getFile(), handle);
-      } catch (e) {
-        setStatus("Could not open that file — " + (e.message || "unknown error"));
-      }
+      const readyController = await controllerReady;
+      await readyController.restore();
+      return MDEdit.openLaunchFiles(
+        params.files,
+        openBrowserFiles,
+        (error) => setStatus("Could not open that file — " + (error.message || "unknown error")),
+      );
     });
   }
 
@@ -2565,6 +2569,7 @@
       },
     },
   });
+  resolveControllerReady(controller);
 
   async function installNativeCloseGuard() {
     const windowApi = window.__TAURI__ && window.__TAURI__.window;

@@ -3921,6 +3921,8 @@ test("browser bootstrap delegates document ownership and active operations to th
   assert.match(template, /controller\.activateAdjacentDocument\s*\(/);
   assert.match(template, /controller\.moveActiveDocument\s*\(/);
   assert.match(template, /controller\.openBrowserFiles\s*\(/);
+  assert.doesNotMatch(template, /openFromFile/);
+  assert.match(template, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*await readyController\.restore\(\)[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/);
   assert.match(template, /nativeApp\.takePendingFiles\s*\(/);
   assert.doesNotMatch(template, /core\.invoke\("take_pending_files"/);
   assert.equal((template.match(/await nativeApp\.takePendingFiles\s*\(/g) || []).length, 1);
@@ -3947,6 +3949,8 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /id="file-input"[^>]*\bmultiple\b/, filename);
     assert.match(html, /addEventListener\("change", async \(e\)/, filename);
     assert.match(html, /openBrowserFiles\s*\(/, filename);
+    assert.doesNotMatch(html, /openFromFile/, filename);
+    assert.match(html, /launchQueue\.setConsumer[\s\S]*await controllerReady[\s\S]*openLaunchFiles\([\s\S]*openBrowserFiles/, filename);
     assert.match(html, /dataTransfer\.items/, filename);
     assert.match(html, /isSupportedFile/, filename);
     assert.match(html, /commandForKey\s*\(/, filename);

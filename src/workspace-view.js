@@ -98,6 +98,31 @@
     return null;
   }
 
+  async function openLaunchFiles(handles, openFiles, reportError = () => {}) {
+    if (typeof openFiles !== "function") throw new TypeError("openFiles callback is required");
+    const files = [];
+    const successfulHandles = [];
+    const orderedHandles = handles === null || handles === undefined ? [] : Array.from(handles);
+    for (let index = 0; index < orderedHandles.length; index += 1) {
+      const handle = orderedHandles[index];
+      try {
+        if (!handle || typeof handle.getFile !== "function") throw new TypeError("launch file handle is invalid");
+        const file = await handle.getFile();
+        if (!file) throw new Error("launch file handle returned no file");
+        files.push(file);
+        successfulHandles.push(handle);
+      } catch (reason) {
+        const error = reason instanceof Error ? reason : new Error(String(reason));
+        try {
+          Promise.resolve(reportError(error, handle, index)).catch(() => {});
+        } catch (_) {
+          // Reporting one handle failure must not block later launch files.
+        }
+      }
+    }
+    return openFiles(files, successfulHandles);
+  }
+
   function requireElement(value, name) {
     if (!value || typeof value.addEventListener !== "function") {
       throw new TypeError(`${name} element is required`);
@@ -424,16 +449,9 @@
       if (!record) return false;
       const runtime = this._runtimeStatuses.get(id);
       this._applyTabStatus(record, runtime);
-      if (hasBaseStatus && !hasRuntimeStatus && record.baseStatusText) {
-        this._announce(`${record.displayName}: ${record.baseStatusText}`);
-      }
-      if (hasRuntimeStatus) {
-        const clean = status === null || status === "clean"
-          || Boolean(objectStatus && (objectStatus.recoveryStatus === "clean" || objectStatus.status === "clean"));
-        const message = runtime
-          ? `${record.displayName}: ${runtime.message}`
-          : clean ? `${record.displayName}: Recovery is current` : "";
-        if (message) this._announce(message);
+      const combinedStatus = record.status.textContent;
+      if ((hasBaseStatus || hasRuntimeStatus) && combinedStatus) {
+        this._announce(`${record.displayName}: ${combinedStatus}`);
       }
       return true;
     }
@@ -735,5 +753,5 @@
     }
   }
 
-  return { WorkspaceView, captureEditorState, commandForKey, tabDescriptor };
+  return { WorkspaceView, captureEditorState, commandForKey, openLaunchFiles, tabDescriptor };
 });
