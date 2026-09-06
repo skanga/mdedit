@@ -1819,26 +1819,17 @@
       if (!this.saveDocumentStrategy) return this._saveDocumentNow(documentId, options);
       const document = this._requireLoadedDocument(documentId);
       const capture = this._captureDocument(document);
-      try {
-        const result = await this.saveDocumentStrategy({
-          document,
-          capture,
-          showConflict: options.showConflict !== false,
-          saveNative: () => this._saveDocumentNow(documentId, options),
-          saveBrowser: (operations) => this._saveBrowserDocumentNow(
-            documentId,
-            operations,
-            { ...options, capturedDocument: capture },
-          ),
-        });
-        return result && typeof result === "object"
-          ? { ...result, handledBySaveStrategy: true }
-          : result;
-      } catch (reason) {
-        const error = normalizeError(reason);
-        error.handledBySaveStrategy = true;
-        throw error;
-      }
+      return this.saveDocumentStrategy({
+        document,
+        capture,
+        showConflict: options.showConflict !== false,
+        saveNative: () => this._saveDocumentNow(documentId, options),
+        saveBrowser: (operations) => this._saveBrowserDocumentNow(
+          documentId,
+          operations,
+          { ...options, capturedDocument: capture },
+        ),
+      });
     }
 
     async _saveDocumentNow(documentId, { showConflict = true } = {}) {
@@ -2157,14 +2148,13 @@
             if (!canceled && result && (result.conflict || result.collision)) {
               error = new Error(result.conflict ? "save conflict" : "save path is already open");
             }
-            if (canceled || !(result && result.handledBySaveStrategy)) break;
-            continue;
+            break;
           }
           const liveDocument = this.session.documents.get(documentId);
           if (liveDocument instanceof DocumentModel && !liveDocument.dirty) savedIds.push(documentId);
         } catch (reason) {
           error = normalizeError(reason);
-          if (!reason || !reason.handledBySaveStrategy) break;
+          break;
         }
       }
       const remainingIds = dirtyIds.filter((id) => {

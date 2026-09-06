@@ -539,7 +539,7 @@ test("browser Save All and dirty close share guarded handles while canceled Save
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByRole("tab", { name: /b\.md/ })).toHaveAttribute("aria-selected", "true");
   await activeEditor(page).fill("b edited");
-  await expect.poll(() => page.getByRole("tab", { name: /b\.md/ }).evaluate(
+  await expect.poll(() => page.getByRole("tab", { name: /^b\.md/ }).evaluate(
     (tab) => tab.parentElement.classList.contains("is-dirty"),
   )).toBe(true);
   await page.getByRole("tab", { name: /a\.md/ }).click();
@@ -564,13 +564,21 @@ test("browser Save All and dirty close share guarded handles while canceled Save
 
   await page.getByRole("button", { name: "New document" }).click();
   await activeEditor(page).fill("unsaved draft");
+  await page.keyboard.press("Alt+Shift+ArrowLeft");
+  await page.getByRole("tab", { name: /b\.md/ }).click();
+  await activeEditor(page).fill("b after canceled draft");
+  await page.getByRole("tab", { name: /Untitled 2/ }).click();
   await page.getByRole("button", { name: "Save All", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Save All canceled");
   await expect(page.getByRole("button", { name: "Save All", exact: true })).toBeEnabled();
   await expect(activeEditor(page)).toHaveValue("unsaved draft");
+  expect(await page.evaluate(() => window.__browserBulkTest.state.writes.b)).toEqual(["b edited"]);
+  await expect.poll(() => page.getByRole("tab", { name: /^b\.md/ }).evaluate(
+    (tab) => tab.parentElement.classList.contains("is-dirty"),
+  )).toBe(true);
 });
 
-test("browser Save All continues after conflict and Save All and Quit only succeeds after every handle saves", async ({ page }) => {
+test("browser Save All stops after conflict and Save All and Quit only succeeds after every handle saves", async ({ page }) => {
   await page.addInitScript(() => {
     window.__MDEDIT_TEST_HOOK__ = { restored: false };
     const state = { a: "a", b: "b", writes: { a: [], b: [] } };
@@ -608,8 +616,8 @@ test("browser Save All continues after conflict and Save All and Quit only succe
   await page.getByRole("button", { name: "Save All", exact: true }).click();
   await page.getByRole("button", { name: "Keep Editing" }).click();
 
-  await expect(page.getByRole("status")).toContainText("1 saved; 1 remain unsaved: a.md");
-  expect(await page.evaluate(() => window.__browserQuitTest.state.writes)).toEqual({ a: [], b: ["b edited"] });
+  await expect(page.getByRole("status")).toContainText("0 saved; 2 remain unsaved: a.md, b.md");
+  expect(await page.evaluate(() => window.__browserQuitTest.state.writes)).toEqual({ a: [], b: [] });
 
   await page.evaluate(() => {
     window.__browserQuitTest.pendingQuit = window.__MDEDIT_TEST_HOOK__.controller.requestQuit();
@@ -641,6 +649,64 @@ test("browser Save All continues after conflict and Save All and Quit only succe
   expect(successful.allowClose).toBe(true);
   expect(await page.evaluate(() => window.__browserQuitTest.state.writes)).toEqual({
     a: ["a final"],
-    b: ["b edited", "b final"],
+    b: ["b final"],
+  });
+});
+
+test("browser Save All stops createWritable at the first failed handle", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__MDEDIT_TEST_HOOK__ = { restored: false };
+    const state = {
+      a: "a",
+      b: "b",
+      c: "c",
+      fail: "a",
+      creates: { a: 0, b: 0, c: 0 },
+      writes: { a: [], b: [], c: [] },
+    };
+    const makeHandle = (key) => ({
+      key,
+      name: `${key}.md`,
+      async isSameEntry(other) { return Boolean(other && other.key === key); },
+      async queryPermission() { return "granted"; },
+      async getFile() { return new File([state[key]], `${key}.md`, { type: "text/markdown" }); },
+      async createWritable() {
+        state.creates[key] += 1;
+        let pending;
+        return {
+          async write(content) { pending = String(content); },
+          async close() {
+            if (state.fail === key) throw new Error(`${key} write failed`);
+            state.writes[key].push(pending);
+            state[key] = pending;
+          },
+        };
+      },
+    });
+    window.__browserFailureTest = { state, handles: [makeHandle("a"), makeHandle("b"), makeHandle("c")] };
+    window.showOpenFilePicker = async () => window.__browserFailureTest.handles;
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(page.getByRole("tab", { name: /c\.md/ })).toHaveAttribute("aria-selected", "true");
+  for (const name of ["a", "b", "c"]) {
+    await page.getByRole("tab", { name: new RegExp(`${name}\\.md`) }).click();
+    await activeEditor(page).fill(`${name} edited`);
+  }
+
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+
+  await expect(page.getByRole("status")).toContainText("Save All stopped after 0 saved; 3 remain unsaved");
+  expect(await page.evaluate(() => window.__browserFailureTest.state.creates)).toEqual({ a: 1, b: 0, c: 0 });
+
+  await page.evaluate(() => { window.__browserFailureTest.state.fail = "b"; });
+  await page.getByRole("button", { name: "Save All", exact: true }).click();
+
+  await expect(page.getByRole("status")).toContainText("Save All stopped after 1 saved; 2 remain unsaved: b.md, c.md");
+  expect(await page.evaluate(() => window.__browserFailureTest.state.creates)).toEqual({ a: 2, b: 1, c: 0 });
+  expect(await page.evaluate(() => window.__browserFailureTest.state.writes)).toEqual({
+    a: ["a edited"],
+    b: [],
+    c: [],
   });
 });

@@ -3898,24 +3898,36 @@ test("browser save strategy preserves the command capture across asynchronous pe
 
 test("browser save strategy preserves Save All cancellation for an untitled document", async () => {
   let saveAsPrompts = 0;
+  const writes = [];
   const fixture = makeDependencies({
-    async saveDocumentStrategy({ capture }) {
-      saveAsPrompts += 1;
-      assert.equal(capture.content, "draft");
-      return { saved: false, canceled: true, documentId: capture.documentId };
+    async saveDocumentStrategy({ document, capture, saveBrowser }) {
+      if (!document.canonicalPath) {
+        saveAsPrompts += 1;
+        assert.equal(capture.content, "draft");
+        return { saved: false, canceled: true, documentId: capture.documentId };
+      }
+      return saveBrowser({
+        async read() { return { content: "later" }; },
+        async write(content) { writes.push(content); },
+      });
     },
   });
   const controller = new SessionController(fixture.dependencies);
   const document = controller.createUntitled();
   controller.onEditorInput(document.id, "draft");
+  const opened = await controller.openBrowserFiles([{ name: "later.md", async text() { return "later"; } }]);
+  const later = opened.results[0].document;
+  controller.onEditorInput(later.id, "later edited");
   await controller.restore();
 
   const result = await controller.saveAll();
 
   assert.equal(saveAsPrompts, 1);
+  assert.deepEqual(writes, []);
   assert.equal(result.canceled, true);
-  assert.deepEqual(result.remainingIds, [document.id]);
+  assert.deepEqual(result.remainingIds, [document.id, later.id]);
   assert.equal(document.dirty, true);
+  assert.equal(later.dirty, true);
 });
 
 test("dirty browser close saves through its handle strategy before removing the tab", async () => {
@@ -3943,7 +3955,7 @@ test("dirty browser close saves through its handle strategy before removing the 
   assert.equal(controller.session.documents.has(document.id), false);
 });
 
-test("browser Save All continues after a conflict and saves later documents", async () => {
+test("browser Save All stops after a conflict without saving later documents", async () => {
   const disk = new Map([["a.md", "external"], ["b.md", "b"]]);
   const writes = [];
   const fixture = makeDependencies({
@@ -3966,12 +3978,73 @@ test("browser Save All continues after a conflict and saves later documents", as
 
   const result = await controller.saveAll();
 
-  assert.deepEqual(writes, ["b.md"]);
-  assert.deepEqual(result.savedIds, [b.id]);
-  assert.deepEqual(result.remainingIds, [a.id]);
+  assert.deepEqual(writes, []);
+  assert.deepEqual(result.savedIds, []);
+  assert.deepEqual(result.remainingIds, [a.id, b.id]);
   assert.match(result.error.message, /save conflict/);
   assert.equal(a.dirty, true);
-  assert.equal(b.dirty, false);
+  assert.equal(b.dirty, true);
+});
+
+test("browser Save All stops after the first write failure", async () => {
+  const calls = [];
+  const fixture = makeDependencies({
+    saveDocumentStrategy({ document, saveBrowser }) {
+      return saveBrowser({
+        async read() { return { content: document.displayName.slice(0, 1) }; },
+        async write() {
+          calls.push(document.displayName);
+          if (document.displayName === "a.md") throw new Error("write denied");
+        },
+      });
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const opened = await controller.openBrowserFiles([
+    { name: "a.md", async text() { return "a"; } },
+    { name: "b.md", async text() { return "b"; } },
+  ]);
+  for (const { document } of opened.results) controller.onEditorInput(document.id, `${document.displayName} edited`);
+
+  const result = await controller.saveAll();
+
+  assert.deepEqual(calls, ["a.md"]);
+  assert.match(result.error.message, /write denied/);
+  assert.deepEqual(result.savedIds, []);
+  assert.deepEqual(result.remainingIds, opened.results.map(({ document }) => document.id));
+});
+
+test("browser Save All retains earlier successes and leaves documents after a failed write untouched", async () => {
+  const calls = [];
+  const fixture = makeDependencies({
+    saveDocumentStrategy({ document, saveBrowser }) {
+      return saveBrowser({
+        async read() { return { content: document.displayName.slice(0, 1) }; },
+        async write() {
+          calls.push(document.displayName);
+          if (document.displayName === "b.md") throw new Error("disk full");
+        },
+      });
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const opened = await controller.openBrowserFiles([
+    { name: "a.md", async text() { return "a"; } },
+    { name: "b.md", async text() { return "b"; } },
+    { name: "c.md", async text() { return "c"; } },
+  ]);
+  const documents = opened.results.map(({ document }) => document);
+  for (const document of documents) controller.onEditorInput(document.id, `${document.displayName} edited`);
+
+  const result = await controller.saveAll();
+
+  assert.deepEqual(calls, ["a.md", "b.md"]);
+  assert.match(result.error.message, /disk full/);
+  assert.deepEqual(result.savedIds, [documents[0].id]);
+  assert.deepEqual(result.remainingIds, [documents[1].id, documents[2].id]);
+  assert.equal(documents[0].dirty, false);
+  assert.equal(documents[1].dirty, true);
+  assert.equal(documents[2].dirty, true);
 });
 
 test("browser Save All and Quit uses handle strategies and allows close only after full success", async () => {
@@ -4004,9 +4077,9 @@ test("browser Save All and Quit uses handle strategies and allows close only aft
 
   const blocked = await run({ conflict: true });
   assert.equal(blocked.result.allowClose, false);
-  assert.deepEqual(blocked.writes, ["b.md"]);
+  assert.deepEqual(blocked.writes, []);
   assert.equal(blocked.documents[0].dirty, true);
-  assert.equal(blocked.documents[1].dirty, false);
+  assert.equal(blocked.documents[1].dirty, true);
   assert.equal(blocked.controller.allowNativeClose(), false);
 });
 
