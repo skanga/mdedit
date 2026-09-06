@@ -2444,7 +2444,7 @@
     async write(documentId, revision) {
       const model = controller && controller.session && controller.session.documents.get(documentId);
       const controlledSnapshot = controller && controller.recoverySnapshotForWrite(documentId, revision);
-      if (!controlledSnapshot && (!(model instanceof MDEdit.DocumentModel) || model.snapshotRevision !== revision)) return;
+      if (!controlledSnapshot) return controller.writeRecoveryCheckpoint(documentId, revision);
       const snapshotJson = controlledSnapshot || JSON.stringify(model.toSnapshot());
       await sessionIo.writeRecoveryDocument(documentId, revision, snapshotJson);
       if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {

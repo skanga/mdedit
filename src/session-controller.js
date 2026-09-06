@@ -240,6 +240,8 @@
       this._manifestBarrier = null;
       this._deferredRecoveryRevisions = new Map();
       this._retryCatchUpNeeded = false;
+      this._durableRecoveryTabs = new Map();
+      this._checkpointWrites = Promise.resolve();
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
@@ -465,6 +467,7 @@
       const session = SessionModel.fromManifest(manifest, { idFactory: this.idFactory });
       if (!this._isLifecycleActive(token)) return session;
       this.session = session;
+      this._rememberDurableManifest(manifest);
 
       for (const stub of session.documents.values()) stub.loadStatus = "loading";
       this._renderSession();
@@ -943,10 +946,6 @@
       }
       if (document instanceof DocumentModel) document.recoveryStatus = status;
       this._setDocumentStatus(documentId, { recoveryStatus: status, message: error && error.message });
-      const covered = document instanceof DocumentModel && [...this._pendingManifestCandidates].some(
-        (candidate) => (candidate.get(documentId) ?? -1) >= document.snapshotRevision,
-      );
-      if (status === "clean" && this._restoreState === "restored" && !covered) this._queueRecoveryManifest();
     }
 
     _queueRecoveryManifest() {
@@ -1019,6 +1018,106 @@
       const snapshot = this._manifestBarrier && this._manifestBarrier.snapshots
         && this._manifestBarrier.snapshots.get(documentId);
       return snapshot && snapshot.revision === revision ? snapshot.json : null;
+    }
+
+    writeRecoveryCheckpoint(documentId, snapshotRevision) {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (!this.session) return Promise.reject(new Error("session has not been created"));
+      if (this._sessionRecoveryFailure) return Promise.reject(this._sessionRecoveryFailure);
+      const document = this.session.documents.get(documentId);
+      if (!(document instanceof DocumentModel) || document.snapshotRevision !== snapshotRevision) {
+        return Promise.resolve(false);
+      }
+      const capture = Object.freeze({
+        document,
+        documentId,
+        snapshotRevision,
+        json: JSON.stringify(document.toSnapshot()),
+        tab: Object.freeze({
+          documentId,
+          displayName: document.displayName,
+          snapshotRevision,
+        }),
+      });
+      let barrier = this._manifestBarrier;
+      if (!barrier) {
+        let resolveCompletion;
+        const completion = new Promise((resolve) => { resolveCompletion = resolve; });
+        barrier = {
+          snapshots: new Map(),
+          needsCatchUp: false,
+          catchUpPromise: null,
+          allowBlocked: false,
+          externalCheckpoint: true,
+          pending: 0,
+          completion,
+          resolveCompletion,
+        };
+        this._manifestBarrier = barrier;
+      }
+      barrier.snapshots.set(documentId, { revision: snapshotRevision, json: capture.json });
+      barrier.pending += 1;
+      const operation = this._checkpointWrites.catch(() => {}).then(
+        () => this._writeRecoveryCheckpointNow(capture),
+      );
+      this._checkpointWrites = operation;
+      return operation.finally(() => {
+        barrier.pending -= 1;
+        if (barrier.pending !== 0) return;
+        if (this._manifestBarrier === barrier) this._releaseManifestBarrier(true);
+        barrier.resolveCompletion();
+      });
+    }
+
+    async _writeRecoveryCheckpointNow(capture) {
+      if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
+      try {
+        await this.io.writeRecoveryDocument(capture.documentId, capture.snapshotRevision, capture.json);
+        if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
+        const candidate = this._durableManifestCandidate(capture);
+        if (!candidate) return false;
+        await this.io.writeRecoveryManifest(candidate.generation, JSON.stringify(candidate));
+        this._rememberDurableManifest(candidate);
+        if (this.session.documents.get(capture.documentId) === capture.document) {
+          capture.document.persistedRevision = Math.max(
+            capture.document.persistedRevision,
+            capture.snapshotRevision,
+          );
+        }
+        return true;
+      } catch (reason) {
+        for (const current of this.session ? this.session.documents.values() : []) {
+          if (current instanceof DocumentModel) this._blockRecovery(current.id, reason);
+        }
+        throw reason;
+      }
+    }
+
+    _durableManifestCandidate(capture) {
+      if (!this.session) return null;
+      const entries = new Map(this._durableRecoveryTabs);
+      entries.set(capture.documentId, capture.tab);
+      const tabs = this.session.tabOrder.filter((id) => entries.has(id)).map((id) => ({ ...entries.get(id) }));
+      if (tabs.length === 0) return null;
+      const included = new Set(tabs.map((tab) => tab.documentId));
+      const activeDocumentId = included.has(this.session.activeDocumentId)
+        ? this.session.activeDocumentId
+        : (included.has(capture.documentId) ? capture.documentId : tabs[0].documentId);
+      return {
+        schemaVersion: 1,
+        generation: this.session.generation,
+        activeDocumentId,
+        nextUntitledNumber: this.session.nextUntitledNumber,
+        tabs,
+      };
+    }
+
+    _rememberDurableManifest(manifest) {
+      this._durableRecoveryTabs = new Map(manifest.tabs.map((tab) => [tab.documentId, Object.freeze({
+        documentId: tab.documentId,
+        displayName: tab.displayName,
+        snapshotRevision: tab.snapshotRevision,
+      })]));
     }
 
     _releaseManifestBarrier(scheduleDeferred) {
@@ -1284,7 +1383,9 @@
         }
         if (activeBarrier.allowBlocked) return Promise.resolve(false);
         if (!activeBarrier.catchUpPromise) {
-          const pendingTransaction = this._manifestWrites;
+          const pendingTransaction = activeBarrier.externalCheckpoint
+            ? activeBarrier.completion
+            : this._manifestWrites;
           activeBarrier.catchUpPromise = pendingTransaction.then(() => this._persistManifestNow(token, {
             allowBlocked,
             retryScheduler,
@@ -1355,6 +1456,7 @@
             }
             if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
             await this.io.writeRecoveryManifest(candidate.generation, json);
+            this._rememberDurableManifest(candidate);
           } catch (reason) {
             if (this._manifestBarrier === barrier) this._manifestBarrier = null;
             for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);

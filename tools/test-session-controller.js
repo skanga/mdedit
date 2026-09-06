@@ -1644,7 +1644,7 @@ test("editor input is routed to the addressed document only", async () => {
   assert.deepEqual(fixture.calls.scheduler.at(-1), ["changed", a.id, 1]);
 });
 
-test("rapid editor input schedules recovery without immediately persisting a manifest", async () => {
+test("rapid editor input schedules recovery without recursive clean-status manifest writes", async () => {
   const fixture = makeDependencies();
   const controller = new SessionController(fixture.dependencies);
   const document = controller.createUntitled();
@@ -1659,7 +1659,7 @@ test("rapid editor input schedules recovery without immediately persisting a man
   assert.equal(fixture.calls.scheduler.filter(([kind]) => kind === "changed").length, 100);
   controller.onRecoveryStatus(document.id, "clean");
   await settle();
-  assert.equal(fixture.calls.manifestWrites.length, 1);
+  assert.equal(fixture.calls.manifestWrites.length, 0);
 });
 
 test("session mutation during flush publishes the first candidate before its catch-up", async () => {
@@ -1757,6 +1757,163 @@ test("slow snapshot flush publishes its captured revision before deferred edit c
   const durableManifest = JSON.parse(await browserIo.loadRecoveryManifest());
   assert.equal(durableManifest.tabs[0].snapshotRevision, 2);
   assert.ok(await browserIo.loadRecoveryDocument(document.id, 2));
+});
+
+test("idle scheduler checkpoints publish each manifest before draining a late revision", async () => {
+  const storage = memoryStorage();
+  const browserIo = createBrowserRecoveryIo(storage);
+  const clock = fakeClock();
+  const snapshotOne = deferred();
+  const snapshotOneStarted = deferred();
+  const manifestOne = deferred();
+  const manifestOneStarted = deferred();
+  const documentWrites = [];
+  let holdRevisionOne = false;
+  let controller;
+  const fixture = makeDependencies();
+  fixture.dependencies.io = {
+    ...fixture.dependencies.io,
+    ...browserIo,
+    async writeRecoveryDocument(documentId, revision, json) {
+      documentWrites.push(revision);
+      if (holdRevisionOne && revision === 1) {
+        snapshotOneStarted.resolve();
+        await snapshotOne.promise;
+      }
+      return browserIo.writeRecoveryDocument(documentId, revision, json);
+    },
+    async writeRecoveryManifest(generation, json) {
+      const revision = JSON.parse(json).tabs[0].snapshotRevision;
+      if (holdRevisionOne && revision === 1) {
+        manifestOneStarted.resolve();
+        await manifestOne.promise;
+      }
+      return browserIo.writeRecoveryManifest(generation, json);
+    },
+  };
+  fixture.dependencies.scheduler = new RecoveryScheduler({
+    clock,
+    async write(documentId, revision) {
+      const controlled = controller.recoverySnapshotForWrite(documentId, revision);
+      if (controlled) return fixture.dependencies.io.writeRecoveryDocument(documentId, revision, controlled);
+      return controller.writeRecoveryCheckpoint(documentId, revision);
+    },
+    onStatus(documentId, status, error) {
+      if (controller) controller.onRecoveryStatus(documentId, status, error);
+    },
+  });
+  controller = new SessionController(fixture.dependencies);
+  assert.equal(typeof controller.writeRecoveryCheckpoint, "function");
+  const document = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  const initialManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  holdRevisionOne = true;
+  controller.onEditorInput(document.id, "revision one");
+  clock.advance(1_000);
+  await snapshotOneStarted.promise;
+  controller.onEditorInput(document.id, "revision two");
+  snapshotOne.resolve();
+  await manifestOneStarted.promise;
+
+  assert.deepEqual(documentWrites.slice(-1), [1]);
+  assert.equal(JSON.parse(await browserIo.loadRecoveryManifest()).tabs[0].snapshotRevision,
+    initialManifest.tabs[0].snapshotRevision);
+  assert.ok(await browserIo.loadRecoveryDocument(document.id, initialManifest.tabs[0].snapshotRevision));
+
+  manifestOne.resolve();
+  await settle();
+  await controller._checkpointWrites;
+  assert.deepEqual(documentWrites.slice(-2), [1, 2]);
+  const latestManifest = JSON.parse(await browserIo.loadRecoveryManifest());
+  assert.equal(latestManifest.tabs[0].snapshotRevision, 2);
+  assert.ok(await browserIo.loadRecoveryDocument(document.id, 2));
+});
+
+test("checkpoint transactions from two document timers serialize their manifests", async () => {
+  const firstManifest = deferred();
+  const firstManifestStarted = deferred();
+  const documentWrites = [];
+  const manifests = [];
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryDocument(documentId) { documentWrites.push(documentId); },
+      async writeRecoveryManifest(generation, json) {
+        manifests.push(JSON.parse(json));
+        if (manifests.length === 1) {
+          firstManifestStarted.resolve();
+          await firstManifest.promise;
+        }
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  const b = controller.createUntitled();
+  const checkpointA = controller.writeRecoveryCheckpoint(a.id, a.snapshotRevision);
+  const checkpointB = controller.writeRecoveryCheckpoint(b.id, b.snapshotRevision);
+  await firstManifestStarted.promise;
+  assert.deepEqual(documentWrites, [a.id]);
+
+  firstManifest.resolve();
+  await Promise.all([checkpointA, checkpointB]);
+  assert.deepEqual(documentWrites, [a.id, b.id]);
+  assert.deepEqual(manifests[0].tabs.map((tab) => tab.documentId), [a.id]);
+  assert.deepEqual(manifests[1].tabs.map((tab) => tab.documentId), [a.id, b.id]);
+});
+
+test("closing a document during its checkpoint preserves old recovery until an excluding manifest", async () => {
+  const storage = memoryStorage();
+  const browserIo = createBrowserRecoveryIo(storage);
+  const clock = fakeClock();
+  const slowSnapshot = deferred();
+  const slowSnapshotStarted = deferred();
+  let hold = false;
+  let controller;
+  const fixture = makeDependencies();
+  fixture.dependencies.io = {
+    ...fixture.dependencies.io,
+    ...browserIo,
+    async writeRecoveryDocument(documentId, revision, json) {
+      if (hold && revision === 1) {
+        slowSnapshotStarted.resolve();
+        await slowSnapshot.promise;
+      }
+      return browserIo.writeRecoveryDocument(documentId, revision, json);
+    },
+  };
+  fixture.dependencies.scheduler = new RecoveryScheduler({
+    clock,
+    async write(documentId, revision) {
+      const controlled = controller.recoverySnapshotForWrite(documentId, revision);
+      if (controlled) return fixture.dependencies.io.writeRecoveryDocument(documentId, revision, controlled);
+      return controller.writeRecoveryCheckpoint(documentId, revision);
+    },
+    onStatus(documentId, status, error) {
+      if (controller) controller.onRecoveryStatus(documentId, status, error);
+    },
+  });
+  controller = new SessionController(fixture.dependencies);
+  const closing = controller.createUntitled();
+  await controller.restore();
+  await settle();
+  const durableBefore = JSON.parse(await browserIo.loadRecoveryManifest());
+  closing.updateWorkspace({ ...closing.workspace, tocOpen: true });
+  hold = true;
+  fixture.dependencies.scheduler.changed(closing.id, closing.snapshotRevision);
+  clock.advance(1_000);
+  await slowSnapshotStarted.promise;
+
+  assert.equal(controller.closeDocument(closing.id), true);
+  const replacement = controller.activeDocument();
+  slowSnapshot.resolve();
+  await settle();
+  await controller._manifestWrites;
+  const durableAfter = JSON.parse(await browserIo.loadRecoveryManifest());
+  assert.ok(await browserIo.loadRecoveryDocument(closing.id, durableBefore.tabs[0].snapshotRevision));
+  assert.equal(durableAfter.tabs.some((tab) => tab.documentId === closing.id), false);
+  assert.equal(durableAfter.activeDocumentId, replacement.id);
+  assert.notEqual(replacement.recoveryStatus, "failed");
 });
 
 test("a deferred render cannot replace the preview after another document activates", async () => {
@@ -2486,7 +2643,7 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /controller\.runCapturedExport\("table " \+ n \+ " as CSV"/, filename);
     assert.match(html, /canPrintCapture\(capture, previewOwner\)/, filename);
     assert.match(html, /createBrowserRecoveryEnvironment\(window\)/, filename);
-    assert.match(html, /model\.snapshotRevision !== revision/, filename);
+    assert.match(html, /controller\.writeRecoveryCheckpoint\(documentId, revision\)/, filename);
     assert.match(html, /renderForExport/, filename);
     assert.match(html, /capture\.renderedHtml/, filename);
     assert.doesNotMatch(html, /cleanPreviewClone\(\)/, filename);
