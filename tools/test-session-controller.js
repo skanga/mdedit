@@ -636,15 +636,59 @@ test("restore reconciles disk fingerprints without replacing recovered editor co
   assert.ok(fixture.calls.statuses.some(([id, status]) => id === "missing" && status.fileStatus === "missing"));
 });
 
+test("restore classifies exact native missing-path failures without discarding recovery", async () => {
+  const errors = new Map([
+    ["unix", "failed to canonicalize parent for document path /missing/unix.md: No such file or directory (os error 2)"],
+    ["windows", "failed to canonicalize parent for document path C:\\missing\\windows.md: The system cannot find the path specified. (os error 3)"],
+    ["symlink", "document /missing/symlink.md is a dangling symlink"],
+  ]);
+  const ids = [...errors.keys()];
+  const fixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() { return JSON.stringify(manifest(ids, ids[0])); },
+      async loadRecoveryDocument(id, revision) {
+        return JSON.stringify(snapshot(id, revision, { content: `recovered:${id}` }));
+      },
+      async readDocument(pathname) {
+        const id = pathname.match(/[/\\]([^/\\]+)\.md$/)[1];
+        throw new Error(errors.get(id));
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  await controller.restore();
+
+  for (const id of ids) {
+    const document = controller.session.documents.get(id);
+    assert.equal(document.fileStatus, "missing", id);
+    assert.equal(document.content, `recovered:${id}`, id);
+    assert.equal(document.dirty, false, id);
+  }
+});
+
 test("missing-file classification accepts structured and exact Rust errors only", () => {
   assert.equal(isMissingFileError(Object.assign(new Error("anything"), { code: "NotFound" })), true);
   assert.equal(isMissingFileError(Object.assign(new Error("anything"), { name: "NotFoundError" })), true);
   assert.equal(isMissingFileError(new Error(
     "failed to read document /notes/a.md: No such file or directory (os error 2)",
   )), true);
+  assert.equal(isMissingFileError(new Error(
+    "failed to canonicalize parent for document path /missing/a.md: No such file or directory (os error 2)",
+  )), true);
+  assert.equal(isMissingFileError(new Error(
+    "failed to canonicalize parent for document path C:\\missing\\a.md: The system cannot find the path specified. (os error 3)",
+  )), true);
+  assert.equal(isMissingFileError(new Error("document /notes/a.md is a dangling symlink")), true);
   assert.equal(isMissingFileError(new Error("the selected document was not found")), false);
   assert.equal(isMissingFileError(new Error(
     "failed to read document /notes/a.md: Permission denied (os error 13)",
+  )), false);
+  assert.equal(isMissingFileError(new Error(
+    "failed to canonicalize parent for document path /notes/a.md: Permission denied (os error 13)",
+  )), false);
+  assert.equal(isMissingFileError(new Error(
+    "failed to canonicalize parent for document path /notes/a.md: path is not valid UTF-8",
   )), false);
 });
 
@@ -3031,6 +3075,36 @@ test("canceling Save As after a missing guarded save preserves missing dirty sta
   assert.equal(document.dirty, true);
 });
 
+test("native missing-path save errors safely continue with captured Save As", async () => {
+  const messages = [
+    "failed to canonicalize parent for document path /missing/a.md: No such file or directory (os error 2)",
+    "failed to canonicalize parent for document path C:\\missing\\a.md: The system cannot find the path specified. (os error 3)",
+    "document /missing/a.md is a dangling symlink",
+  ];
+
+  for (const message of messages) {
+    let pickerCalls = 0;
+    const fixture = makeDependencies({
+      io: {
+        async saveDocument() { throw new Error(message); },
+        async chooseSavePath() { pickerCalls += 1; return null; },
+      },
+    });
+    const controller = new SessionController(fixture.dependencies);
+    const document = await Promise.resolve(controller.openReadResult(readResult("/missing/a.md", "/missing/a.md", "old")));
+    controller.onEditorInput(document.id, "editor content");
+    await controller.restore();
+
+    const result = await controller.saveDocument(document.id);
+
+    assert.equal(result.saved, false, message);
+    assert.equal(result.canceled, true, message);
+    assert.equal(document.fileStatus, "missing", message);
+    assert.equal(document.dirty, true, message);
+    assert.equal(pickerCalls, 1, message);
+  }
+});
+
 test("save conflict exposes exactly the safe actions and keep-editing preserves content", async () => {
   let conflictArgs;
   const fixture = makeDependencies({
@@ -3235,6 +3309,55 @@ test("clean confirmed quit waits for an existing manifest and checkpoints the la
   assert.equal(controller.allowNativeClose(), true);
 });
 
+test("clean confirmed quit drains a late manifest catch-up and rejects newly dirty state", async () => {
+  const firstManifest = deferred();
+  const firstStarted = deferred();
+  const catchUpManifest = deferred();
+  const catchUpStarted = deferred();
+  let holdWrites = false;
+  let heldWrites = 0;
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryManifest() {
+        if (!holdWrites) return;
+        heldWrites += 1;
+        if (heldWrites === 1) {
+          firstStarted.resolve();
+          await firstManifest.promise;
+        } else if (heldWrites === 2) {
+          catchUpStarted.resolve();
+          await catchUpManifest.promise;
+        }
+      },
+    },
+    scheduler: { async flushAll() {} },
+    dialogs: { async showQuit() { return "close"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  await controller._manifestWrites;
+  holdWrites = true;
+
+  const quitting = controller.requestQuit();
+  await firstStarted.promise;
+  controller.onEditorInput(document.id, "late editor change");
+  firstManifest.resolve();
+  await catchUpStarted.promise;
+
+  assert.equal((await outcomeByImmediate(quitting)).status, "unsettled");
+  assert.equal(controller.allowNativeClose(), false);
+  catchUpManifest.resolve();
+  const result = await quitting;
+
+  assert.equal(result.allowClose, false);
+  assert.equal(result.changed, true);
+  assert.equal(result.retryRequired, true);
+  assert.deepEqual(result.remainingIds, [document.id]);
+  assert.equal(document.persistedRevision, document.snapshotRevision);
+  assert.equal(controller.allowNativeClose(), false);
+});
+
 test("clean confirmed quit blocks and reports an existing manifest failure", async () => {
   const heldManifest = deferred();
   const fixture = makeDependencies({
@@ -3419,6 +3542,56 @@ test("quit restore uses one consolidated dialog and flushAll exactly once", asyn
   assert.deepEqual(listed, [a.displayName, b.displayName]);
   assert.equal(controller.allowNativeClose(), true);
   assert.equal(controller.allowNativeClose(), false);
+});
+
+test("quit restore drains a late edit through its held catch-up manifest", async () => {
+  const firstManifest = deferred();
+  const firstStarted = deferred();
+  const catchUpManifest = deferred();
+  const catchUpStarted = deferred();
+  let holdWrites = false;
+  let heldWrites = 0;
+  let flushes = 0;
+  const fixture = makeDependencies({
+    io: {
+      async writeRecoveryManifest() {
+        if (!holdWrites) return;
+        heldWrites += 1;
+        if (heldWrites === 1) {
+          firstStarted.resolve();
+          await firstManifest.promise;
+        } else if (heldWrites === 2) {
+          catchUpStarted.resolve();
+          await catchUpManifest.promise;
+        }
+      },
+    },
+    scheduler: { async flushAll() { flushes += 1; } },
+    dialogs: { async showQuit() { return "restore"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  controller.onEditorInput(document.id, "first editor change");
+  await controller.restore();
+  await controller._manifestWrites;
+  holdWrites = true;
+
+  const quitting = controller.requestQuit();
+  await firstStarted.promise;
+  controller.onEditorInput(document.id, "latest editor change");
+  firstManifest.resolve();
+  await catchUpStarted.promise;
+
+  assert.equal((await outcomeByImmediate(quitting)).status, "unsettled");
+  assert.equal(controller.allowNativeClose(), false);
+  catchUpManifest.resolve();
+  const result = await quitting;
+
+  assert.equal(result.allowClose, true);
+  assert.equal(result.choice, "restore");
+  assert.equal(flushes, 1);
+  assert.equal(document.persistedRevision, document.snapshotRevision);
+  assert.equal(controller.allowNativeClose(), true);
 });
 
 test("quit restore blocks native close when flushAll fails", async () => {

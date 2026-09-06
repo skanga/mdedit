@@ -3436,7 +3436,9 @@ return Pe}()
       : [];
     const message = reason instanceof Error ? reason.message : String(reason || "");
     if (codes.some((code) => ["NotFound", "NotFoundError", "ENOENT"].includes(code))) return true;
-    return /^failed to read document .+: (?:No such file or directory(?: \(os error 2\))?|The system cannot find the file specified\.?(?: \(os error [23]\))?)$/i.test(message);
+    if (/^failed to read document .+: (?:No such file or directory(?: \(os error 2\))?|The system cannot find the file specified\.?(?: \(os error [23]\))?)$/i.test(message)) return true;
+    if (/^failed to canonicalize parent for document path .+: (?:No such file or directory(?: \(os error 2\))?|The system cannot find the path specified\.? \(os error 3\))$/i.test(message)) return true;
+    return /^document .+ is a dangling symlink$/i.test(message);
   }
 
   function onceAsync(callback) {
@@ -4787,19 +4789,7 @@ return Pe}()
           return this._presentSaveConflict(capture, result, { showConflict });
         }
         if (result && result.status === "missing") {
-          if (!this._ownsOperationCapture(capture)) {
-            return { saved: false, missing: true, stale: true, documentId };
-          }
-          const metadataChanged = document.updateMetadata({ fileStatus: "missing" });
-          this._setDocumentStatus(documentId, {
-            status: "missing",
-            message: `${capture.displayName} is missing from disk`,
-            dirty: document.dirty,
-            fileStatus: document.fileStatus,
-            recoveryStatus: document.recoveryStatus,
-          });
-          await this._checkpointAfterDocumentChange(capture, metadataChanged, "save-missing-checkpoint");
-          return this._saveAsNow(documentId, {}, capture);
+          return this._continueMissingSave(capture);
         }
         if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
           throw new Error("document save returned an invalid result");
@@ -4825,6 +4815,7 @@ return Pe}()
         }
         return { saved: true, documentId, path: capture.path };
       } catch (reason) {
+        if (isMissingFileError(reason)) return this._continueMissingSave(capture);
         const error = normalizeError(reason);
         if (this._ownsOperationCapture(capture)) {
           this._setDocumentStatus(documentId, {
@@ -4834,6 +4825,22 @@ return Pe}()
         }
         throw error;
       }
+    }
+
+    async _continueMissingSave(capture) {
+      if (!this._ownsOperationCapture(capture)) {
+        return { saved: false, missing: true, stale: true, documentId: capture.documentId };
+      }
+      const metadataChanged = capture.document.updateMetadata({ fileStatus: "missing" });
+      this._setDocumentStatus(capture.documentId, {
+        status: "missing",
+        message: `${capture.displayName} is missing from disk`,
+        dirty: capture.document.dirty,
+        fileStatus: capture.document.fileStatus,
+        recoveryStatus: capture.document.recoveryStatus,
+      });
+      await this._checkpointAfterDocumentChange(capture, metadataChanged, "save-missing-checkpoint");
+      return this._saveAsNow(capture.documentId, {}, capture);
     }
 
     async _saveAsNow(documentId, options = {}, existingCapture = null) {
@@ -5273,6 +5280,23 @@ return Pe}()
         if (choice !== "close") return { allowClose: false, canceled: true };
         try {
           await this._checkpointSessionForQuit();
+          const currentDocuments = [...this.session.documents.values()].filter(
+            (document) => document instanceof DocumentModel,
+          );
+          await Promise.all(currentDocuments.map((document) => this._reconcileDocumentDirty(document)));
+          const changedIds = this.session.tabOrder.filter((id) => {
+            const document = this.session.documents.get(id);
+            return document instanceof DocumentModel && document.dirty;
+          });
+          if (changedIds.length > 0) {
+            return {
+              allowClose: false,
+              canceled: false,
+              changed: true,
+              retryRequired: true,
+              remainingIds: changedIds,
+            };
+          }
           this._nativeCloseAllowed = true;
           return { allowClose: true, choice };
         } catch (reason) {
@@ -5333,13 +5357,33 @@ return Pe}()
         throw new Error("whole-session recovery flush is unavailable");
       }
       await this.scheduler.flushAll();
-      await this._persistManifestNow(this._lifecycleToken);
+      let needsCheckpoint = true;
+      for (;;) {
+        if (needsCheckpoint) await this._persistManifestNow(this._lifecycleToken);
+        await Promise.resolve();
+
+        const observedWrites = this._manifestWrites;
+        await observedWrites;
+        await Promise.resolve();
+        if (observedWrites !== this._manifestWrites) {
+          needsCheckpoint = false;
+          continue;
+        }
+
+        const pendingIds = this._recoveryUnsavedDocumentIds({ includeDirty: false });
+        const quiescent = !this._manifestBarrier
+          && !this._recoveryManifestQueued
+          && this._deferredRecoveryRevisions.size === 0
+          && pendingIds.length === 0;
+        if (quiescent) return;
+        needsCheckpoint = true;
+      }
     }
 
-    _recoveryUnsavedDocumentIds() {
+    _recoveryUnsavedDocumentIds({ includeDirty = true } = {}) {
       return this.session.tabOrder.filter((id) => {
         const document = this.session.documents.get(id);
-        return document instanceof DocumentModel && (document.dirty
+        return document instanceof DocumentModel && ((includeDirty && document.dirty)
           || document.recoveryStatus === "failed"
           || document.persistedRevision < document.snapshotRevision);
       });
