@@ -43,9 +43,12 @@
   }
 
   function isMissingFileError(reason) {
-    const code = reason && typeof reason === "object" ? String(reason.code || reason.kind || "") : "";
+    const codes = reason && typeof reason === "object"
+      ? [reason.code, reason.kind, reason.name].map((value) => String(value || ""))
+      : [];
     const message = reason instanceof Error ? reason.message : String(reason || "");
-    return /not.?found/i.test(code) || /no such file|not found|does not exist/i.test(message);
+    if (codes.some((code) => ["NotFound", "NotFoundError", "ENOENT"].includes(code))) return true;
+    return /^failed to read document .+: (?:No such file or directory(?: \(os error 2\))?|The system cannot find the file specified\.?(?: \(os error [23]\))?)$/i.test(message);
   }
 
   function onceAsync(callback) {
@@ -577,6 +580,18 @@
         if (!this._isLifecycleActive(token) || this.session !== session) return null;
         document.reconcileDirty(contentSha256, document.editRevision);
 
+        if (document.path !== null && document.expectedDiskSha256 !== null
+            && typeof this.io.readDocument === "function") {
+          try {
+            const disk = await this.io.readDocument(document.path);
+            document.fileStatus = disk && disk.sha256 === document.expectedDiskSha256
+              ? "normal" : "externally-changed";
+          } catch (reason) {
+            document.fileStatus = isMissingFileError(reason) ? "missing" : "read-error";
+          }
+          if (!this._isLifecycleActive(token) || this.session !== session) return null;
+        }
+
         const canonicalOwner = document.canonicalPath === null
           ? null
           : session.findByCanonicalPath(document.canonicalPath);
@@ -594,6 +609,11 @@
         }
         this._renderSession();
         if (session.activeDocumentId === id) this._renderDocument(document);
+        this._setDocumentStatus(id, {
+          dirty: document.dirty,
+          fileStatus: document.fileStatus,
+          recoveryStatus: document.recoveryStatus,
+        });
         return document;
       } catch (reason) {
         if (!this._isLifecycleActive(token) || this.session !== session) return null;
@@ -1378,6 +1398,21 @@
         if (result && result.status === "conflict") {
           return this._presentSaveConflict(capture, result, { showConflict });
         }
+        if (result && result.status === "missing") {
+          if (!this._ownsOperationCapture(capture)) {
+            return { saved: false, missing: true, stale: true, documentId };
+          }
+          const metadataChanged = document.updateMetadata({ fileStatus: "missing" });
+          this._setDocumentStatus(documentId, {
+            status: "missing",
+            message: `${capture.displayName} is missing from disk`,
+            dirty: document.dirty,
+            fileStatus: document.fileStatus,
+            recoveryStatus: document.recoveryStatus,
+          });
+          await this._checkpointAfterDocumentChange(capture, metadataChanged, "save-missing-checkpoint");
+          return this._saveAsNow(documentId, {}, capture);
+        }
         if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
           throw new Error("document save returned an invalid result");
         }
@@ -1413,9 +1448,9 @@
       }
     }
 
-    async _saveAsNow(documentId, options = {}) {
+    async _saveAsNow(documentId, options = {}, existingCapture = null) {
       const document = this._requireLoadedDocument(documentId);
-      const capture = this._captureDocument(document);
+      const capture = existingCapture || this._captureDocument(document);
       if (typeof this.io.saveDocument !== "function") throw new Error("document saving is unavailable");
       const choose = this.io.chooseSavePath;
       if (!options.path && typeof choose !== "function") throw new Error("save path selection is unavailable");
@@ -1533,13 +1568,17 @@
             }
             break;
           }
-          savedIds.push(documentId);
+          const liveDocument = this.session.documents.get(documentId);
+          if (liveDocument instanceof DocumentModel && !liveDocument.dirty) savedIds.push(documentId);
         } catch (reason) {
           error = normalizeError(reason);
           break;
         }
       }
-      const remainingIds = dirtyIds.filter((id) => !savedIds.includes(id));
+      const remainingIds = dirtyIds.filter((id) => {
+        const document = this.session.documents.get(id);
+        return document instanceof DocumentModel && document.dirty;
+      });
       return { savedIds, remainingIds, canceled, error };
     }
 
@@ -1844,13 +1883,22 @@
 
       if (!requiresRecoveryChoice) {
         if (choice !== "close") return { allowClose: false, canceled: true };
-        this._nativeCloseAllowed = true;
-        return { allowClose: true, choice };
+        try {
+          await this._checkpointSessionForQuit();
+          this._nativeCloseAllowed = true;
+          return { allowClose: true, choice };
+        } catch (reason) {
+          const error = normalizeError(reason);
+          this._showRecoveryError(error, { phase: "quit" });
+          return { allowClose: false, canceled: false, error };
+        }
       }
 
+      let saveAllResult = null;
       try {
         if (choice === "save-all") {
           const result = await this._saveAllNow({ showConflicts: false });
+          saveAllResult = result;
           if (result.canceled || result.error || result.remainingIds.length > 0) {
             return {
               allowClose: false,
@@ -1859,13 +1907,14 @@
               saveAll: result,
             };
           }
-          await this._persistManifestNow(this._lifecycleToken);
-        } else if (choice === "restore") {
-          if (typeof this.scheduler.flushAll !== "function") {
-            throw new Error("whole-session recovery flush is unavailable");
+          await this._checkpointSessionForQuit();
+          result.remainingIds = this._recoveryUnsavedDocumentIds();
+          if (result.remainingIds.length > 0) {
+            result.savedIds = result.savedIds.filter((id) => !result.remainingIds.includes(id));
+            return { allowClose: false, canceled: false, error: null, saveAll: result };
           }
-          await this.scheduler.flushAll();
-          await this._persistManifestNow(this._lifecycleToken);
+        } else if (choice === "restore") {
+          await this._checkpointSessionForQuit();
         } else if (choice === "discard-all") {
           await this._discardDocumentsForQuit(dirtyDocuments);
         } else {
@@ -1874,10 +1923,38 @@
       } catch (reason) {
         const error = normalizeError(reason);
         this._showRecoveryError(error, { phase: "quit" });
+        if (saveAllResult) {
+          saveAllResult.remainingIds = [...new Set([
+            ...saveAllResult.remainingIds,
+            ...this._recoveryUnsavedDocumentIds(),
+          ])];
+          saveAllResult.savedIds = saveAllResult.savedIds.filter(
+            (id) => !saveAllResult.remainingIds.includes(id),
+          );
+          return { allowClose: false, canceled: false, error, saveAll: saveAllResult };
+        }
         return { allowClose: false, canceled: false, error };
       }
       this._nativeCloseAllowed = true;
       return { allowClose: true, choice };
+    }
+
+    async _checkpointSessionForQuit() {
+      await this._manifestWrites;
+      if (typeof this.scheduler.flushAll !== "function") {
+        throw new Error("whole-session recovery flush is unavailable");
+      }
+      await this.scheduler.flushAll();
+      await this._persistManifestNow(this._lifecycleToken);
+    }
+
+    _recoveryUnsavedDocumentIds() {
+      return this.session.tabOrder.filter((id) => {
+        const document = this.session.documents.get(id);
+        return document instanceof DocumentModel && (document.dirty
+          || document.recoveryStatus === "failed"
+          || document.persistedRevision < document.snapshotRevision);
+      });
     }
 
     async _discardDocumentsForQuit(documents) {
@@ -2386,5 +2463,6 @@
     createBrowserRecoveryIo,
     createBrowserRecoveryEnvironment,
     createNativeCloseRequestHandler,
+    isMissingFileError,
   };
 });

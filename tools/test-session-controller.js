@@ -12,6 +12,7 @@ const {
   createBrowserRecoveryIo,
   createBrowserRecoveryEnvironment,
   createNativeCloseRequestHandler,
+  isMissingFileError,
 } = require("../src/session-controller.js");
 const { RecoveryScheduler } = require("../src/recovery-scheduler.js");
 
@@ -574,6 +575,79 @@ test("restored snapshots recompute dirty state from the saved-content hash", asy
   assert.equal(controller.session.documents.get("b").dirty, false);
 });
 
+test("restore reconciles disk fingerprints without replacing recovered editor content", async () => {
+  const ids = ["match", "changed", "missing", "read-error", "pathless", "no-baseline"];
+  const reads = [];
+  const fixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() { return JSON.stringify(manifest(ids, "match")); },
+      async loadRecoveryDocument(id, revision) {
+        const restored = snapshot(id, revision, {
+          content: `recovered:${id}`,
+          savedContentSha256: `sha:saved:${id}`,
+          expectedDiskSha256: `disk:${id}`,
+          path: `/notes/${id}.md`,
+          canonicalPath: `/notes/${id}.md`,
+        });
+        if (id === "no-baseline" || id === "pathless") restored.expectedDiskSha256 = null;
+        if (id === "pathless") {
+          restored.path = null;
+          restored.canonicalPath = null;
+        }
+        return JSON.stringify(restored);
+      },
+      async readDocument(pathname) {
+        reads.push(pathname);
+        const id = pathname.match(/\/([^/]+)\.md$/)[1];
+        if (id === "missing") {
+          throw new Error(`failed to read document ${pathname}: No such file or directory (os error 2)`);
+        }
+        if (id === "read-error") throw new Error(`failed to read document ${pathname}: Permission denied (os error 13)`);
+        return {
+          ...readResult(pathname, pathname, `external:${id}`),
+          sha256: id === "match" ? `disk:${id}` : `outside:${id}`,
+        };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  await controller.restore();
+
+  assert.deepEqual(reads.sort(), [
+    "/notes/changed.md",
+    "/notes/match.md",
+    "/notes/missing.md",
+    "/notes/read-error.md",
+  ]);
+  assert.equal(controller.session.documents.get("match").fileStatus, "normal");
+  assert.equal(controller.session.documents.get("changed").fileStatus, "externally-changed");
+  assert.equal(controller.session.documents.get("missing").fileStatus, "missing");
+  assert.equal(controller.session.documents.get("read-error").fileStatus, "read-error");
+  assert.equal(controller.session.documents.get("pathless").fileStatus, "normal");
+  assert.equal(controller.session.documents.get("no-baseline").fileStatus, "normal");
+  for (const id of ids) {
+    const document = controller.session.documents.get(id);
+    assert.equal(document.content, `recovered:${id}`);
+    assert.equal(document.dirty, true);
+    assert.equal(document.loadStatus, "loaded");
+  }
+  assert.equal(fixture.calls.recoveryErrors.length, 0);
+  assert.ok(fixture.calls.statuses.some(([id, status]) => id === "missing" && status.fileStatus === "missing"));
+});
+
+test("missing-file classification accepts structured and exact Rust errors only", () => {
+  assert.equal(isMissingFileError(Object.assign(new Error("anything"), { code: "NotFound" })), true);
+  assert.equal(isMissingFileError(Object.assign(new Error("anything"), { name: "NotFoundError" })), true);
+  assert.equal(isMissingFileError(new Error(
+    "failed to read document /notes/a.md: No such file or directory (os error 2)",
+  )), true);
+  assert.equal(isMissingFileError(new Error("the selected document was not found")), false);
+  assert.equal(isMissingFileError(new Error(
+    "failed to read document /notes/a.md: Permission denied (os error 13)",
+  )), false);
+});
+
 test("inactive recovery uses at most four loads and promotes a selected loading tab", async () => {
   const gates = new Map();
   let activeLoads = 0;
@@ -837,7 +911,13 @@ test("a manual open during snapshot hydration waits until recovery is fully load
   await firstRestore;
   const result = await opening;
 
-  assert.deepEqual(sequence, ["snapshot:a", "snapshot:b", "read:late.md"]);
+  assert.deepEqual(sequence, [
+    "snapshot:a",
+    "read:/notes/a.md",
+    "snapshot:b",
+    "read:/notes/b.md",
+    "read:late.md",
+  ]);
   assert.equal(result.opened.length, 1);
   assert.deepEqual(controller.session.tabOrder.slice(0, 2), ["a", "b"]);
   assert.equal(controller.activeDocument().displayName, "late.md");
@@ -2812,6 +2892,145 @@ test("saveAll follows stable dirty tab order and stops at picker cancellation", 
   assert.equal(clean.dirty, false);
 });
 
+test("saveAll keeps a document with a later edit out of savedIds and in remainingIds", async () => {
+  const saveGate = deferred();
+  const fixture = makeDependencies({
+    io: {
+      async saveDocument(input) {
+        await saveGate.promise;
+        return { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "first edit");
+  await controller.restore();
+
+  const saving = controller.saveAll();
+  await settle();
+  controller.onEditorInput(document.id, "later edit");
+  saveGate.resolve();
+  const result = await saving;
+
+  assert.deepEqual(result.savedIds, []);
+  assert.deepEqual(result.remainingIds, [document.id]);
+  assert.equal(document.dirty, true);
+  assert.equal(document.content, "later edit");
+});
+
+test("Save All and Quit names a later-edited document and blocks close", async () => {
+  const saveGate = deferred();
+  const fixture = makeDependencies({
+    io: {
+      async saveDocument(input) {
+        await saveGate.promise;
+        return { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` };
+      },
+    },
+    dialogs: { async showQuit() { return "save-all"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(document.id, "first edit");
+  await controller.restore();
+
+  const quitting = controller.requestQuit();
+  await settle();
+  controller.onEditorInput(document.id, "later edit");
+  saveGate.resolve();
+  const result = await quitting;
+
+  assert.equal(result.allowClose, false);
+  assert.deepEqual(result.saveAll.savedIds, []);
+  assert.deepEqual(result.saveAll.remainingIds, [document.id]);
+  assert.equal(controller.allowNativeClose(), false);
+});
+
+test("Save All and Quit names a clean document whose recovery flush fails", async () => {
+  const fixture = makeDependencies({
+    scheduler: { async flushAll() { throw new Error("recovery flush failed"); } },
+    dialogs: { async showQuit() { return "save-all"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.createUntitled();
+  await controller.restore();
+  document.recoveryStatus = "failed";
+  controller._sessionRecoveryFailure = new Error("recovery flush failed");
+
+  const result = await controller.requestQuit();
+
+  assert.equal(result.allowClose, false);
+  assert.ok(result.error, JSON.stringify(result));
+  assert.match(result.error.message, /recovery flush failed/);
+  assert.deepEqual(result.saveAll.remainingIds, [document.id]);
+  assert.equal(controller.allowNativeClose(), false);
+});
+
+test("a missing guarded save safely continues with Save As for its captured document", async () => {
+  const firstSave = deferred();
+  const picker = deferred();
+  const writes = [];
+  let saveCalls = 0;
+  const fixture = makeDependencies({
+    io: {
+      async saveDocument(input) {
+        writes.push(input);
+        saveCalls += 1;
+        if (saveCalls === 1) return firstSave.promise;
+        return { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` };
+      },
+      async chooseSavePath() { return picker.promise; },
+      async canonicalizeDocumentPath(pathname) { return pathname; },
+      async readDocument() { throw Object.assign(new Error("gone"), { code: "NotFound" }); },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const savedDocument = await Promise.resolve(controller.openReadResult(readResult("/a.md", "/a.md", "old")));
+  controller.onEditorInput(savedDocument.id, "captured a");
+  const other = controller.createUntitled();
+  await controller.restore();
+  controller.activateDocument(savedDocument.id);
+
+  const saving = controller.saveDocument(savedDocument.id);
+  await settle();
+  controller.activateDocument(other.id);
+  firstSave.resolve({ status: "missing" });
+  await settle();
+  assert.equal(savedDocument.fileStatus, "missing");
+  assert.equal(controller.activeDocument(), other);
+  picker.resolve("/replacement.md");
+  const result = await saving;
+
+  assert.equal(result.saved, true);
+  assert.equal(savedDocument.path, "/replacement.md");
+  assert.equal(savedDocument.fileStatus, "normal");
+  assert.equal(controller.activeDocument(), other);
+  assert.equal(writes[1].content, "captured a");
+  assert.equal(writes[1].expectedSha256, null);
+});
+
+test("canceling Save As after a missing guarded save preserves missing dirty state", async () => {
+  const fixture = makeDependencies({
+    io: {
+      async saveDocument() { return { status: "missing" }; },
+      async chooseSavePath() { return null; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = await Promise.resolve(controller.openReadResult(readResult("/gone.md", "/gone.md", "old")));
+  controller.onEditorInput(document.id, "mine");
+  await controller.restore();
+
+  const result = await controller.saveDocument(document.id);
+
+  assert.equal(result.saved, false);
+  assert.equal(result.canceled, true);
+  assert.equal(document.fileStatus, "missing");
+  assert.equal(document.path, "/gone.md");
+  assert.equal(document.dirty, true);
+});
+
 test("save conflict exposes exactly the safe actions and keep-editing preserves content", async () => {
   let conflictArgs;
   const fixture = makeDependencies({
@@ -2986,10 +3205,57 @@ test("clean quit asks once and only an explicit Close allows native shutdown", a
   assert.deepEqual(result, { allowClose: true, choice: "close" });
   assert.equal(dialogs, 3);
   assert.deepEqual(dialogDocuments, []);
-  assert.equal(flushes, 0);
-  assert.equal(fixture.calls.manifestWrites.length, manifestWrites);
+  assert.equal(flushes, 1);
+  assert.equal(fixture.calls.manifestWrites.length, manifestWrites + 1);
   assert.equal(controller.allowNativeClose(), true);
   assert.equal(controller.allowNativeClose(), false);
+});
+
+test("clean confirmed quit waits for an existing manifest and checkpoints the latest session", async () => {
+  const heldManifest = deferred();
+  let flushes = 0;
+  const fixture = makeDependencies({
+    scheduler: { async flushAll() { flushes += 1; } },
+    dialogs: { async showQuit() { return "close"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+  await controller.restore();
+  controller._manifestWrites = heldManifest.promise;
+
+  const quitting = controller.requestQuit();
+  await settle();
+  assert.equal((await outcomeByImmediate(quitting)).status, "unsettled");
+  assert.equal(controller.allowNativeClose(), false);
+  heldManifest.resolve();
+  const result = await quitting;
+
+  assert.equal(result.allowClose, true);
+  assert.equal(flushes, 1);
+  assert.equal(controller.allowNativeClose(), true);
+});
+
+test("clean confirmed quit blocks and reports an existing manifest failure", async () => {
+  const heldManifest = deferred();
+  const fixture = makeDependencies({
+    scheduler: { async flushAll() { throw new Error("must not flush after manifest failure"); } },
+    dialogs: { async showQuit() { return "close"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  controller.createUntitled();
+  await controller.restore();
+  controller._manifestWrites = heldManifest.promise;
+  controller._manifestWrites.catch(() => {});
+
+  const quitting = controller.requestQuit();
+  await settle();
+  heldManifest.reject(new Error("held manifest failed"));
+  const result = await quitting;
+
+  assert.equal(result.allowClose, false);
+  assert.match(result.error.message, /held manifest failed/);
+  assert.equal(controller.allowNativeClose(), false);
+  assert.ok(fixture.calls.recoveryErrors.some((details) => details.phase === "quit"));
 });
 
 test("clean fallback quit dialog uses Close application copy and safe actions", async () => {
