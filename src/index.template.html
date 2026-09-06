@@ -2803,11 +2803,14 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
     if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.restored = true;
     if (pendingOpen) await pendingOpen;
     let active = controller.activeDocument();
-    if (active && !active.canonicalPath && !active.content && !active.dirty && controller.session.documents.size === 1) {
+    if (controller.restoreOutcome === "fresh-session"
+        && active && !active.canonicalPath && !active.content && !active.dirty
+        && controller.session.documents.size === 1) {
       controller.onEditorInput(active.id, WELCOME);
       const welcomeCapture = controller.captureActiveDocument();
       const welcomeSha256 = await hashText(WELCOME);
       controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
+      workspaceView.ensureEditor(active);
     }
     active = controller.activeDocument();
     if (active) controller.activateDocument(active.id);

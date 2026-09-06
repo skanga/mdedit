@@ -298,6 +298,7 @@
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
+      this.restoreOutcome = "pending";
       this._localSessionEstablished = false;
       this._lifecycleToken = 0;
       this._disposed = false;
@@ -441,13 +442,17 @@
         this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
       }
       if (!this._isLifecycleActive(token)) return this.session;
-      if (this._localSessionEstablished) return this._finishRestore(token);
+      if (this._localSessionEstablished) {
+        if (this.restoreOutcome === "pending") this.restoreOutcome = "local-session";
+        return this._finishRestore(token);
+      }
 
       let rawManifest;
       try {
         rawManifest = await this.io.loadRecoveryManifest();
       } catch (reason) {
         if (!this._isLifecycleActive(token)) return this.session;
+        this.restoreOutcome = "recovery-fallback";
         this._showRecoveryError(reason, { phase: "manifest" });
         this._assignEmptySession(token);
         return this._finishRestore(token);
@@ -455,14 +460,17 @@
       if (!this._isLifecycleActive(token)) return this.session;
 
       if (rawManifest === null) {
+        this.restoreOutcome = "fresh-session";
         await this.importLegacyDraft(token);
         if (!this._isLifecycleActive(token)) return this.session;
         if (!this.session) this._assignEmptySession(token);
       } else {
         try {
+          this.restoreOutcome = "restored-session";
           await this.restoreManifest(rawManifest, token);
         } catch (reason) {
           if (!this._isLifecycleActive(token)) return this.session;
+          this.restoreOutcome = "recovery-fallback";
           this._showRecoveryError(reason, { phase: "manifest" });
           this._assignEmptySession(token);
         }
@@ -550,6 +558,22 @@
       await Promise.all(workers);
       if (!this._isLifecycleActive(token) || this.session !== session) return session;
       this._loadQueue = [];
+
+      const firstLoadedId = session.tabOrder.find(
+        (id) => session.documents.get(id) instanceof DocumentModel,
+      );
+      if (!firstLoadedId) {
+        this.restoreOutcome = "recovery-fallback";
+        const fallback = this._createFreshSession(token);
+        this._renderSession();
+        this._renderDocument(fallback);
+        return this.session;
+      }
+      if (!(session.documents.get(session.activeDocumentId) instanceof DocumentModel)) {
+        session.activate(firstLoadedId);
+        this._renderSession();
+        this._renderDocument(session.documents.get(firstLoadedId));
+      }
       return session;
     }
 
@@ -647,8 +671,12 @@
       let document = null;
       let durable = false;
       try {
+        this.restoreOutcome = "recovery-fallback";
         const rawDraft = this.legacyStorage.getItem(LEGACY_DRAFT_KEY);
-        if (!rawDraft) return null;
+        if (rawDraft === null) {
+          this.restoreOutcome = "fresh-session";
+          return null;
+        }
         const draft = JSON.parse(rawDraft);
         if (!draft || typeof draft !== "object" || Array.isArray(draft)
             || typeof draft.text !== "string" || !draft.text.trim()) {
@@ -690,6 +718,7 @@
         }
         this._renderSession();
         this._renderDocument(document);
+        this.restoreOutcome = "legacy-session";
         return document;
       } catch (reason) {
         if (durable || !this._isLifecycleActive(token)) return document;

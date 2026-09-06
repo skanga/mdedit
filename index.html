@@ -6518,6 +6518,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
+      this.restoreOutcome = "pending";
       this._localSessionEstablished = false;
       this._lifecycleToken = 0;
       this._disposed = false;
@@ -6661,13 +6662,17 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
       }
       if (!this._isLifecycleActive(token)) return this.session;
-      if (this._localSessionEstablished) return this._finishRestore(token);
+      if (this._localSessionEstablished) {
+        if (this.restoreOutcome === "pending") this.restoreOutcome = "local-session";
+        return this._finishRestore(token);
+      }
 
       let rawManifest;
       try {
         rawManifest = await this.io.loadRecoveryManifest();
       } catch (reason) {
         if (!this._isLifecycleActive(token)) return this.session;
+        this.restoreOutcome = "recovery-fallback";
         this._showRecoveryError(reason, { phase: "manifest" });
         this._assignEmptySession(token);
         return this._finishRestore(token);
@@ -6675,14 +6680,17 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!this._isLifecycleActive(token)) return this.session;
 
       if (rawManifest === null) {
+        this.restoreOutcome = "fresh-session";
         await this.importLegacyDraft(token);
         if (!this._isLifecycleActive(token)) return this.session;
         if (!this.session) this._assignEmptySession(token);
       } else {
         try {
+          this.restoreOutcome = "restored-session";
           await this.restoreManifest(rawManifest, token);
         } catch (reason) {
           if (!this._isLifecycleActive(token)) return this.session;
+          this.restoreOutcome = "recovery-fallback";
           this._showRecoveryError(reason, { phase: "manifest" });
           this._assignEmptySession(token);
         }
@@ -6770,6 +6778,22 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       await Promise.all(workers);
       if (!this._isLifecycleActive(token) || this.session !== session) return session;
       this._loadQueue = [];
+
+      const firstLoadedId = session.tabOrder.find(
+        (id) => session.documents.get(id) instanceof DocumentModel,
+      );
+      if (!firstLoadedId) {
+        this.restoreOutcome = "recovery-fallback";
+        const fallback = this._createFreshSession(token);
+        this._renderSession();
+        this._renderDocument(fallback);
+        return this.session;
+      }
+      if (!(session.documents.get(session.activeDocumentId) instanceof DocumentModel)) {
+        session.activate(firstLoadedId);
+        this._renderSession();
+        this._renderDocument(session.documents.get(firstLoadedId));
+      }
       return session;
     }
 
@@ -6867,8 +6891,12 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       let document = null;
       let durable = false;
       try {
+        this.restoreOutcome = "recovery-fallback";
         const rawDraft = this.legacyStorage.getItem(LEGACY_DRAFT_KEY);
-        if (!rawDraft) return null;
+        if (rawDraft === null) {
+          this.restoreOutcome = "fresh-session";
+          return null;
+        }
         const draft = JSON.parse(rawDraft);
         if (!draft || typeof draft !== "object" || Array.isArray(draft)
             || typeof draft.text !== "string" || !draft.text.trim()) {
@@ -6910,6 +6938,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         }
         this._renderSession();
         this._renderDocument(document);
+        this.restoreOutcome = "legacy-session";
         return document;
       } catch (reason) {
         if (durable || !this._isLifecycleActive(token)) return document;
@@ -12041,11 +12070,14 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
     if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.restored = true;
     if (pendingOpen) await pendingOpen;
     let active = controller.activeDocument();
-    if (active && !active.canonicalPath && !active.content && !active.dirty && controller.session.documents.size === 1) {
+    if (controller.restoreOutcome === "fresh-session"
+        && active && !active.canonicalPath && !active.content && !active.dirty
+        && controller.session.documents.size === 1) {
       controller.onEditorInput(active.id, WELCOME);
       const welcomeCapture = controller.captureActiveDocument();
       const welcomeSha256 = await hashText(WELCOME);
       controller.recordCapturedSave(welcomeCapture, { contentSha256: welcomeSha256, diskSha256: welcomeSha256 });
+      workspaceView.ensureEditor(active);
     }
     active = controller.activeDocument();
     if (active) controller.activateDocument(active.id);

@@ -34,7 +34,11 @@ async function installFakeTauri(page, options = {}) {
       core: {
         invoke: async (command, args = {}) => {
           calls.invokes.push({ command, args });
-          if (command === "load_recovery_manifest") return null;
+          if (command === "load_recovery_manifest") return configuration.recoveryManifest ?? null;
+          if (command === "load_recovery_document") {
+            const key = `${args.documentId}:${args.snapshotRevision}`;
+            return (configuration.recoveryDocuments && configuration.recoveryDocuments[key]) ?? null;
+          }
           if (command === "take_pending_files") return [];
           if (command === "recovery_directory") return "/fake-recovery";
           if (command === "read_document") {

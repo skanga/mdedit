@@ -1,6 +1,58 @@
 const { test, expect } = require("@playwright/test");
 const { activeEditor, installFakeTauri, openEditor } = require("./helpers.js");
 
+test("welcome appears only for a truly new session and restored blank content stays blank", async ({ page }) => {
+  await installFakeTauri(page);
+  await openEditor(page);
+  await expect(activeEditor(page)).toHaveValue(/# Welcome to MDedit/);
+
+  const blankPage = await page.context().newPage();
+  const workspace = {
+    selectionStart: 0,
+    selectionEnd: 0,
+    editorScrollTop: 0,
+    previewScrollTop: 0,
+    viewMode: "edit",
+    tocOpen: false,
+    find: { open: false, query: "", replacement: "", matchIndex: -1 },
+  };
+  await installFakeTauri(blankPage, {
+    recoveryManifest: JSON.stringify({
+      schemaVersion: 1,
+      generation: 4,
+      activeDocumentId: "blank",
+      nextUntitledNumber: 2,
+      tabs: [{ documentId: "blank", displayName: "Untitled 1", snapshotRevision: 0 }],
+    }),
+    recoveryDocuments: {
+      "blank:0": JSON.stringify({
+        schemaVersion: 1,
+        documentId: "blank",
+        snapshotRevision: 0,
+        editRevision: 0,
+        displayName: "Untitled 1",
+        path: null,
+        canonicalPath: null,
+        content: "",
+        savedContentSha256: await page.evaluate(async () => {
+          const bytes = new TextEncoder().encode("");
+          const digest = await crypto.subtle.digest("SHA-256", bytes);
+          return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+        }),
+        expectedDiskSha256: null,
+        fileStatus: "normal",
+        workspace,
+      }),
+    },
+  });
+  await openEditor(blankPage);
+
+  await expect(activeEditor(blankPage)).toHaveValue("");
+  await expect(blankPage.getByRole("tab", { name: /Untitled 1/ })).toHaveAttribute("aria-selected", "true");
+  await expect(blankPage.locator("body")).toHaveAttribute("data-view", "edit");
+  await expect(blankPage.locator(".dirty-dot")).not.toHaveClass(/on/);
+});
+
 test("tabs retain content, selection, view, and accessible state", async ({ page }) => {
   await installFakeTauri(page);
   await openEditor(page);

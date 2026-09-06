@@ -867,6 +867,90 @@ test("a snapshot failure remains visible, reports its recovery path, and does no
   assert.match(fixture.calls.recoveryErrors[0].message, /snapshot denied/);
 });
 
+test("all failed manifest snapshots fall back to one usable untitled without deleting evidence", async () => {
+  let deleteCalls = 0;
+  const fixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() { return JSON.stringify(manifest(["a", "b"], "b")); },
+      async loadRecoveryDocument(id) { throw new Error(`snapshot denied: ${id}`); },
+      async deleteRecoveryDocument() { deleteCalls += 1; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  await controller.restore();
+
+  const active = controller.activeDocument();
+  assert.ok(active instanceof DocumentModel);
+  assert.equal(active.displayName, "Untitled 1");
+  assert.equal(active.content, "");
+  assert.equal(active.dirty, false);
+  assert.deepEqual(controller.session.tabOrder, [active.id]);
+  assert.equal(controller.session.activeDocumentId, active.id);
+  assert.equal(controller.restoreOutcome, "recovery-fallback");
+  assert.equal(fixture.calls.recoveryErrors.length, 2);
+  assert.equal(deleteCalls, 0);
+});
+
+test("partial manifest restore retains failed tabs but activates the first usable tab", async () => {
+  const fixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() { return JSON.stringify(manifest(["a", "b", "c"], "b")); },
+      async loadRecoveryDocument(id, revision) {
+        if (id === "b") throw new Error("active snapshot denied");
+        return JSON.stringify(snapshot(id, revision));
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  await controller.restore();
+
+  assert.deepEqual(controller.session.tabOrder, ["a", "b", "c"]);
+  assert.ok(controller.session.documents.get("a") instanceof DocumentModel);
+  assert.equal(controller.session.documents.get("b").loadStatus, "failed");
+  assert.ok(controller.session.documents.get("c") instanceof DocumentModel);
+  assert.equal(controller.session.activeDocumentId, "a");
+  assert.equal(controller.activeDocument().id, "a");
+  assert.equal(fixture.calls.renderedDocuments.at(-1), "a");
+  assert.equal(controller.restoreOutcome, "restored-session");
+});
+
+test("restore outcome distinguishes a truly absent session from restored recovery", async () => {
+  const absent = new SessionController(makeDependencies().dependencies);
+  await absent.restore();
+  assert.equal(absent.restoreOutcome, "fresh-session");
+
+  const restoredFixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() { return JSON.stringify(manifest(["blank"], "blank")); },
+      async loadRecoveryDocument(id, revision) {
+        return JSON.stringify(snapshot(id, revision, {
+          displayName: "Untitled 1",
+          path: null,
+          canonicalPath: null,
+          content: "",
+          savedContentSha256: "sha:",
+          expectedDiskSha256: null,
+        }));
+      },
+    },
+  });
+  const restored = new SessionController(restoredFixture.dependencies);
+  await restored.restore();
+  assert.equal(restored.restoreOutcome, "restored-session");
+  assert.equal(restored.activeDocument().content, "");
+  assert.equal(restored.activeDocument().dirty, false);
+
+  const inaccessibleLegacy = new SessionController(makeDependencies({
+    legacyStorage: {
+      getItem() { throw new Error("legacy storage denied"); },
+    },
+  }).dependencies);
+  await inaccessibleLegacy.restore();
+  assert.equal(inaccessibleLegacy.restoreOutcome, "recovery-fallback");
+});
+
 test("restored snapshots recompute dirty state from the saved-content hash", async () => {
   const fixture = makeDependencies();
   fixture.dependencies.io.loadRecoveryManifest = async () => JSON.stringify(manifest(["a", "b"], "a"));
@@ -2040,7 +2124,7 @@ test("legacy key removal failure is cleanup-only after durable migration", async
   assert.equal(fixture.calls.scheduler.some(([kind]) => kind === "forget"), false);
 });
 
-test("snapshot identity and revision mismatches leave their stubs in place and report failures", async (t) => {
+test("single snapshot identity and revision mismatches report failures and use a safe fallback", async (t) => {
   for (const mismatch of [
     { name: "identity", override: { documentId: "someone-else" }, pattern: /identity/i },
     { name: "revision", override: { snapshotRevision: 99 }, pattern: /revision/i },
@@ -2053,13 +2137,14 @@ test("snapshot identity and revision mismatches leave their stubs in place and r
 
       await controller.restore();
 
-      const stub = controller.session.documents.get("a");
-      assert.equal(stub.id, "a");
-      assert.equal(stub.loadStatus, "failed");
-      assert.equal(stub instanceof DocumentModel, false);
+      const fallback = controller.activeDocument();
+      assert.ok(fallback instanceof DocumentModel);
+      assert.equal(fallback.displayName, "Untitled 1");
+      assert.equal(fallback.dirty, false);
       assert.match(fixture.calls.recoveryErrors[0].message, mismatch.pattern);
-      assert.deepEqual(controller.session.tabOrder, ["a"]);
-      assert.equal(controller.session.activeDocumentId, "a");
+      assert.deepEqual(controller.session.tabOrder, [fallback.id]);
+      assert.equal(controller.session.activeDocumentId, fallback.id);
+      assert.equal(controller.restoreOutcome, "recovery-fallback");
     });
   }
 });
