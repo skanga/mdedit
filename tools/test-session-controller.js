@@ -1066,6 +1066,116 @@ test("fresh openReadResult returns a model synchronously without later restore o
   assert.equal(fixture.calls.sequence.includes("load-manifest"), false);
 });
 
+test("local synchronous documents still wait for listener readiness before restore completes", async () => {
+  const listenerGate = deferred();
+  const fixture = makeDependencies({
+    io: {
+      listenFileOpened() { return listenerGate.promise; },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const created = controller.createUntitled();
+
+  const restoring = controller.restore();
+  assert.equal((await outcomeByImmediate(restoring)).status, "unsettled");
+  assert.equal(fixture.calls.sequence.includes("load-manifest"), false);
+
+  listenerGate.resolve(() => {});
+  await restoring;
+
+  assert.equal(controller.activeDocument(), created);
+  assert.equal(fixture.calls.sequence.includes("load-manifest"), false);
+});
+
+test("local restore reports listener rejection, remains usable, and allows listener retry", async () => {
+  const firstRegistration = deferred();
+  let attempts = 0;
+  let registered = false;
+  const fixture = makeDependencies({
+    io: {
+      listenFileOpened() {
+        attempts += 1;
+        if (attempts === 1) return firstRegistration.promise;
+        registered = true;
+        return () => { registered = false; };
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const created = controller.createUntitled();
+  created.applyContent("keep me");
+
+  const restoring = controller.restore();
+  firstRegistration.reject(new Error("listener unavailable"));
+  await restoring;
+  await settle();
+
+  assert.equal(controller.activeDocument(), created);
+  assert.equal(created.content, "keep me");
+  assert.equal(fixture.calls.sequence.includes("load-manifest"), false);
+  assert.equal(fixture.calls.recoveryErrors.at(-1).phase, "file-open-listener");
+  assert.match(fixture.calls.recoveryErrors.at(-1).message, /listener unavailable/);
+
+  await controller.start();
+  assert.equal(attempts, 2);
+  assert.equal(registered, true);
+});
+
+test("failed local creation remains idle so manifest recovery still runs", async () => {
+  let idCalls = 0;
+  let manifestLoads = 0;
+  const fixture = makeDependencies({
+    idFactory() {
+      idCalls += 1;
+      if (idCalls === 1) throw new Error("id unavailable");
+      return `id-${idCalls}`;
+    },
+    io: {
+      async loadRecoveryManifest() {
+        manifestLoads += 1;
+        return JSON.stringify(manifest(["a"], "a"));
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  assert.throws(() => controller.createUntitled(), /id unavailable/);
+  assert.equal(controller.session, null);
+
+  await controller.restore();
+
+  assert.equal(manifestLoads, 1);
+  assert.deepEqual(controller.session.tabOrder, ["a"]);
+  assert.equal(controller.activeDocument().id, "a");
+});
+
+test("invalid fresh read remains idle so manifest recovery still runs", async () => {
+  let manifestLoads = 0;
+  const fixture = makeDependencies({
+    io: {
+      async loadRecoveryManifest() {
+        manifestLoads += 1;
+        return JSON.stringify(manifest(["a"], "a"));
+      },
+    },
+  });
+  const controller = new SessionController(fixture.dependencies);
+
+  assert.throws(() => controller.openReadResult({
+    path: "",
+    canonicalPath: "/invalid.md",
+    content: "invalid",
+    sha256: "sha:invalid",
+  }), /path/i);
+  assert.equal(controller.session, null);
+
+  await controller.restore();
+
+  assert.equal(manifestLoads, 1);
+  assert.deepEqual(controller.session.tabOrder, ["a"]);
+  assert.equal(controller.activeDocument().id, "a");
+});
+
 test("createUntitled is synchronous immediately after awaiting openPaths", async () => {
   const fixture = makeDependencies();
   const controller = new SessionController(fixture.dependencies);

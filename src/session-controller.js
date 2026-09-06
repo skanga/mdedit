@@ -96,6 +96,7 @@
       this._restorePromise = null;
       this._restoreControl = null;
       this._restoreState = "idle";
+      this._localSessionEstablished = false;
       this._lifecycleToken = 0;
       this._disposed = false;
       this._disposePromise = null;
@@ -226,6 +227,7 @@
         this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
       }
       if (!this._isLifecycleActive(token)) return this.session;
+      if (this._localSessionEstablished) return this._finishRestore(token);
 
       let rawManifest;
       try {
@@ -591,8 +593,10 @@
     }
 
     _canMutateSynchronously() {
+      const sessionIsUsable = this._restoreState === "restored"
+        || (this._restoreState === "idle" && this._localSessionEstablished);
       return !this._disposed
-        && this._restoreState === "restored"
+        && sessionIsUsable
         && this._queuedOperationCount === 0;
     }
 
@@ -602,7 +606,9 @@
       if (typeof result.canonicalPath !== "string" || result.canonicalPath.length === 0) {
         throw new TypeError("read result canonicalPath must be a non-empty string");
       }
-      this._startLocalSessionIfIdle();
+      if (this._restoreState === "idle" && !this._localSessionEstablished) {
+        return this._openLocalReadResult(result);
+      }
       if (this._canMutateSynchronously()) return this._openReadResultNow(result, this._lifecycleToken);
       // Active recovery is the exceptional asynchronous phase: queue the model
       // creation so recovery cannot overwrite it.
@@ -617,11 +623,18 @@
         this.activateDocument(existing.id);
         return existing;
       }
+      const document = this._documentFromReadResult(result);
+      session.add(document);
+      this._renderSession();
+      this._renderDocument(document);
+      return document;
+    }
+
+    _documentFromReadResult(result) {
       if (typeof result.path !== "string" || result.path.length === 0) {
         throw new TypeError("read result path must be a non-empty string");
       }
-
-      const document = new DocumentModel({
+      return new DocumentModel({
         id: this.idFactory(),
         displayName: displayNameFromPath(result.path),
         path: result.path,
@@ -636,7 +649,13 @@
         dirty: false,
         recoveryStatus: "clean",
       });
-      session.add(document);
+    }
+
+    _openLocalReadResult(result) {
+      const candidate = new SessionModel({ idFactory: this.idFactory });
+      const document = this._documentFromReadResult(result);
+      candidate.add(document);
+      this._commitLocalSession(candidate);
       this._renderSession();
       this._renderDocument(document);
       return document;
@@ -674,7 +693,14 @@
 
     createUntitled() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
-      this._startLocalSessionIfIdle();
+      if (this._restoreState === "idle" && !this._localSessionEstablished) {
+        const candidate = new SessionModel({ idFactory: this.idFactory });
+        const document = candidate.createUntitled();
+        this._commitLocalSession(candidate);
+        this._renderSession();
+        this._renderDocument(document);
+        return document;
+      }
       if (this._canMutateSynchronously()) return this._createUntitledNow(this._lifecycleToken);
       // Active recovery is the exceptional asynchronous phase: queue the model
       // creation until recovery owns a stable session.
@@ -691,6 +717,10 @@
 
     persistManifest() {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      if (this._localSessionEstablished && this._restoreState !== "restored") {
+        if (this._restoreState === "idle") this.restore();
+        return this._scheduleOperation((token) => this._persistManifestNow(token));
+      }
       if (this._restoreState !== "restored") {
         const restoring = this._restoreState === "idle" ? this.restore() : this._restorePromise;
         return restoring.then(() => {
@@ -722,11 +752,9 @@
       return this.session;
     }
 
-    _startLocalSessionIfIdle() {
-      if (this._restoreState !== "idle") return;
-      const session = this._ensureSession();
-      this._restoreState = "restored";
-      this._restorePromise = Promise.resolve(session);
+    _commitLocalSession(session) {
+      this.session = session;
+      this._localSessionEstablished = true;
     }
 
     _createFreshSession(token = this._lifecycleToken) {
