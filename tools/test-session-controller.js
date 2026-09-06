@@ -242,7 +242,11 @@ test("openPaths continues after an individual read failure and activates the fin
   };
   const controller = new SessionController(fixture.dependencies);
 
-  const result = await controller.openPaths(["first.md", "bad.md", "last.md"]);
+  const opening = controller.openPaths(["first.md", "bad.md", "last.md"]);
+  assert.equal(controller.session, null);
+  assert.deepEqual(fixture.calls.reads, []);
+  await controller.restore();
+  const result = await opening;
 
   assert.equal(result.opened.length, 2);
   assert.equal(result.failed.length, 1);
@@ -549,7 +553,9 @@ test("failed legacy durability keeps the old draft available for a future migrat
   await controller.restore();
 
   assert.equal(fixture.legacyStorage.getItem(LEGACY_DRAFT_KEY), raw);
-  assert.equal(controller.activeDocument().content, "legacy");
+  assert.equal(controller.activeDocument().displayName, "Untitled 1");
+  assert.equal(controller.activeDocument().content, "");
+  assert.equal(controller.session.documents.size, 1);
   assert.equal(fixture.calls.recoveryErrors[0].phase, "legacy-migration");
 });
 
@@ -561,13 +567,259 @@ test("canonical aliases opened through paths create one tab and count one opened
   };
   const controller = new SessionController(fixture.dependencies);
 
-  const result = await controller.openPaths(["/alias/first.md", "/alias/second.md"]);
+  const opening = controller.openPaths(["/alias/first.md", "/alias/second.md"]);
+  await controller.restore();
+  const result = await opening;
 
   assert.equal(controller.session.documents.size, 1);
   assert.equal(result.opened.length, 1);
   assert.equal(result.failed.length, 0);
   assert.equal(controller.activeDocument().canonicalPath, "/real/shared.md");
   assert.deepEqual(fixture.calls.reads, ["/alias/first.md", "/alias/second.md"]);
+});
+
+test("a manual open during snapshot hydration waits until recovery is fully loaded", async () => {
+  const activeGate = deferred();
+  const sequence = [];
+  const fixture = makeDependencies();
+  fixture.dependencies.io.loadRecoveryManifest = async () => JSON.stringify(manifest(["a", "b"], "a"));
+  fixture.dependencies.io.loadRecoveryDocument = async (id, revision) => {
+    sequence.push(`snapshot:${id}`);
+    if (id === "a") await activeGate.promise;
+    return JSON.stringify(snapshot(id, revision));
+  };
+  fixture.dependencies.io.readDocument = async (pathname) => {
+    sequence.push(`read:${pathname}`);
+    return readResult(pathname, `/canonical/${pathname}`, pathname);
+  };
+  const controller = new SessionController(fixture.dependencies);
+
+  const firstRestore = controller.restore();
+  assert.equal(controller.restore(), firstRestore);
+  await settle();
+  const opening = controller.openPaths(["late.md"]);
+  await settle();
+
+  assert.deepEqual(sequence, ["snapshot:a"]);
+  assert.deepEqual(controller.session.tabOrder, ["a", "b"]);
+
+  activeGate.resolve();
+  await firstRestore;
+  const result = await opening;
+
+  assert.deepEqual(sequence, ["snapshot:a", "snapshot:b", "read:late.md"]);
+  assert.equal(result.opened.length, 1);
+  assert.deepEqual(controller.session.tabOrder.slice(0, 2), ["a", "b"]);
+  assert.equal(controller.activeDocument().displayName, "late.md");
+});
+
+test("queued startup opens replace the unnecessary blank and preserve arrival activation", async () => {
+  const manifestGate = deferred();
+  const fixture = makeDependencies();
+  fixture.dependencies.io.loadRecoveryManifest = async () => manifestGate.promise;
+  const controller = new SessionController(fixture.dependencies);
+
+  const first = controller.openPaths(["first.md"]);
+  const restoring = controller.restore();
+  const second = controller.openPaths(["second.md"]);
+  await settle();
+  assert.equal(controller.session, null);
+  assert.deepEqual(fixture.calls.reads, []);
+
+  manifestGate.resolve(null);
+  await restoring;
+  await Promise.all([first, second]);
+
+  assert.equal(controller.session.documents.size, 2);
+  assert.deepEqual(
+    controller.session.tabOrder.map((id) => controller.session.documents.get(id).displayName),
+    ["first.md", "second.md"],
+  );
+  assert.equal(controller.activeDocument().displayName, "second.md");
+});
+
+test("all failed queued startup opens still leave one clean untitled document", async () => {
+  const fixture = makeDependencies();
+  fixture.dependencies.io.readDocument = async () => { throw new Error("no access"); };
+  const controller = new SessionController(fixture.dependencies);
+
+  const opening = controller.openPaths(["bad.md"]);
+  await controller.restore();
+  const result = await opening;
+
+  assert.equal(result.failed.length, 1);
+  assert.equal(controller.session.documents.size, 1);
+  assert.equal(controller.activeDocument().displayName, "Untitled 1");
+  assert.equal(controller.activeDocument().dirty, false);
+});
+
+test("legacy baseline is established before queued opens and the final open is active", async () => {
+  const fixture = makeDependencies();
+  fixture.legacyStorage.setItem(LEGACY_DRAFT_KEY, JSON.stringify({ name: "old.md", text: "legacy" }));
+  const controller = new SessionController(fixture.dependencies);
+
+  const opening = controller.openPaths(["new.md"]);
+  await controller.restore();
+  await opening;
+
+  assert.deepEqual(
+    controller.session.tabOrder.map((id) => controller.session.documents.get(id).displayName),
+    ["old.md", "new.md"],
+  );
+  assert.equal(controller.activeDocument().displayName, "new.md");
+});
+
+test("recovery reporting rejection cannot block fresh restore or another snapshot", async () => {
+  const fixture = makeDependencies({
+    inactiveLoadConcurrency: 1,
+    view: {
+      async showRecoveryError() { throw new Error("view unavailable"); },
+    },
+    io: {
+      async recoveryDirectory() { throw new Error("directory unavailable"); },
+    },
+  });
+  fixture.dependencies.io.loadRecoveryManifest = async () => JSON.stringify(manifest(["a", "b", "c"], "a"));
+  fixture.dependencies.io.loadRecoveryDocument = async (id, revision) => {
+    fixture.calls.snapshotLoads.push([id, revision]);
+    if (id === "b") throw new Error("bad snapshot");
+    return JSON.stringify(snapshot(id, revision));
+  };
+  const controller = new SessionController(fixture.dependencies);
+
+  await controller.restore();
+
+  assert.deepEqual(fixture.calls.snapshotLoads.map(([id]) => id), ["a", "b", "c"]);
+  assert.ok(controller.session.documents.get("c") instanceof DocumentModel);
+  assert.equal(controller.session.documents.get("b").loadStatus, "failed");
+});
+
+test("listener rejection is diagnosed, remains retryable, and does not lose queued opens", async () => {
+  let attempts = 0;
+  let handler = null;
+  const fixture = makeDependencies();
+  fixture.dependencies.io.listenFileOpened = (nextHandler) => {
+    attempts += 1;
+    if (attempts === 1) return Promise.reject(new Error("listener denied"));
+    handler = nextHandler;
+    return Promise.resolve(() => { handler = null; });
+  };
+  const controller = new SessionController(fixture.dependencies);
+  const opening = controller.openPaths(["queued.md"]);
+
+  await controller.restore();
+  await opening;
+
+  assert.equal(attempts, 1);
+  assert.equal(fixture.calls.recoveryErrors[0].phase, "file-open-listener");
+  assert.equal(controller.activeDocument().displayName, "queued.md");
+
+  await controller.start();
+  assert.equal(attempts, 2);
+  assert.equal(typeof handler, "function");
+});
+
+test("legacy hash and id preparation failures report and fall back without partial documents", async (t) => {
+  let idCalls = 0;
+  for (const failure of [
+    { name: "hash", overrides: { hashText: async () => { throw new Error("hash failed"); } } },
+    {
+      name: "id",
+      overrides: {
+        idFactory: () => {
+          idCalls += 1;
+          if (idCalls === 1) throw new Error("id failed");
+          return `fallback-${idCalls}`;
+        },
+      },
+    },
+  ]) {
+    await t.test(failure.name, async () => {
+      const fixture = makeDependencies(failure.overrides);
+      const raw = JSON.stringify({ name: "old.md", text: "legacy" });
+      fixture.legacyStorage.setItem(LEGACY_DRAFT_KEY, raw);
+      const controller = new SessionController(fixture.dependencies);
+
+      await controller.restore();
+
+      assert.equal(fixture.legacyStorage.getItem(LEGACY_DRAFT_KEY), raw);
+      assert.equal(controller.session.documents.size, 1);
+      assert.equal(controller.activeDocument().displayName, "Untitled 1");
+      assert.equal(fixture.calls.recoveryErrors[0].phase, "legacy-migration");
+    });
+  }
+});
+
+test("an asynchronously rejected open-error dialog is observed without blocking results", async () => {
+  const fixture = makeDependencies({
+    dialogs: {
+      async showOpenError() { throw new Error("dialog renderer failed"); },
+    },
+  });
+  fixture.dependencies.io.readDocument = async () => { throw new Error("read failed"); };
+  const controller = new SessionController(fixture.dependencies);
+
+  const opening = controller.openPaths(["bad.md"]);
+  await controller.restore();
+  const result = await opening;
+  await settle();
+
+  assert.equal(result.failed.length, 1);
+  assert.equal(controller.activeDocument().displayName, "Untitled 1");
+});
+
+test("persistManifest waits for restore hydration before serializing", async () => {
+  const activeGate = deferred();
+  const fixture = makeDependencies();
+  fixture.dependencies.io.loadRecoveryManifest = async () => JSON.stringify(manifest(["a", "b"], "a"));
+  fixture.dependencies.io.loadRecoveryDocument = async (id, revision) => {
+    if (id === "a") await activeGate.promise;
+    return JSON.stringify(snapshot(id, revision));
+  };
+  const controller = new SessionController(fixture.dependencies);
+
+  const restoring = controller.restore();
+  await settle();
+  const persisting = controller.persistManifest();
+  await settle();
+  assert.equal(fixture.calls.manifestWrites.length, 0);
+
+  activeGate.resolve();
+  await restoring;
+  await persisting;
+  assert.equal(fixture.calls.manifestWrites.length, 1);
+  assert.deepEqual(JSON.parse(fixture.calls.manifestWrites[0][1]).tabs.map((tab) => tab.documentId), ["a", "b"]);
+});
+
+test("dispose awaits unsubscribe, is idempotent, and stale events cannot open documents", async () => {
+  const unsubscribeGate = deferred();
+  let handler;
+  let unsubscribeCalls = 0;
+  const fixture = makeDependencies();
+  fixture.dependencies.io.listenFileOpened = (nextHandler) => {
+    handler = nextHandler;
+    return async () => {
+      unsubscribeCalls += 1;
+      await unsubscribeGate.promise;
+    };
+  };
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  const initialSize = controller.session.documents.size;
+
+  const disposing = controller.dispose();
+  assert.equal(controller.destroy(), disposing);
+  await settle();
+  assert.equal(unsubscribeCalls, 1);
+  handler({ payload: "ignored.md" });
+  unsubscribeGate.resolve();
+  await disposing;
+  await settle();
+
+  assert.equal(controller.session.documents.size, initialSize);
+  assert.deepEqual(fixture.calls.reads, []);
+  assert.equal(await controller.dispose(), undefined);
+  assert.equal(unsubscribeCalls, 1);
 });
 
 test("snapshot identity and revision mismatches leave their stubs in place and report failures", async (t) => {

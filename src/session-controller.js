@@ -71,19 +71,23 @@
       this._started = false;
       this._unlisten = null;
       this._listenerReady = Promise.resolve(null);
-      this._pendingOpenedPaths = [];
-      this._eventOpenChain = Promise.resolve();
+      this._listenerFailure = null;
+      this._pendingOpenRequests = [];
+      this._openChain = Promise.resolve();
       this._manifestWrites = Promise.resolve();
       this._restorePromise = null;
-      this._restoring = false;
+      this._restoreState = "idle";
+      this._disposed = false;
+      this._disposePromise = null;
       this._loadQueue = [];
       this._loadingIds = new Set();
       this._loadPriority = [];
 
-      this.start();
+      this.start().catch(() => {});
     }
 
     start() {
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (this._started) return this._listenerReady;
       this._started = true;
 
@@ -95,7 +99,18 @@
         : (this.dialogs.listenFileOpened || this.dialogs.onFileOpened);
       if (typeof listen !== "function") return this._listenerReady;
 
-      const registration = listen.call(source, (event) => this._handleFileOpened(event));
+      let registration;
+      try {
+        registration = listen.call(source, (event) => this._handleFileOpened(event));
+      } catch (reason) {
+        const error = normalizeError(reason);
+        this._started = false;
+        this._listenerFailure = error;
+        this._listenerReady = Promise.resolve(null);
+        const rejected = Promise.reject(error);
+        rejected.catch(() => {});
+        return rejected;
+      }
       if (!registration || typeof registration.then !== "function") {
         this._unlisten = registration;
       }
@@ -104,51 +119,70 @@
           this._unlisten = unlisten;
           return unlisten;
         },
-        () => null,
+        (reason) => {
+          const error = normalizeError(reason);
+          this._started = false;
+          this._unlisten = null;
+          this._listenerFailure = error;
+          this._listenerReady = Promise.resolve(null);
+          throw error;
+        },
       );
+      this._listenerReady.catch(() => {});
       return this._listenerReady;
     }
 
     restore() {
       if (this._restorePromise) return this._restorePromise;
-      this._restoring = true;
-      this.start();
-
-      this._restorePromise = this._restore().then(async () => {
-        while (this._pendingOpenedPaths.length > 0) {
-          const paths = this._pendingOpenedPaths.splice(0);
-          await this.openPaths(paths);
-        }
-        return this.session;
-      }).finally(() => {
-        this._restoring = false;
-      });
+      if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
+      this._restoreState = "restoring";
+      this._restorePromise = this._restore();
       return this._restorePromise;
     }
 
     async _restore() {
-      await this._listenerReady;
+      const earlierListenerFailure = this._listenerFailure;
+      this._listenerFailure = null;
+      try {
+        await this.start();
+      } catch (reason) {
+        if (this._listenerFailure === reason) this._listenerFailure = null;
+        await this._showRecoveryError(reason, { phase: "file-open-listener" });
+      }
+      if (earlierListenerFailure) {
+        await this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
+      }
+
       let rawManifest;
       try {
         rawManifest = await this.io.loadRecoveryManifest();
       } catch (reason) {
         await this._showRecoveryError(reason, { phase: "manifest" });
-        this._createFreshSession();
-        return;
+        this._assignEmptySession();
+        return this._finishRestore();
       }
 
       if (rawManifest === null) {
-        const imported = await this.importLegacyDraft();
-        if (!imported) this._createFreshSession();
-        return;
+        await this.importLegacyDraft();
+        if (!this.session) this._assignEmptySession();
+      } else {
+        try {
+          await this.restoreManifest(rawManifest);
+        } catch (reason) {
+          await this._showRecoveryError(reason, { phase: "manifest" });
+          this._assignEmptySession();
+        }
       }
+      return this._finishRestore();
+    }
 
-      try {
-        await this.restoreManifest(rawManifest);
-      } catch (reason) {
-        await this._showRecoveryError(reason, { phase: "manifest" });
+    async _finishRestore() {
+      await this._drainPendingOpens();
+      if (!this._disposed && (!this.session || this.session.documents.size === 0)) {
         this._createFreshSession();
       }
+      if (!this._disposed) this._restoreState = "restored";
+      return this.session;
     }
 
     async restoreManifest(rawManifest) {
@@ -242,70 +276,92 @@
     }
 
     async importLegacyDraft() {
-      let rawDraft;
+      const previousSession = this.session;
+      let document = null;
       try {
-        rawDraft = this.legacyStorage.getItem(LEGACY_DRAFT_KEY);
-      } catch (_) {
-        return null;
-      }
-      if (!rawDraft) return null;
+        const rawDraft = this.legacyStorage.getItem(LEGACY_DRAFT_KEY);
+        if (!rawDraft) return null;
+        const draft = JSON.parse(rawDraft);
+        if (!draft || typeof draft !== "object" || Array.isArray(draft)
+            || typeof draft.text !== "string" || !draft.text.trim()) {
+          throw new TypeError("invalid legacy draft");
+        }
 
-      let draft;
-      try {
-        draft = JSON.parse(rawDraft);
-      } catch (_) {
-        return null;
-      }
-      if (!draft || typeof draft !== "object" || Array.isArray(draft)
-          || typeof draft.text !== "string" || !draft.text.trim()) {
-        return null;
-      }
-
-      const savedContentSha256 = await this.hashText("");
-      const document = new DocumentModel({
-        id: this.idFactory(),
-        displayName: typeof draft.name === "string" && draft.name.length > 0 ? draft.name : "untitled.md",
-        path: null,
-        canonicalPath: null,
-        content: draft.text,
-        editRevision: 1,
-        persistedRevision: -1,
-        snapshotRevision: 0,
-        savedContentSha256,
-        expectedDiskSha256: null,
-        fileStatus: "normal",
-        dirty: true,
-        recoveryStatus: "pending",
-      });
-      this._ensureSession().add(document);
-      this._renderSession();
-      this._renderDocument(document);
-
-      try {
+        const savedContentSha256 = await this.hashText("");
+        document = new DocumentModel({
+          id: this.idFactory(),
+          displayName: typeof draft.name === "string" && draft.name.length > 0 ? draft.name : "untitled.md",
+          path: null,
+          canonicalPath: null,
+          content: draft.text,
+          editRevision: 1,
+          persistedRevision: -1,
+          snapshotRevision: 0,
+          savedContentSha256,
+          expectedDiskSha256: null,
+          fileStatus: "normal",
+          dirty: true,
+          recoveryStatus: "pending",
+        });
+        const migrationSession = new SessionModel({ idFactory: this.idFactory });
+        migrationSession.add(document);
+        this.session = migrationSession;
         this.scheduler.changed(document.id, document.editRevision);
         await this.scheduler.flush(document.id, document.editRevision);
-        await this.persistManifest();
+        await this._persistManifestNow();
         this.legacyStorage.removeItem(LEGACY_DRAFT_KEY);
+        this._renderSession();
+        this._renderDocument(document);
+        return document;
       } catch (reason) {
+        if (document && typeof this.scheduler.forget === "function") {
+          try {
+            this.scheduler.forget(document.id);
+          } catch (_) {
+            // Rollback remains best-effort after the migration failure.
+          }
+        }
+        this.session = previousSession;
         await this._showRecoveryError(reason, {
           phase: "legacy-migration",
-          documentId: document.id,
-          displayName: document.displayName,
-          snapshotRevision: document.snapshotRevision,
+          documentId: document && document.id,
+          displayName: document && document.displayName,
+          snapshotRevision: document && document.snapshotRevision,
         });
+        return null;
       }
-      return document;
     }
 
-    async openPaths(paths) {
+    openPaths(paths) {
       if (!Array.isArray(paths)) throw new TypeError("paths must be an array");
+      if (this._disposed) return Promise.resolve(this._disposedOpenResult(paths));
+      if (this._restoreState !== "restored") {
+        return new Promise((resolve, reject) => {
+          this._pendingOpenRequests.push({ paths: [...paths], resolve, reject });
+        });
+      }
+
+      const opening = this._openChain.catch(() => {}).then(() => this._openPathsNow(paths));
+      this._openChain = opening;
+      return opening;
+    }
+
+    async _openPathsNow(paths) {
       const opened = [];
       const openedIds = new Set();
       const failed = [];
 
       for (const path of paths) {
+        if (this._disposed) {
+          failed.push({ path, error: new Error("session controller is disposed") });
+          continue;
+        }
         try {
           const result = await this.io.readDocument(path);
+          if (this._disposed) {
+            failed.push({ path, error: new Error("session controller is disposed") });
+            continue;
+          }
           const document = this.openReadResult(result);
           if (!openedIds.has(document.id)) {
             openedIds.add(document.id);
@@ -314,16 +370,32 @@
         } catch (reason) {
           const error = normalizeError(reason);
           failed.push({ path, error });
-          if (typeof this.dialogs.showOpenError === "function") {
-            try {
-              this.dialogs.showOpenError(path, error);
-            } catch (_) {
-              // Dialog failures must not block the remaining selected files.
-            }
-          }
+          await this._showOpenError(path, error);
         }
       }
       return { opened, failed };
+    }
+
+    async _drainPendingOpens() {
+      while (this._pendingOpenRequests.length > 0) {
+        const request = this._pendingOpenRequests.shift();
+        if (this._disposed) {
+          request.resolve(this._disposedOpenResult(request.paths));
+          continue;
+        }
+        try {
+          request.resolve(await this._openPathsNow(request.paths));
+        } catch (reason) {
+          request.reject(reason);
+        }
+      }
+    }
+
+    _disposedOpenResult(paths) {
+      return {
+        opened: [],
+        failed: paths.map((path) => ({ path, error: new Error("session controller is disposed") })),
+      };
     }
 
     openReadResult(result) {
@@ -399,6 +471,13 @@
     }
 
     persistManifest() {
+      if (this._restoreState === "restoring" && this._restorePromise) {
+        return this._restorePromise.then(() => this._persistManifestNow());
+      }
+      return this._persistManifestNow();
+    }
+
+    _persistManifestNow() {
       if (!this.session) return Promise.reject(new Error("session has not been created"));
       const value = this.session.toManifest();
       const generation = value.generation;
@@ -418,6 +497,12 @@
     _createFreshSession() {
       this.session = new SessionModel({ idFactory: this.idFactory });
       return this.createUntitled();
+    }
+
+    _assignEmptySession() {
+      this.session = new SessionModel({ idFactory: this.idFactory });
+      this._renderSession();
+      return this.session;
     }
 
     _renderSession() {
@@ -446,21 +531,59 @@
         recoveryDirectory,
       };
       if (typeof this.view.showRecoveryError === "function") {
-        await this.view.showRecoveryError(details);
+        try {
+          await Promise.resolve(this.view.showRecoveryError(details));
+        } catch (_) {
+          // Recovery presentation is best-effort and cannot block restoration.
+        }
       }
       return details;
     }
 
+    async _showOpenError(path, error) {
+      if (typeof this.dialogs.showOpenError !== "function") return;
+      try {
+        await Promise.resolve(this.dialogs.showOpenError(path, error));
+      } catch (_) {
+        // Dialog failures must not block the remaining selected files.
+      }
+    }
+
     _handleFileOpened(event) {
       const path = typeof event === "string" ? event : event && event.payload;
-      if (typeof path !== "string" || path.length === 0) return Promise.resolve();
-      if (this._restoring || !this.session) {
-        this._pendingOpenedPaths.push(path);
-        return Promise.resolve();
+      if (this._disposed || typeof path !== "string" || path.length === 0) return Promise.resolve();
+      return this.openPaths([path]);
+    }
+
+    dispose() {
+      if (this._disposePromise) return this._disposePromise;
+      this._disposed = true;
+      this._restoreState = "disposed";
+      this._loadQueue = [];
+      this._loadPriority = [];
+      while (this._pendingOpenRequests.length > 0) {
+        const request = this._pendingOpenRequests.shift();
+        request.resolve(this._disposedOpenResult(request.paths));
       }
 
-      this._eventOpenChain = this._eventOpenChain.then(() => this.openPaths([path]));
-      return this._eventOpenChain;
+      this._disposePromise = (async () => {
+        try {
+          await this._listenerReady;
+        } catch (_) {
+          // A failed listener has nothing to unsubscribe.
+        }
+        const unlisten = this._unlisten;
+        this._unlisten = null;
+        this._started = false;
+        this._listenerReady = Promise.resolve(null);
+        if (typeof unlisten === "function") await Promise.resolve(unlisten());
+        await this._openChain.catch(() => {});
+      })();
+      return this._disposePromise;
+    }
+
+    destroy() {
+      return this.dispose();
     }
   }
 
