@@ -1668,6 +1668,23 @@ test("persistManifest queues behind an unawaited mutation and writes its resulti
   assert.equal(written.activeDocumentId, created.id);
 });
 
+test("selection-only manifest persistence does not re-snapshot or flush durable documents", async () => {
+  const fixture = makeDependencies();
+  const controller = new SessionController(fixture.dependencies);
+  const first = controller.createUntitled();
+  const second = controller.createUntitled();
+  first.persistedRevision = first.snapshotRevision;
+  second.persistedRevision = second.snapshotRevision;
+  fixture.calls.scheduler.length = 0;
+  fixture.calls.manifestWrites.length = 0;
+
+  await controller.persistManifest();
+
+  assert.deepEqual(fixture.calls.scheduler, []);
+  assert.equal(fixture.calls.manifestWrites.length, 1);
+  assert.equal(JSON.parse(fixture.calls.manifestWrites[0][1]).activeDocumentId, second.id);
+});
+
 test("idle post-restore document creation APIs return models synchronously", async () => {
   const fixture = makeDependencies();
   const controller = new SessionController(fixture.dependencies);

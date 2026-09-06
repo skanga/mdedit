@@ -466,8 +466,12 @@ test("editors stay independently mounted while activation only changes visibilit
   assert.equal(one.value, "locally edited");
   assert.equal(view.editorFor("one"), one);
   assert.equal(view.editorFor("two"), two);
-  assert.equal(one.parentNode.hidden, true);
-  assert.equal(two.parentNode.hidden, false);
+  assert.equal(one.parentNode.classList.contains("is-inactive"), true);
+  assert.equal(one.parentNode.getAttribute("aria-hidden"), "true");
+  assert.equal(one.getAttribute("tabindex"), "-1");
+  assert.equal(two.parentNode.classList.contains("is-inactive"), false);
+  assert.equal(two.parentNode.getAttribute("aria-hidden"), "false");
+  assert.equal(two.getAttribute("tabindex"), "0");
   const firstTab = find(elements.tabList.children[0], (el) => el.getAttribute("role") === "tab");
   const secondTab = find(elements.tabList.children[1], (el) => el.getAttribute("role") === "tab");
   assert.equal(firstTab.getAttribute("aria-selected"), "false");
@@ -478,13 +482,51 @@ test("editors stay independently mounted while activation only changes visibilit
   assert.equal(two.getAttribute("data-document-id"), "two");
 });
 
+test("selection-only tab renders update only the outgoing and incoming controls", () => {
+  const { elements, view } = makeFixture();
+  const documents = [doc("one"), doc("two"), doc("three")];
+  view.renderTabs(documents, "one");
+  const names = elements.tabList.children.map((shell) => (
+    find(shell, (element) => element.classList.contains("document-tab-name"))
+  ));
+  const writes = names.map((name) => name.textContentWrites);
+
+  view.renderTabs(documents, "two");
+
+  assert.deepEqual(names.map((name) => name.textContentWrites), writes);
+  const firstTab = find(elements.tabList.children[0], (element) => element.getAttribute("role") === "tab");
+  const secondTab = find(elements.tabList.children[1], (element) => element.getAttribute("role") === "tab");
+  assert.equal(firstTab.getAttribute("aria-selected"), "false");
+  assert.equal(secondTab.getAttribute("aria-selected"), "true");
+});
+
+test("ensureEditor synchronizes genuine model changes without rereading unchanged textarea content", () => {
+  const { view } = makeFixture();
+  const editor = view.ensureEditor(doc("one", { content: "first" }));
+  let storedValue = editor.value;
+  let reads = 0;
+  Object.defineProperty(editor, "value", {
+    configurable: true,
+    get() { reads += 1; return storedValue; },
+    set(value) { storedValue = value; },
+  });
+
+  view.ensureEditor(doc("one", { content: "first" }));
+  assert.equal(reads, 0);
+  view.captureWorkspace("one");
+  assert.equal(reads, 0);
+  view.ensureEditor(doc("one", { content: "replaced" }));
+  assert.equal(reads, 0);
+  assert.equal(storedValue, "replaced");
+});
+
 test("managed editors hide the legacy bootstrap surface and lifecycle restores it alone", () => {
   const { elements, legacy, view } = makeFixture({}, { legacy: true });
   assert.equal(legacy.surface.hidden, false);
   const first = view.ensureEditor(doc("one"));
   view.activateEditor("one");
   assert.equal(legacy.surface.hidden, true);
-  assert.equal(first.parentNode.hidden, false);
+  assert.equal(first.parentNode.classList.contains("is-inactive"), false);
 
   assert.equal(view.removeEditor("one"), true);
   assert.equal(legacy.surface.hidden, false);
@@ -1124,10 +1166,15 @@ test("template provides the accessible tab strip, editor host, and dialog contra
   ]) assert.match(template, new RegExp(`id="${id}"`));
   assert.match(template, /#document-tabs-wrap\s*\{[^}]*height:\s*36px/s);
   assert.match(template, /\.document-tab-close\s*\{[^}]*min-width:\s*32px[^}]*min-height:\s*32px/s);
-  assert.match(template, /\.editor-surface\[hidden\]\s*\{\s*display:\s*none/);
+  assert.match(template, /#editor-surfaces\s*\{[^}]*position:\s*relative/);
+  assert.match(template, /\.editor-surface\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/);
+  assert.match(template, /\.editor-surface\s*\{[^}]*z-index:\s*1/);
+  assert.match(template, /\.editor-surface\.is-inactive\s*\{[^}]*z-index:\s*0[^}]*pointer-events:\s*none/);
   assert.match(template, /<span id="status" role="status" aria-live="polite"><\/span>/);
   assert.match(template, /<input type="file" id="file-input"[^>]*\bmultiple\b/);
   assert.match(template, /function shortcutFocusOptions\(event\)[\s\S]*focusEditor: isActiveEditorEvent\(event\)[\s\S]*preserveTabFocus: tabFocused/);
+  assert.match(template, /function scheduleActiveDocumentStats\(documentId, content\)[\s\S]*requestAnimationFrame\(\(\) => requestAnimationFrame\(\(\) =>/);
+  assert.match(template, /function syncActiveSurface\(\)[\s\S]*scheduleActiveDocumentStats\(active\.id, active\.content\)/);
   assert.match(template, /\$\("editor-surfaces"\)\.addEventListener\("keydown", \(e\) => \{[\s\S]*const command = keyboardCommand\(e\);[\s\S]*e\.stopPropagation\(\);[\s\S]*if \(e\.key !== "Tab"/);
   assert.match(template, /const items = Array\.from\(\(e\.dataTransfer && e\.dataTransfer\.items\)[\s\S]*for \(const item of items\)[\s\S]*files\.push\(file\)[\s\S]*await openBrowserFiles\(files, handles\)/);
   assert.match(template, /else \{\s*for \(const file of \(e\.dataTransfer && e\.dataTransfer\.files\) \|\| \[\]\)/);

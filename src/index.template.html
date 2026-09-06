@@ -354,8 +354,21 @@
     flex: 1;
     display: flex;
   }
-  .editor-surface { min-width: 0; }
-  .editor-surface[hidden] { display: none !important; }
+  #editor-surfaces {
+    position: relative;
+    min-width: 0;
+  }
+  .editor-surface {
+    position: absolute;
+    inset: 0;
+    min-width: 0;
+    contain: layout paint style;
+    z-index: 1;
+  }
+  .editor-surface.is-inactive {
+    z-index: 0;
+    pointer-events: none;
+  }
   #editor, .document-editor {
     flex: 1;
     width: 100%;
@@ -1460,6 +1473,16 @@
     $("stat-lines").textContent = lines + " line" + (lines === 1 ? "" : "s");
   }
 
+  let activeStatsToken = 0;
+  function scheduleActiveDocumentStats(documentId, content) {
+    const token = ++activeStatsToken;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const active = controller && controller.activeDocument();
+      if (token !== activeStatsToken || !active || active.id !== documentId || active.content !== content) return;
+      updateStats(content);
+    }));
+  }
+
   function setStatus(msg, sticky, documentId) {
     const id = documentId || (controller && controller.activeDocument() && controller.activeDocument().id);
     if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: sticky ? "writing" : "message", message: msg });
@@ -1538,8 +1561,12 @@
   async function openPicker() {
     if (nativeApp) {
       const paths = await nativeApp.pickFiles();
-      if (paths.length) await controller.openPaths(paths);
+      const result = paths.length ? await controller.openPaths(paths) : null;
       syncActiveSurface();
+      if (result && result.failed.length) {
+        const message = `Opened ${result.opened.length} files; Failed: ${result.failed.map(({ path }) => path).join(", ")}`;
+        requestAnimationFrame(() => requestAnimationFrame(() => setStatus(message)));
+      }
       return;
     }
     if (window.showOpenFilePicker) {
@@ -1596,7 +1623,7 @@
         if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
         return result;
       } catch (e) {
-        setStatus("Couldn't save: " + e.message, false, capture.documentId);
+        setStatus("Couldn't save " + capture.displayName + ": " + e.message, false, capture.documentId);
         return null;
       }
     }
@@ -1916,8 +1943,9 @@
   async function runTabCommand(command, event) {
     const active = controller && controller.activeDocument();
     if (!active) return;
-    if (command === "next-tab") controller.activateAdjacentDocument(1, shortcutFocusOptions(event));
-    else if (command === "previous-tab") controller.activateAdjacentDocument(-1, shortcutFocusOptions(event));
+    const focusOptions = shortcutFocusOptions(event);
+    if (command === "next-tab") controller.activateAdjacentDocument(1, focusOptions);
+    else if (command === "previous-tab") controller.activateAdjacentDocument(-1, focusOptions);
     else if (command === "move-tab-left") controller.moveActiveDocument(-1);
     else if (command === "move-tab-right") controller.moveActiveDocument(1);
     else if (command === "close-tab") {
@@ -1925,6 +1953,9 @@
       if (result && result.closed) browserFileHandles.delete(active.id);
     }
     syncActiveSurface();
+    if (command === "close-tab" && focusOptions.preserveTabFocus) {
+      requestAnimationFrame(() => workspaceView.focusActiveTab());
+    }
   }
 
   function replaceRange(surface, start, end, text) {
@@ -2511,7 +2542,7 @@
       recoveryStatus: "failed",
       message: persistentRecoveryWarning,
     });
-    updateStats(active.content);
+    scheduleActiveDocumentStats(active.id, active.content);
     return active;
   }
 
@@ -2630,6 +2661,8 @@
         return {
           async commit(_sameCapture, isCurrent) {
             if (!isCurrent()) return null;
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            if (!isCurrent()) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
             mermaidPending = render(capture.content, isCurrent);
             await mermaidPending;
@@ -2735,6 +2768,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
       if (paths.length) pendingOpen = controller.openPaths(paths, { replaceStartupPlaceholder: true });
     }
     await controller.restore();
+    if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.restored = true;
     if (pendingOpen) await pendingOpen;
     let active = controller.activeDocument();
     if (active && !active.canonicalPath && !active.content && !active.dirty && controller.session.documents.size === 1) {

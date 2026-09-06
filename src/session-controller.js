@@ -610,6 +610,7 @@
 
         document.loadStatus = "loaded";
         session.documents.set(id, document);
+        if (typeof this.view.ensureEditor === "function") this.view.ensureEditor(document);
         if (typeof this.scheduler.markPersisted === "function") {
           this.scheduler.markPersisted(id, document.snapshotRevision);
         }
@@ -2482,8 +2483,10 @@
             document,
             documentId: tab.documentId,
             snapshotRevision: tab.snapshotRevision,
+            needsSnapshot: document instanceof DocumentModel
+              && document.persistedRevision < tab.snapshotRevision,
           };
-          if (document instanceof DocumentModel) {
+          if (capture.needsSnapshot) {
             barrier.snapshots.set(tab.documentId, {
               revision: tab.snapshotRevision,
               json: JSON.stringify(document.toSnapshot()),
@@ -2511,7 +2514,7 @@
             }
             const controlledFlushes = [];
             for (const capture of capturedDocuments) {
-              if (!(capture.document instanceof DocumentModel)) continue;
+              if (!capture.needsSnapshot) continue;
               this.scheduler.changed(capture.documentId, capture.snapshotRevision);
               controlledFlushes.push({
                 capture,
@@ -2636,10 +2639,7 @@
         this.view.announceActiveDocument(document, this.session);
       }
       if (document instanceof DocumentModel && typeof this.view.ensureEditor === "function") {
-        const editor = this.view.ensureEditor(document);
-        if (editor && typeof editor.value === "string" && editor.value !== document.content) {
-          editor.value = document.content;
-        }
+        this.view.ensureEditor(document);
       }
       if (typeof this.view.activateEditor === "function") this.view.activateEditor(id);
       this._renderDocumentView(document);
@@ -2650,23 +2650,27 @@
           this.view.applyWorkspace(id, document.workspace);
         }
         if (focusEditor && typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
-      });
-      if (persist && this._restoreState === "restored") {
-        this._persistManifestNow().catch((reason) => {
-          if (!this.session || this.session.documents.get(id) !== document) return;
-          this._showRecoveryError(reason, {
-            phase: "manifest-selection",
-            documentId: id,
-            displayName: document.displayName,
-            snapshotRevision: document.snapshotRevision,
+        this.requestAnimationFrame(() => {
+          if (this._disposed || viewToken !== this._viewToken || !this.session
+              || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
+          this.renderDocument(id).catch((reason) => {
+            if (!this.session || this.session.documents.get(id) !== document) return;
+            this._setDocumentStatus(id, {
+              status: "failed",
+              message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+            });
           });
-        });
-      }
-      this.renderDocument(id).catch((reason) => {
-        if (!this.session || this.session.documents.get(id) !== document) return;
-        this._setDocumentStatus(id, {
-          status: "failed",
-          message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+          if (persist && this._restoreState === "restored") {
+            this._persistManifestNow().catch((reason) => {
+              if (!this.session || this.session.documents.get(id) !== document) return;
+              this._showRecoveryError(reason, {
+                phase: "manifest-selection",
+                documentId: id,
+                displayName: document.displayName,
+                snapshotRevision: document.snapshotRevision,
+              });
+            });
+          }
         });
       });
     }

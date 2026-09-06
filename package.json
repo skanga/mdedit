@@ -5,9 +5,12 @@
     "build:web": "./build.sh",
     "build:desktop": "./tools/build-desktop.sh",
     "tauri": "tauri",
-    "test": "node --test tools/test-document-model.js tools/test-native-bridge.js tools/test-project-identity.js tools/test-recovery-scheduler.js tools/test-session-controller.js tools/test-session-model.js tools/test-workspace-view.js"
+    "test": "node --test tools/test-*.js",
+    "test:browser": "playwright test tests/browser/tabs.spec.js",
+    "test:performance": "playwright test tests/browser/performance.spec.js --workers=1"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@tauri-apps/cli": "^2.11.4"
   }
 }

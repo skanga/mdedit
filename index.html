@@ -354,8 +354,21 @@
     flex: 1;
     display: flex;
   }
-  .editor-surface { min-width: 0; }
-  .editor-surface[hidden] { display: none !important; }
+  #editor-surfaces {
+    position: relative;
+    min-width: 0;
+  }
+  .editor-surface {
+    position: absolute;
+    inset: 0;
+    min-width: 0;
+    contain: layout paint style;
+    z-index: 1;
+  }
+  .editor-surface.is-inactive {
+    z-index: 0;
+    pointer-events: none;
+  }
   #editor, .document-editor {
     flex: 1;
     width: 100%;
@@ -6817,6 +6830,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
         document.loadStatus = "loaded";
         session.documents.set(id, document);
+        if (typeof this.view.ensureEditor === "function") this.view.ensureEditor(document);
         if (typeof this.scheduler.markPersisted === "function") {
           this.scheduler.markPersisted(id, document.snapshotRevision);
         }
@@ -8689,8 +8703,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
             document,
             documentId: tab.documentId,
             snapshotRevision: tab.snapshotRevision,
+            needsSnapshot: document instanceof DocumentModel
+              && document.persistedRevision < tab.snapshotRevision,
           };
-          if (document instanceof DocumentModel) {
+          if (capture.needsSnapshot) {
             barrier.snapshots.set(tab.documentId, {
               revision: tab.snapshotRevision,
               json: JSON.stringify(document.toSnapshot()),
@@ -8718,7 +8734,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
             }
             const controlledFlushes = [];
             for (const capture of capturedDocuments) {
-              if (!(capture.document instanceof DocumentModel)) continue;
+              if (!capture.needsSnapshot) continue;
               this.scheduler.changed(capture.documentId, capture.snapshotRevision);
               controlledFlushes.push({
                 capture,
@@ -8843,10 +8859,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         this.view.announceActiveDocument(document, this.session);
       }
       if (document instanceof DocumentModel && typeof this.view.ensureEditor === "function") {
-        const editor = this.view.ensureEditor(document);
-        if (editor && typeof editor.value === "string" && editor.value !== document.content) {
-          editor.value = document.content;
-        }
+        this.view.ensureEditor(document);
       }
       if (typeof this.view.activateEditor === "function") this.view.activateEditor(id);
       this._renderDocumentView(document);
@@ -8857,23 +8870,27 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
           this.view.applyWorkspace(id, document.workspace);
         }
         if (focusEditor && typeof this.view.focusActiveEditor === "function") this.view.focusActiveEditor();
-      });
-      if (persist && this._restoreState === "restored") {
-        this._persistManifestNow().catch((reason) => {
-          if (!this.session || this.session.documents.get(id) !== document) return;
-          this._showRecoveryError(reason, {
-            phase: "manifest-selection",
-            documentId: id,
-            displayName: document.displayName,
-            snapshotRevision: document.snapshotRevision,
+        this.requestAnimationFrame(() => {
+          if (this._disposed || viewToken !== this._viewToken || !this.session
+              || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
+          this.renderDocument(id).catch((reason) => {
+            if (!this.session || this.session.documents.get(id) !== document) return;
+            this._setDocumentStatus(id, {
+              status: "failed",
+              message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+            });
           });
-        });
-      }
-      this.renderDocument(id).catch((reason) => {
-        if (!this.session || this.session.documents.get(id) !== document) return;
-        this._setDocumentStatus(id, {
-          status: "failed",
-          message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+          if (persist && this._restoreState === "restored") {
+            this._persistManifestNow().catch((reason) => {
+              if (!this.session || this.session.documents.get(id) !== document) return;
+              this._showRecoveryError(reason, {
+                phase: "manifest-selection",
+                documentId: id,
+                displayName: document.displayName,
+                snapshotRevision: document.snapshotRevision,
+              });
+            });
+          }
         });
       });
     }
@@ -9304,9 +9321,11 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       }));
       this._tabOrder = [];
       this._activeDocumentId = null;
+      this._activeEditorId = null;
       this._dialogState = null;
       this._disposed = false;
       this._announcementToken = 0;
+      this._scrollTimer = null;
       this.isMac = Boolean(options.isMac);
 
       this._handleTabClick = (event) => this._onTabClick(event);
@@ -9332,6 +9351,79 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         activeId = documents.activeDocumentId;
       }
       if (!Array.isArray(ordered)) ordered = [];
+
+      const nextOrder = ordered.map((document) => String(document.id));
+      const canUpdate = nextOrder.length === this._tabOrder.length
+        && nextOrder.every((id, index) => id === this._tabOrder[index] && this._tabs.has(id));
+      if (canUpdate) {
+        const nextActiveId = activeId === undefined || activeId === null ? null : String(activeId);
+        const descriptors = ordered.map((document, index) => ({
+          document,
+          descriptor: tabDescriptor(document, { activeId: nextActiveId, index, size: ordered.length }),
+        }));
+        const metadataUnchanged = descriptors.every(({ document, descriptor }) => {
+          const record = this._tabs.get(descriptor.documentId);
+          return record.displayName === descriptor.displayName
+            && record.fileStatus === (document.fileStatus || "normal")
+            && record.baseStatusText === descriptor.statusText
+            && record.dirty === Boolean(document.dirty)
+            && record.conflict === (descriptor.statusKind === "conflict");
+        });
+        if (metadataUnchanged) {
+          for (const candidate of new Set([this._activeDocumentId, nextActiveId])) {
+            if (candidate === null) continue;
+            const record = this._tabs.get(candidate);
+            if (!record) continue;
+            const selected = candidate === nextActiveId;
+            record.tab.setAttribute("aria-selected", String(selected));
+            record.tab.setAttribute("tabindex", selected ? "0" : "-1");
+            record.shell.classList.toggle("is-selected", selected);
+          }
+        } else {
+          descriptors.forEach(({ document, descriptor }) => {
+            const record = this._tabs.get(descriptor.documentId);
+            record.displayName = descriptor.displayName;
+            record.fileStatus = document.fileStatus || "normal";
+            record.baseStatusText = descriptor.statusText;
+            record.dirty = Boolean(document.dirty);
+            record.conflict = descriptor.statusKind === "conflict";
+            record.name.textContent = descriptor.displayName;
+            record.close.setAttribute("aria-label", descriptor.closeLabel);
+            record.tab.setAttribute("aria-selected", String(descriptor.selected));
+            record.tab.setAttribute("aria-posinset", String(descriptor.position));
+            record.tab.setAttribute("aria-setsize", String(descriptor.setSize));
+            record.tab.setAttribute("tabindex", descriptor.selected ? "0" : "-1");
+            record.shell.classList.toggle("is-selected", descriptor.selected);
+            this._applyTabStatus(record, this._runtimeStatuses.get(descriptor.documentId));
+          });
+        }
+        this._activeDocumentId = nextActiveId;
+        let focusedRecord = focused && this._tabs.get(focused.documentId);
+        if (focusedRecord) {
+          const control = focused.action === "close" ? focusedRecord.close : focusedRecord.tab;
+          if (typeof control.focus === "function") control.focus();
+        } else if (focused) {
+          focusedRecord = this._tabs.get(nextActiveId);
+          const fallback = focusedRecord ? focusedRecord.tab : (this.addButton || this.tabList);
+          if (fallback && typeof fallback.focus === "function") fallback.focus();
+        }
+        const scrollRecord = focusedRecord || this._tabs.get(nextActiveId);
+        if (scrollRecord && typeof scrollRecord.tab.scrollIntoView === "function") {
+          const browserWindow = this.document.defaultView;
+          if (focusedRecord || !browserWindow || typeof browserWindow.setTimeout !== "function") {
+            scrollRecord.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+          } else {
+            if (this._scrollTimer !== null) browserWindow.clearTimeout(this._scrollTimer);
+            this._scrollTimer = browserWindow.setTimeout(() => {
+              this._scrollTimer = null;
+              if (!this._disposed && this._tabs.get(nextActiveId) === scrollRecord) {
+                scrollRecord.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+              }
+            }, 150);
+          }
+        }
+        return nextOrder.length;
+      }
 
       const fragment = [];
       const tabs = new Map();
@@ -9421,15 +9513,22 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!document || typeof document !== "object") throw new TypeError("document is required");
       const documentId = String(document.id);
       const existing = this._editors.get(documentId);
-      if (existing) return existing.editor;
+      const content = typeof document.content === "string" ? document.content : "";
+      if (existing) {
+        if (existing.content !== content) {
+          existing.editor.value = content;
+          existing.content = content;
+        }
+        return existing.editor;
+      }
 
       const descriptor = tabDescriptor(document);
       const surface = this.document.createElement("div");
-      surface.className = "editor-surface";
-      surface.hidden = true;
+      surface.className = "editor-surface is-inactive";
       surface.setAttribute("id", descriptor.panelId);
       surface.setAttribute("role", "tabpanel");
       surface.setAttribute("aria-labelledby", descriptor.tabId);
+      surface.setAttribute("aria-hidden", "true");
       surface.setAttribute("data-document-id", documentId);
 
       const editor = this.document.createElement("textarea");
@@ -9437,14 +9536,21 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       editor.setAttribute("id", `document-editor-${stableToken(documentId)}`);
       editor.setAttribute("data-document-id", documentId);
       editor.setAttribute("spellcheck", "false");
+      editor.setAttribute("tabindex", "-1");
       editor.setAttribute("placeholder", "Type markdown here, or drop a .md file anywhere…");
-      editor.value = typeof document.content === "string" ? document.content : "";
-      const onInput = (event) => this.onEditorInput(documentId, editor.value, event);
+      editor.value = content;
+      const record = { surface, editor, onInput: null, content };
+      const onInput = (event) => {
+        const nextContent = editor.value;
+        record.content = nextContent;
+        this.onEditorInput(documentId, nextContent, event);
+      };
+      record.onInput = onInput;
       editor.addEventListener("input", onInput);
 
       surface.appendChild(editor);
       this.editorSurfaces.appendChild(surface);
-      this._editors.set(documentId, { surface, editor, onInput });
+      this._editors.set(documentId, record);
       this._setLegacySurfacesHidden(true);
       return editor;
     }
@@ -9456,7 +9562,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       record.editor.removeEventListener("input", record.onInput);
       record.surface.remove();
       this._editors.delete(id);
-      if (this._activeDocumentId === id) this._activeDocumentId = null;
+      if (this._activeEditorId === id) this._activeEditorId = null;
       if (this._editors.size === 0) this._restoreLegacySurfaces();
       return true;
     }
@@ -9468,16 +9574,29 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
     activateEditor(documentId) {
       const id = documentId === undefined || documentId === null ? null : String(documentId);
-      let found = false;
-      for (const [candidate, record] of this._editors) {
-        const active = candidate === id;
-        record.surface.hidden = !active;
-        if (active) found = true;
+      const previousId = this._activeEditorId === null ? this._activeDocumentId : this._activeEditorId;
+      const previousEditor = previousId === null ? null : this._editors.get(previousId);
+      const nextEditor = id === null ? null : this._editors.get(id);
+      const found = Boolean(nextEditor);
+      if (previousEditor && previousId !== id) {
+        previousEditor.surface.classList.add("is-inactive");
+        previousEditor.surface.setAttribute("aria-hidden", "true");
+        previousEditor.editor.setAttribute("tabindex", "-1");
+      }
+      if (nextEditor) {
+        nextEditor.surface.classList.remove("is-inactive");
+        nextEditor.surface.setAttribute("aria-hidden", "false");
+        nextEditor.editor.setAttribute("tabindex", "0");
       }
       if (found) this._setLegacySurfacesHidden(true);
       else if (this._editors.size === 0) this._restoreLegacySurfaces();
+      this._activeEditorId = found ? id : null;
       this._activeDocumentId = found ? id : null;
-      for (const [candidate, record] of this._tabs) {
+
+      for (const candidate of new Set([previousId, found ? id : null])) {
+        if (candidate === null) continue;
+        const record = this._tabs.get(candidate);
+        if (!record) continue;
         const selected = found && candidate === id;
         record.shell.classList.toggle("is-selected", selected);
         record.tab.setAttribute("aria-selected", String(selected));
@@ -9489,7 +9608,14 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     captureWorkspace(documentId = this._activeDocumentId) {
       const shared = this.captureSharedWorkspace(documentId);
       const source = shared && typeof shared === "object" ? shared : {};
-      const captured = { ...source, ...captureEditorState(this.editorFor(documentId)) };
+      const record = this._editors.get(String(documentId));
+      const editor = record && record.editor;
+      const captured = { ...source, ...captureEditorState(editor ? {
+        value: record.content,
+        selectionStart: editor.selectionStart,
+        selectionEnd: editor.selectionEnd,
+        scrollTop: editor.scrollTop,
+      } : null) };
       if (source.find && typeof source.find === "object") captured.find = { ...source.find };
       return captured;
     }
@@ -9696,6 +9822,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (this.dialogActions) this.dialogActions.removeEventListener("click", this._handleDialogClick);
       if (this.dialogBackdrop) this.dialogBackdrop.removeEventListener("click", this._handleBackdropClick);
       this.document.removeEventListener("keydown", this._handleDocumentKeydown);
+      if (this._scrollTimer !== null && this.document.defaultView) {
+        this.document.defaultView.clearTimeout(this._scrollTimer);
+        this._scrollTimer = null;
+      }
       if (this._dialogState) this.closeDialog(null, { force: true });
       for (const record of this._editors.values()) {
         record.editor.removeEventListener("input", record.onInput);
@@ -10422,6 +10552,16 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     $("stat-lines").textContent = lines + " line" + (lines === 1 ? "" : "s");
   }
 
+  let activeStatsToken = 0;
+  function scheduleActiveDocumentStats(documentId, content) {
+    const token = ++activeStatsToken;
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const active = controller && controller.activeDocument();
+      if (token !== activeStatsToken || !active || active.id !== documentId || active.content !== content) return;
+      updateStats(content);
+    }));
+  }
+
   function setStatus(msg, sticky, documentId) {
     const id = documentId || (controller && controller.activeDocument() && controller.activeDocument().id);
     if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: sticky ? "writing" : "message", message: msg });
@@ -10500,8 +10640,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function openPicker() {
     if (nativeApp) {
       const paths = await nativeApp.pickFiles();
-      if (paths.length) await controller.openPaths(paths);
+      const result = paths.length ? await controller.openPaths(paths) : null;
       syncActiveSurface();
+      if (result && result.failed.length) {
+        const message = `Opened ${result.opened.length} files; Failed: ${result.failed.map(({ path }) => path).join(", ")}`;
+        requestAnimationFrame(() => requestAnimationFrame(() => setStatus(message)));
+      }
       return;
     }
     if (window.showOpenFilePicker) {
@@ -10558,7 +10702,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         if (result && result.saved) setStatus("Saved to " + document.displayName, false, document.id);
         return result;
       } catch (e) {
-        setStatus("Couldn't save: " + e.message, false, capture.documentId);
+        setStatus("Couldn't save " + capture.displayName + ": " + e.message, false, capture.documentId);
         return null;
       }
     }
@@ -10878,8 +11022,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function runTabCommand(command, event) {
     const active = controller && controller.activeDocument();
     if (!active) return;
-    if (command === "next-tab") controller.activateAdjacentDocument(1, shortcutFocusOptions(event));
-    else if (command === "previous-tab") controller.activateAdjacentDocument(-1, shortcutFocusOptions(event));
+    const focusOptions = shortcutFocusOptions(event);
+    if (command === "next-tab") controller.activateAdjacentDocument(1, focusOptions);
+    else if (command === "previous-tab") controller.activateAdjacentDocument(-1, focusOptions);
     else if (command === "move-tab-left") controller.moveActiveDocument(-1);
     else if (command === "move-tab-right") controller.moveActiveDocument(1);
     else if (command === "close-tab") {
@@ -10887,6 +11032,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       if (result && result.closed) browserFileHandles.delete(active.id);
     }
     syncActiveSurface();
+    if (command === "close-tab" && focusOptions.preserveTabFocus) {
+      requestAnimationFrame(() => workspaceView.focusActiveTab());
+    }
   }
 
   function replaceRange(surface, start, end, text) {
@@ -11473,7 +11621,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       recoveryStatus: "failed",
       message: persistentRecoveryWarning,
     });
-    updateStats(active.content);
+    scheduleActiveDocumentStats(active.id, active.content);
     return active;
   }
 
@@ -11592,6 +11740,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         return {
           async commit(_sameCapture, isCurrent) {
             if (!isCurrent()) return null;
+            await new Promise((resolve) => setTimeout(resolve, 150));
+            if (!isCurrent()) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
             mermaidPending = render(capture.content, isCurrent);
             await mermaidPending;
@@ -11697,6 +11847,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
       if (paths.length) pendingOpen = controller.openPaths(paths, { replaceStartupPlaceholder: true });
     }
     await controller.restore();
+    if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.restored = true;
     if (pendingOpen) await pendingOpen;
     let active = controller.activeDocument();
     if (active && !active.canonicalPath && !active.content && !active.dirty && controller.session.documents.size === 1) {

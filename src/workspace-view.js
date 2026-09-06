@@ -236,9 +236,11 @@
       }));
       this._tabOrder = [];
       this._activeDocumentId = null;
+      this._activeEditorId = null;
       this._dialogState = null;
       this._disposed = false;
       this._announcementToken = 0;
+      this._scrollTimer = null;
       this.isMac = Boolean(options.isMac);
 
       this._handleTabClick = (event) => this._onTabClick(event);
@@ -264,6 +266,79 @@
         activeId = documents.activeDocumentId;
       }
       if (!Array.isArray(ordered)) ordered = [];
+
+      const nextOrder = ordered.map((document) => String(document.id));
+      const canUpdate = nextOrder.length === this._tabOrder.length
+        && nextOrder.every((id, index) => id === this._tabOrder[index] && this._tabs.has(id));
+      if (canUpdate) {
+        const nextActiveId = activeId === undefined || activeId === null ? null : String(activeId);
+        const descriptors = ordered.map((document, index) => ({
+          document,
+          descriptor: tabDescriptor(document, { activeId: nextActiveId, index, size: ordered.length }),
+        }));
+        const metadataUnchanged = descriptors.every(({ document, descriptor }) => {
+          const record = this._tabs.get(descriptor.documentId);
+          return record.displayName === descriptor.displayName
+            && record.fileStatus === (document.fileStatus || "normal")
+            && record.baseStatusText === descriptor.statusText
+            && record.dirty === Boolean(document.dirty)
+            && record.conflict === (descriptor.statusKind === "conflict");
+        });
+        if (metadataUnchanged) {
+          for (const candidate of new Set([this._activeDocumentId, nextActiveId])) {
+            if (candidate === null) continue;
+            const record = this._tabs.get(candidate);
+            if (!record) continue;
+            const selected = candidate === nextActiveId;
+            record.tab.setAttribute("aria-selected", String(selected));
+            record.tab.setAttribute("tabindex", selected ? "0" : "-1");
+            record.shell.classList.toggle("is-selected", selected);
+          }
+        } else {
+          descriptors.forEach(({ document, descriptor }) => {
+            const record = this._tabs.get(descriptor.documentId);
+            record.displayName = descriptor.displayName;
+            record.fileStatus = document.fileStatus || "normal";
+            record.baseStatusText = descriptor.statusText;
+            record.dirty = Boolean(document.dirty);
+            record.conflict = descriptor.statusKind === "conflict";
+            record.name.textContent = descriptor.displayName;
+            record.close.setAttribute("aria-label", descriptor.closeLabel);
+            record.tab.setAttribute("aria-selected", String(descriptor.selected));
+            record.tab.setAttribute("aria-posinset", String(descriptor.position));
+            record.tab.setAttribute("aria-setsize", String(descriptor.setSize));
+            record.tab.setAttribute("tabindex", descriptor.selected ? "0" : "-1");
+            record.shell.classList.toggle("is-selected", descriptor.selected);
+            this._applyTabStatus(record, this._runtimeStatuses.get(descriptor.documentId));
+          });
+        }
+        this._activeDocumentId = nextActiveId;
+        let focusedRecord = focused && this._tabs.get(focused.documentId);
+        if (focusedRecord) {
+          const control = focused.action === "close" ? focusedRecord.close : focusedRecord.tab;
+          if (typeof control.focus === "function") control.focus();
+        } else if (focused) {
+          focusedRecord = this._tabs.get(nextActiveId);
+          const fallback = focusedRecord ? focusedRecord.tab : (this.addButton || this.tabList);
+          if (fallback && typeof fallback.focus === "function") fallback.focus();
+        }
+        const scrollRecord = focusedRecord || this._tabs.get(nextActiveId);
+        if (scrollRecord && typeof scrollRecord.tab.scrollIntoView === "function") {
+          const browserWindow = this.document.defaultView;
+          if (focusedRecord || !browserWindow || typeof browserWindow.setTimeout !== "function") {
+            scrollRecord.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+          } else {
+            if (this._scrollTimer !== null) browserWindow.clearTimeout(this._scrollTimer);
+            this._scrollTimer = browserWindow.setTimeout(() => {
+              this._scrollTimer = null;
+              if (!this._disposed && this._tabs.get(nextActiveId) === scrollRecord) {
+                scrollRecord.tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+              }
+            }, 150);
+          }
+        }
+        return nextOrder.length;
+      }
 
       const fragment = [];
       const tabs = new Map();
@@ -353,15 +428,22 @@
       if (!document || typeof document !== "object") throw new TypeError("document is required");
       const documentId = String(document.id);
       const existing = this._editors.get(documentId);
-      if (existing) return existing.editor;
+      const content = typeof document.content === "string" ? document.content : "";
+      if (existing) {
+        if (existing.content !== content) {
+          existing.editor.value = content;
+          existing.content = content;
+        }
+        return existing.editor;
+      }
 
       const descriptor = tabDescriptor(document);
       const surface = this.document.createElement("div");
-      surface.className = "editor-surface";
-      surface.hidden = true;
+      surface.className = "editor-surface is-inactive";
       surface.setAttribute("id", descriptor.panelId);
       surface.setAttribute("role", "tabpanel");
       surface.setAttribute("aria-labelledby", descriptor.tabId);
+      surface.setAttribute("aria-hidden", "true");
       surface.setAttribute("data-document-id", documentId);
 
       const editor = this.document.createElement("textarea");
@@ -369,14 +451,21 @@
       editor.setAttribute("id", `document-editor-${stableToken(documentId)}`);
       editor.setAttribute("data-document-id", documentId);
       editor.setAttribute("spellcheck", "false");
+      editor.setAttribute("tabindex", "-1");
       editor.setAttribute("placeholder", "Type markdown here, or drop a .md file anywhere…");
-      editor.value = typeof document.content === "string" ? document.content : "";
-      const onInput = (event) => this.onEditorInput(documentId, editor.value, event);
+      editor.value = content;
+      const record = { surface, editor, onInput: null, content };
+      const onInput = (event) => {
+        const nextContent = editor.value;
+        record.content = nextContent;
+        this.onEditorInput(documentId, nextContent, event);
+      };
+      record.onInput = onInput;
       editor.addEventListener("input", onInput);
 
       surface.appendChild(editor);
       this.editorSurfaces.appendChild(surface);
-      this._editors.set(documentId, { surface, editor, onInput });
+      this._editors.set(documentId, record);
       this._setLegacySurfacesHidden(true);
       return editor;
     }
@@ -388,7 +477,7 @@
       record.editor.removeEventListener("input", record.onInput);
       record.surface.remove();
       this._editors.delete(id);
-      if (this._activeDocumentId === id) this._activeDocumentId = null;
+      if (this._activeEditorId === id) this._activeEditorId = null;
       if (this._editors.size === 0) this._restoreLegacySurfaces();
       return true;
     }
@@ -400,16 +489,29 @@
 
     activateEditor(documentId) {
       const id = documentId === undefined || documentId === null ? null : String(documentId);
-      let found = false;
-      for (const [candidate, record] of this._editors) {
-        const active = candidate === id;
-        record.surface.hidden = !active;
-        if (active) found = true;
+      const previousId = this._activeEditorId === null ? this._activeDocumentId : this._activeEditorId;
+      const previousEditor = previousId === null ? null : this._editors.get(previousId);
+      const nextEditor = id === null ? null : this._editors.get(id);
+      const found = Boolean(nextEditor);
+      if (previousEditor && previousId !== id) {
+        previousEditor.surface.classList.add("is-inactive");
+        previousEditor.surface.setAttribute("aria-hidden", "true");
+        previousEditor.editor.setAttribute("tabindex", "-1");
+      }
+      if (nextEditor) {
+        nextEditor.surface.classList.remove("is-inactive");
+        nextEditor.surface.setAttribute("aria-hidden", "false");
+        nextEditor.editor.setAttribute("tabindex", "0");
       }
       if (found) this._setLegacySurfacesHidden(true);
       else if (this._editors.size === 0) this._restoreLegacySurfaces();
+      this._activeEditorId = found ? id : null;
       this._activeDocumentId = found ? id : null;
-      for (const [candidate, record] of this._tabs) {
+
+      for (const candidate of new Set([previousId, found ? id : null])) {
+        if (candidate === null) continue;
+        const record = this._tabs.get(candidate);
+        if (!record) continue;
         const selected = found && candidate === id;
         record.shell.classList.toggle("is-selected", selected);
         record.tab.setAttribute("aria-selected", String(selected));
@@ -421,7 +523,14 @@
     captureWorkspace(documentId = this._activeDocumentId) {
       const shared = this.captureSharedWorkspace(documentId);
       const source = shared && typeof shared === "object" ? shared : {};
-      const captured = { ...source, ...captureEditorState(this.editorFor(documentId)) };
+      const record = this._editors.get(String(documentId));
+      const editor = record && record.editor;
+      const captured = { ...source, ...captureEditorState(editor ? {
+        value: record.content,
+        selectionStart: editor.selectionStart,
+        selectionEnd: editor.selectionEnd,
+        scrollTop: editor.scrollTop,
+      } : null) };
       if (source.find && typeof source.find === "object") captured.find = { ...source.find };
       return captured;
     }
@@ -628,6 +737,10 @@
       if (this.dialogActions) this.dialogActions.removeEventListener("click", this._handleDialogClick);
       if (this.dialogBackdrop) this.dialogBackdrop.removeEventListener("click", this._handleBackdropClick);
       this.document.removeEventListener("keydown", this._handleDocumentKeydown);
+      if (this._scrollTimer !== null && this.document.defaultView) {
+        this.document.defaultView.clearTimeout(this._scrollTimer);
+        this._scrollTimer = null;
+      }
       if (this._dialogState) this.closeDialog(null, { force: true });
       for (const record of this._editors.values()) {
         record.editor.removeEventListener("input", record.onInput);
