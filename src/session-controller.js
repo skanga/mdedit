@@ -1633,7 +1633,14 @@
 
     _preparePreviewForActivation(document) {
       if (!(document instanceof DocumentModel)) return null;
-      return this._showCachedPreviewOrClear(this._createRenderCapture(document));
+      const capture = this._createRenderCapture(document);
+      if (document.workspace.viewMode === "edit") {
+        if (this._canCommitRender(capture) && typeof this.view.clearPreview === "function") {
+          this.view.clearPreview(capture);
+        }
+        return null;
+      }
+      return this._showCachedPreviewOrClear(capture);
     }
 
     async exportActive(format) {

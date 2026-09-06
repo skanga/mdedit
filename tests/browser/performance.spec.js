@@ -252,6 +252,7 @@ test("50 recovered 5 MiB documents activate within the p95 budget", async ({ pag
   expect(metrics.memory.peakObservedUsedBytes).toBeGreaterThan(0);
   expect(metrics.longTasks.supported).toBe(true);
   expect(metrics.preview.completionMs).toBeGreaterThan(0);
-  if (!metrics.preview.timedOut) expect(metrics.preview.textLength).toBeGreaterThanOrEqual(5 * 1024 * 1024);
+  expect(metrics.preview.timedOut).toBe(false);
+  expect(metrics.preview.textLength).toBeGreaterThanOrEqual(5 * 1024 * 1024);
   expect(metrics.p95).toBeLessThanOrEqual(100);
 });

@@ -13,22 +13,46 @@ test("tabs retain content, selection, view, and accessible state", async ({ page
   });
   const savedScrollTop = await activeEditor(page).evaluate((editor) => editor.scrollTop);
   expect(savedScrollTop).toBeGreaterThan(500);
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(page.locator("#preview")).toContainText("line 299 has selectable text");
+  await page.getByRole("button", { name: "Edit", exact: true }).click();
+  const firstId = await first.getAttribute("data-document-id");
+  await expect.poll(() => page.evaluate((documentId) => window.__testBridge.calls.invokes.some((call) => {
+    if (call.command !== "write_recovery_document" || call.args.documentId !== documentId) return false;
+    return JSON.parse(call.args.json).workspace.viewMode === "edit";
+  }), firstId)).toBe(true);
 
   await page.getByRole("button", { name: "New document" }).click();
   await activeEditor(page).fill("# second");
+  await expect(page.locator("#preview")).toContainText("second");
   await page.getByRole("button", { name: "Edit", exact: true }).click();
-  await first.click();
+  const previewImmediatelyAfterEditOnlyActivation = await page.evaluate((documentId) => {
+    const preview = document.querySelector("#preview");
+    const before = preview.textContent;
+    document.querySelector(`[role="tab"][data-document-id="${CSS.escape(documentId)}"]`).click();
+    return {
+      beforeHasSecond: before.includes("second"),
+      beforeHasFirst: before.includes("line 299"),
+      afterTextLength: preview.textContent.length,
+      afterHasSecond: preview.textContent.includes("second"),
+      afterHasFirst: preview.textContent.includes("line 299"),
+      viewMode: document.body.dataset.view,
+    };
+  }, firstId);
+  expect(previewImmediatelyAfterEditOnlyActivation).toMatchObject({
+    beforeHasSecond: true,
+    beforeHasFirst: false,
+    afterTextLength: 0,
+    afterHasSecond: false,
+    afterHasFirst: false,
+    viewMode: "edit",
+  });
 
-  const firstEditor = page.locator(`textarea[data-document-id="${await first.getAttribute("data-document-id")}"]`);
+  const firstEditor = page.locator(`textarea[data-document-id="${firstId}"]`);
   await expect(firstEditor).toHaveValue(longContent);
   await expect(first).toHaveAttribute("aria-selected", "true");
   await expect(first).toHaveAttribute("tabindex", "0");
-  await expect(page.locator("body")).toHaveAttribute("data-view", "preview");
+  await expect(page.locator("body")).toHaveAttribute("data-view", "edit");
   await expect(first).toHaveAttribute("aria-controls", /document-panel-/);
-  // Chromium reports zero scroll for a textarea whose Preview-only parent is
-  // non-rendered. Reveal the editor before checking the restored native state.
-  await page.getByRole("button", { name: "Edit", exact: true }).click();
   await expect.poll(() => firstEditor.evaluate((editor) => editor.scrollTop)).toBe(savedScrollTop);
   const state = await firstEditor.evaluate((editor) => ({
     start: editor.selectionStart,
@@ -41,6 +65,8 @@ test("tabs retain content, selection, view, and accessible state", async ({ page
   expect(Math.abs(state.scrollTop - savedScrollTop)).toBeLessThanOrEqual(2);
   await page.getByRole("button", { name: "Preview", exact: true }).click();
   await expect(page.locator("body")).toHaveAttribute("data-view", "preview");
+  await expect(page.locator("#preview")).toContainText("line 299 has selectable text");
+  await expect(page.locator("#preview")).not.toContainText("second");
 });
 
 test("dirty close and consolidated quit trap focus and preserve cancel", async ({ page }) => {
@@ -105,6 +131,7 @@ test("roving focus and shortcuts follow tab order", async ({ page }) => {
   await page.getByRole("button", { name: "New document" }).click();
   const tab = (number) => page.getByRole("tab", { name: new RegExp(`Untitled ${number}`) });
   const labels = async () => page.getByRole("tab").evaluateAll((tabs) => tabs.map((item) => item.textContent.trim()));
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
   await tab(3).focus();
 
   await page.keyboard.press("Control+Shift+Tab");

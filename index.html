@@ -7853,7 +7853,14 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
     _preparePreviewForActivation(document) {
       if (!(document instanceof DocumentModel)) return null;
-      return this._showCachedPreviewOrClear(this._createRenderCapture(document));
+      const capture = this._createRenderCapture(document);
+      if (document.workspace.viewMode === "edit") {
+        if (this._canCommitRender(capture) && typeof this.view.clearPreview === "function") {
+          this.view.clearPreview(capture);
+        }
+        return null;
+      }
+      return this._showCachedPreviewOrClear(capture);
     }
 
     async exportActive(format) {
@@ -11779,6 +11786,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     },
     hashText,
     idFactory: () => window.crypto.randomUUID(),
+    requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
     renderer: {
       optionsKey: () => theme,
       render(capture) {

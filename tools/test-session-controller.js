@@ -2506,6 +2506,30 @@ test("activation immediately swaps a matching preview cache or clears stale outp
   assert.equal(fixture.calls.preview.at(-1)[0], `preview:${a.id}`);
 });
 
+test("Edit-only activation clears shared preview without inserting a cached preview before paint", async () => {
+  const frames = [];
+  const largePreview = "cached-a".repeat(128 * 1024);
+  const fixture = makeDependencies({
+    requestAnimationFrame(callback) { frames.push(callback); },
+    renderer: { async render({ documentId }) { return documentId === "generated-1" ? largePreview : "preview:b"; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.createUntitled();
+  await controller.renderDocument(a.id);
+  controller.createUntitled();
+  a.updateWorkspace({ ...a.workspace, viewMode: "edit" });
+  fixture.calls.preview.length = 0;
+
+  controller.activateDocument(a.id);
+
+  assert.equal(fixture.calls.preview.length, 1);
+  assert.equal(fixture.calls.preview[0][0], null);
+  assert.equal(fixture.calls.preview[0][1].documentId, a.id);
+
+  await controller.renderDocument(a.id);
+  assert.equal(fixture.calls.preview.at(-1)[0], largePreview);
+});
+
 test("a deferred export keeps its starting document identity after a tab switch", async () => {
   const pending = deferred();
   const fixture = makeDependencies({

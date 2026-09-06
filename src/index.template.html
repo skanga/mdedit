@@ -2668,6 +2668,7 @@
     },
     hashText,
     idFactory: () => window.crypto.randomUUID(),
+    requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
     renderer: {
       optionsKey: () => theme,
       render(capture) {
