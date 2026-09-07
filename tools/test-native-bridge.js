@@ -195,3 +195,47 @@ test("document bridge methods propagate invoke rejections unchanged", async () =
   await assert.rejects(app.deleteRecoveryDocument("doc-1"), error);
   await assert.rejects(app.recoveryDirectory(), error);
 });
+
+test("recent history commands serialize and a rejected write does not block later operations", async () => {
+  const { tauri } = fakeTauri();
+  let release;
+  const gate = new Promise((resolve) => { release = resolve; });
+  const commands = [];
+  tauri.core.invoke = async (command, args) => {
+    commands.push([command, args]);
+    if (command === "remember_recent_document") { await gate; throw new Error("disk full"); }
+    if (command === "list_recent_documents") return [];
+  };
+  const app = makeNativeApp(tauri);
+  assert.equal(typeof app.rememberRecentDocument, "function");
+  const write = app.rememberRecentDocument("/notes/a.md");
+  const rejected = assert.rejects(write, /disk full/);
+  const list = app.listRecentDocuments();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(commands, [["remember_recent_document", { path: "/notes/a.md" }]]);
+  release();
+  await rejected;
+  assert.deepEqual(await list, []);
+  await app.removeRecentDocument("/notes/a.md");
+  await app.clearRecentDocuments();
+  assert.deepEqual(commands.slice(1), [
+    ["list_recent_documents", undefined],
+    ["remove_recent_document", { canonicalPath: "/notes/a.md" }],
+    ["clear_recent_documents", undefined],
+  ]);
+});
+
+test('desktop asset, probe and reveal bridge commands preserve byte arrays and paths', async () => {
+  const {tauri,calls}=fakeTauri();const app=makeNativeApp(tauri);
+  await app.importDocumentAsset('/a.md','pic.png',new Uint8Array([0,128,255]));
+  await app.importDocumentAttachment('/a.md','/pic.png');
+  await app.readDocumentAsset('/a.md','assets/pic.png');
+  await app.probeDocument('/a.md','hash');await app.revealDocument('/a.md');
+  assert.deepEqual(calls.invoke,[
+    ['import_document_asset',{documentPath:'/a.md',name:'pic.png',bytes:[0,128,255]}],
+    ['import_document_attachment',{documentPath:'/a.md',sourcePath:'/pic.png'}],
+    ['read_document_asset',{documentPath:'/a.md',reference:'assets/pic.png'}],
+    ['probe_document',{path:'/a.md',expectedSha256:'hash'}],
+    ['reveal_document',{path:'/a.md'}],
+  ]);
+});

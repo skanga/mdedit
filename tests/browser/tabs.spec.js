@@ -895,3 +895,335 @@ for (const appTheme of ['light', 'dark']) {
     expect(await schemes()).toEqual(Array(4).fill(osTheme));
   });
 }
+
+test("recent documents is desktop-only", async ({ page }) => {
+  await page.goto("/");
+  await expect(page.getByRole("button", { name: "Open recent documents", exact: true })).toBeHidden();
+});
+
+for (const theme of ["light", "dark"]) {
+  test(`desktop recent documents opens files and preserves dirty tabs in ${theme} mode`, async ({ page }) => {
+    await installFakeTauri(page, {
+      recentDocuments: [{ path: "/notes/a.md", canonicalPath: "/notes/a.md" }],
+      documents: { "/notes/a.md": { content: "original" } },
+    });
+    await openEditor(page);
+    await page.evaluate((theme) => document.documentElement.setAttribute("data-theme", theme), theme);
+    const trigger = page.getByRole("button", { name: "Open recent documents", exact: true });
+    await trigger.click();
+    const recent = page.getByRole("dialog", { name: "Recent documents", exact: true });
+    await expect(recent).toBeVisible();
+    await expect(recent).toContainText("/notes");
+    expect(await recent.evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(theme === "light" ? "rgb(255, 255, 255)" : "rgb(24, 24, 27)");
+    await recent.getByRole("button", { name: "Open /notes/a.md", exact: true }).click();
+    await expect(activeEditor(page)).toHaveValue("original");
+    await setEditorContent(page, "unsaved edits");
+    const tabCount = await page.getByRole("tab").count();
+    const reads = await page.evaluate(() => window.__testBridge.calls.invokes.filter((c) => c.command === "read_document").length);
+    await trigger.click();
+    await recent.getByRole("button", { name: "Open /notes/a.md", exact: true }).click();
+    await expect(activeEditor(page)).toHaveValue("unsaved edits");
+    await expect(page.getByRole("tab")).toHaveCount(tabCount);
+    expect(await page.evaluate(() => window.__testBridge.calls.invokes.filter((c) => c.command === "read_document").length)).toBe(reads);
+    await trigger.click();
+    await page.keyboard.press("Escape");
+    await expect(recent).toBeHidden();
+    await expect(trigger).toBeFocused();
+  });
+}
+
+test("desktop recents retain missing files and support removal and clear without closing tabs", async ({ page }) => {
+  await installFakeTauri(page, {
+    recentDocuments: [
+      { path: "/gone/a.md", canonicalPath: "/gone/a.md" },
+      { path: "/other/a.md", canonicalPath: "/other/a.md" },
+    ],
+    documents: { "/gone/a.md": { error: "No such file or directory" } },
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open recent documents", exact: true }).click();
+  const recent = page.getByRole("dialog", { name: "Recent documents", exact: true });
+  await recent.getByRole("button", { name: "Open /gone/a.md", exact: true }).click();
+  await expect(recent).toContainText("Could not open");
+  await expect(recent.getByRole("button", { name: "Open /gone/a.md", exact: true })).toBeVisible();
+  await recent.getByRole("button", { name: "Remove /gone/a.md from recent documents", exact: true }).click();
+  await expect(recent.getByRole("button", { name: "Open /gone/a.md", exact: true })).toHaveCount(0);
+  await recent.getByRole("button", { name: "Clear recent documents", exact: true }).click();
+  await expect(recent).toContainText("No recent documents");
+  await expect(page.getByRole("tab")).toHaveCount(1);
+  expect(await page.evaluate(() => window.__testBridge.recentDocuments)).toEqual([]);
+});
+
+test("desktop recents record picker opens in order and remain usable after a history write failure", async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ["/one/a.md", "/two/b.md"],
+    documents: { "/one/a.md": { content: "one" }, "/two/b.md": { content: "two" } },
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  await page.getByRole("button", { name: "Open recent documents", exact: true }).click();
+  const recent = page.getByRole("dialog", { name: "Recent documents", exact: true });
+  await expect(recent.locator(".recent-name")).toHaveText(["b.md", "a.md"]);
+  await page.keyboard.press("End");
+  await expect(recent.getByRole("button", { name: "Clear recent documents", exact: true })).toBeFocused();
+  await page.keyboard.press("Home");
+  await expect(recent.getByRole("button", { name: "Open /two/b.md", exact: true })).toBeFocused();
+  await page.keyboard.press("Escape");
+
+  const other = await page.context().newPage();
+  await installFakeTauri(other, { openPaths: ["/one/a.md"], documents: { "/one/a.md": { content: "one" } }, recentWriteError: "disk full" });
+  await openEditor(other);
+  await other.getByRole("button", { name: "Open", exact: true }).click();
+  await expect(activeEditor(other)).toHaveValue("one");
+  await other.getByRole("button", { name: "Open recent documents", exact: true }).click();
+  await expect(other.getByRole("dialog", { name: "Recent documents", exact: true })).toContainText("No recent documents");
+  await other.close();
+});
+
+test("recent document failures preserve keyboard navigation and Escape dismissal", async ({ page }) => {
+  await installFakeTauri(page, {
+    recentDocuments: [{ path: "/missing.md", canonicalPath: "/missing.md" }],
+    documents: { "/missing.md": { error: "File not found", delayMs: 100 } },
+  });
+  await openEditor(page);
+  const trigger = page.getByRole("button", { name: "Open recent documents", exact: true });
+  await trigger.click();
+  const recent = page.getByRole("dialog", { name: "Recent documents", exact: true });
+  const open = recent.getByRole("button", { name: "Open /missing.md", exact: true });
+  await expect(open).toBeFocused();
+  await page.keyboard.press("Enter");
+  await expect(recent).toContainText("Could not open");
+  await expect(open).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(recent).toBeHidden();
+  await expect(trigger).toBeFocused();
+});
+
+test('editor essentials: formatting and smart lists preserve native undo', async ({page}) => {
+  await installFakeTauri(page); await openEditor(page);
+  await setEditorContent(page,'alpha');
+  await activeEditor(page).evaluate(el=>{el.focus();el.select();});
+  await activeEditor(page).press('Control+b');
+  await expect(activeEditor(page)).toHaveValue('**alpha**');
+  await activeEditor(page).press('Control+z');
+  await expect(activeEditor(page)).toHaveValue('alpha');
+  await setEditorContent(page,'- [x] done');
+  await activeEditor(page).press('Control+End');
+  await activeEditor(page).press('Enter');
+  await expect(activeEditor(page)).toHaveValue('- [x] done\n- [ ] ');
+  await activeEditor(page).press('Enter');
+  await expect(activeEditor(page)).toHaveValue('- [x] done\n');
+  await setEditorContent(page,'a\nb');
+  await activeEditor(page).evaluate(el=>{el.focus();el.select();});
+  await activeEditor(page).press('Control+Alt+2');
+  await expect(activeEditor(page)).toHaveValue('## a\n## b');
+});
+
+test('editor essentials: preferences persist and apply to new tabs in both themes', async ({page}) => {
+  await installFakeTauri(page); await openEditor(page);
+  await page.locator('#btn-editor-options').click();
+  await page.locator('#editor-font-size').fill('18');
+  await page.locator('#editor-font-size').press('Tab');
+  await page.locator('#editor-tab-width').selectOption('4');
+  await page.locator('#editor-wrap').uncheck();
+  await page.locator('#editor-line-numbers').check();
+  await page.locator('#editor-options').press('Escape');
+  await setEditorContent(page,'one\ntwo\nthree');
+  await expect(activeEditor(page)).toHaveCSS('font-size','18px');
+  await expect(activeEditor(page)).toHaveAttribute('wrap','off');
+  await expect(page.locator('.editor-surface:not([hidden]):not(.is-inactive) .editor-gutter')).toContainText('123');
+  await page.locator('#btn-new').click();
+  await expect(activeEditor(page)).toHaveCSS('tab-size','4');
+  await activeEditor(page).press('Tab');
+  await expect(activeEditor(page)).toHaveValue('    ');
+  for (const theme of ['light','dark']) {
+    await page.evaluate(theme=>document.documentElement.dataset.theme=theme,theme);
+    await page.locator('#btn-editor-options').click();
+    const colors=await page.locator('#editor-options').evaluate(el=>({bg:getComputedStyle(el).backgroundColor,text:getComputedStyle(el).color}));
+    expect(colors.bg).not.toBe(colors.text);
+    await page.locator('#editor-options').press('Escape');
+  }
+  await page.reload();
+  await expect(activeEditor(page)).toHaveCSS('font-size','18px');
+  await expect(activeEditor(page)).toHaveAttribute('wrap','off');
+});
+
+test('editor essentials: search modes, capture replacements and invalid regex stay in the active document', async ({page}) => {
+  await installFakeTauri(page);await openEditor(page);
+  await setEditorContent(page,'Cat cat scatter cat12');
+  await activeEditor(page).press('Control+f');
+  await page.locator('#find-input').fill('cat');
+  await expect(page.locator('#find-count')).toHaveText('1/4');
+  await page.locator('#find-case').check();
+  await expect(page.locator('#find-count')).toHaveText('1/3');
+  await page.locator('#find-word').check();
+  await expect(page.locator('#find-count')).toHaveText('1/1');
+  await page.locator('#find-word').uncheck();
+  await page.locator('#find-regex').check();
+  await page.locator('#find-input').fill('cat(\\d+)');
+  await page.locator('#replace-input').fill('dog$1');
+  await page.locator('#find-all').click();
+  await expect(activeEditor(page)).toHaveValue('Cat cat scatter dog12');
+  await page.locator('#find-input').fill('[');
+  await expect(page.locator('#find-error')).toContainText('Invalid regular expression');
+  await expect(page.locator('#find-all')).toBeDisabled();
+  await expect(activeEditor(page)).toHaveValue('Cat cat scatter dog12');
+});
+
+const pixelBytes=Array.from(Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+jRZkAAAAASUVORK5CYII=','base64'));
+
+test('editor essentials: desktop attachments insert relative links and embed in HTML export', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/notes/a.md'],documents:{'/notes/a.md':{content:'start\n'}},attachmentPaths:['/photos/a.png'],assets:{'assets/imported.png':{bytes:pixelBytes,mime:'image/png'}},savePath:'/out/a.html'});
+  await openEditor(page);await page.locator('#btn-open').click();
+  await expect(activeEditor(page)).toHaveValue('start\n');
+  await activeEditor(page).press('Control+End');await page.locator('#btn-attach').click();
+  await expect(activeEditor(page)).toHaveValue('start\n![a.png](assets/imported.png)\n');
+  await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:image\/png;base64,/);
+  await expect.poll(()=>page.locator('#preview img').evaluate(img=>img.naturalWidth)).toBe(1);
+  await page.locator('#btn-export').click();await page.locator('[data-exp="html"]').click();
+  await expect.poll(()=>page.evaluate(()=>window.__testBridge.calls.writes.length)).toBe(1);
+  const html=await page.evaluate(()=>new TextDecoder().decode(new Uint8Array(window.__testBridge.calls.writes[0].data)));
+  expect(html).toContain('data:image/png;base64,');
+  expect(html).not.toContain('src="assets/');
+});
+
+test('editor essentials: slow attachment import cannot edit a different tab', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'original'}},attachmentPaths:['/a.png'],importDelayMs:700});
+  await openEditor(page);await page.locator('#btn-open').click();await expect(activeEditor(page)).toHaveValue('original');
+  await page.locator('#btn-attach').click();
+  await expect.poll(()=>page.evaluate(()=>window.__testBridge.calls.invokes.some(call=>call.command==='import_document_attachment'))).toBe(true);
+  await page.locator('#btn-new').click();await setEditorContent(page,'other');
+  await expect(page.locator('#status')).toContainText('its link was not inserted');
+  await expect(activeEditor(page)).toHaveValue('other');
+});
+
+test('editor essentials: external clean reload and dirty comparison preserve edits', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'first',sha256:'first'}}});
+  await openEditor(page);await page.locator('#btn-open').click();await expect(activeEditor(page)).toHaveValue('first');
+  await page.evaluate(()=>{window.__testBridge.documents['/a.md']={content:'second',sha256:'second'};window.dispatchEvent(new Event('focus'));});
+  await expect(activeEditor(page)).toHaveValue('second');
+  await setEditorContent(page,'my edits');
+  await page.evaluate(()=>{window.__testBridge.documents['/a.md']={content:'third',sha256:'third'};window.dispatchEvent(new Event('focus'));});
+  await page.getByRole('button',{name:'Compare changes'}).click();
+  await expect(page.getByRole('textbox',{name:'Your edits',exact:true})).toHaveValue('my edits');
+  await expect(page.getByRole('textbox',{name:'Disk version',exact:true})).toHaveValue('third');
+  await page.getByRole('button',{name:'Keep editing',exact:true}).click();
+  await expect(activeEditor(page)).toHaveValue('my edits');
+  await page.getByRole('button',{name:'Compare changes'}).click();
+  await page.getByRole('button',{name:'Reload from disk…',exact:true}).click();
+  await page.getByRole('button',{name:'Discard and Reload',exact:true}).click();
+  await expect(activeEditor(page)).toHaveValue('third');
+});
+
+test('editor essentials: tab context menu reveals and reopens the correct saved file', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'saved'}}});
+  await openEditor(page);await page.locator('#btn-open').click();await expect(activeEditor(page)).toHaveValue('saved');
+  const tab=page.locator('#document-tabs [role="tab"]').filter({hasText:'a.md'});
+  await tab.click({button:'right'});
+  await page.getByRole('menuitem',{name:'Show in file manager'}).click();
+  expect(await page.evaluate(()=>window.__testBridge.calls.invokes.filter(c=>c.command==='reveal_document'))).toEqual([{command:'reveal_document',args:{path:'/a.md'}}]);
+  await tab.focus();await tab.press('Shift+F10');
+  await page.getByRole('menuitem',{name:'Close tab',exact:true}).click();
+  await expect(tab).toHaveCount(0);
+  await page.keyboard.press('Control+Shift+t');
+  await expect(tab).toHaveCount(1);await expect(activeEditor(page)).toHaveValue('saved');
+});
+
+test('editor essentials: desktop controls stay absent in the browser build', async ({page}) => {
+  await page.goto('/');
+  await expect(page.locator('#btn-editor-options')).toBeVisible();
+  await expect(page.locator('#btn-attach')).toBeHidden();
+  await expect(page.locator('#document-menu')).toHaveCount(0);
+  await expect(page.locator('.external-banner')).toHaveCount(0);
+});
+
+test('editor essentials: search options follow tab queries', async ({page}) => {
+  await installFakeTauri(page);await openEditor(page);
+  await setEditorContent(page,'a.b axb');await activeEditor(page).press('Control+f');
+  await page.locator('#find-input').fill('a.b');
+  await expect(page.locator('#find-count')).toHaveText('1/1');
+  const firstId=await page.evaluate(()=>window.__MDEDIT_TEST_HOOK__.controller.activeDocument().id);
+  await page.locator('#btn-new').click();await setEditorContent(page,'a.b axb');
+  await activeEditor(page).press('Control+f');await page.locator('#find-input').fill('a.b');await page.locator('#find-regex').check();
+  await expect(page.locator('#find-count')).toHaveText('1/2');
+  await page.locator(`#document-tabs [role="tab"][data-document-id="${firstId}"]`).click();
+  await expect(page.locator('#find-regex')).not.toBeChecked();await expect(page.locator('#find-count')).toHaveText('1/1');
+  await page.keyboard.press('Control+Tab');await expect(page.locator('#find-regex')).toBeChecked();
+});
+
+test('editor essentials: pasted images save untitled documents before import, and cancel imports nothing', async ({page}) => {
+  await installFakeTauri(page,{savePath:'/notes/pasted.md',assets:{'assets/imported.png':{bytes:pixelBytes,mime:'image/png'}}});
+  await openEditor(page);await setEditorContent(page,'draft');
+  await activeEditor(page).evaluate((el,bytes)=>{
+    el.focus();el.setSelectionRange(el.value.length,el.value.length);
+    const data=new DataTransfer();data.items.add(new File([new Uint8Array(bytes)],'paste.png',{type:'image/png'}));
+    el.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));
+  },pixelBytes);
+  await expect(activeEditor(page)).toHaveValue('draft![paste.png](assets/imported.png)\n');
+  const commands=await page.evaluate(()=>window.__testBridge.calls.invokes.map(c=>c.command));
+  expect(commands.indexOf('save_document')).toBeLessThan(commands.indexOf('import_document_asset'));
+  const other=await page.context().newPage();await installFakeTauri(other);await openEditor(other);
+  await activeEditor(other).evaluate(el=>{
+    const data=new DataTransfer();data.items.add(new File(['image'],'x.png',{type:'image/png'}));
+    el.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:data}));
+  });
+  await expect.poll(()=>other.evaluate(()=>window.__testBridge.calls.invokes.some(c=>c.command==='import_document_asset'))).toBe(false);
+  await other.close();
+});
+
+test('editor essentials: exports reread changed image bytes and reject missing local images', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'![x](assets/x.png)'}},assets:{'assets/x.png':{bytes:pixelBytes,mime:'image/png'}},savePath:'/out/a.html'});
+  await openEditor(page);await page.locator('#btn-open').click();
+  await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:/);
+  await page.evaluate(()=>{window.__testBridge.assets['assets/x.png']={bytes:Array.from(new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"><rect width="2" height="1" fill="red"/></svg>')),mime:'image/svg+xml'};});
+  await page.locator('#btn-export').click();await page.locator('[data-exp="html"]').click();
+  await expect.poll(()=>page.evaluate(()=>window.__testBridge.calls.writes.length)).toBe(1);
+  const exported=await page.evaluate(()=>new TextDecoder().decode(new Uint8Array(window.__testBridge.calls.writes[0].data)));
+  expect(exported).toContain('data:image/svg+xml;base64,');
+  expect(await page.evaluate(()=>window.__testBridge.calls.invokes.filter(c=>c.command==='read_document_asset').length)).toBeGreaterThanOrEqual(2);
+  await setEditorContent(page,'![missing](assets/nope.png)');
+  await page.locator('#btn-export').click();await page.locator('[data-exp="html"]').click();
+  await expect(page.locator('#status')).toContainText('Could not include assets/nope.png');
+  expect(await page.evaluate(()=>window.__testBridge.calls.writes.length)).toBe(1);
+});
+
+for (const theme of ['light','dark']) test(`editor essentials: controls fit the minimum desktop window in ${theme} mode`, async ({page}) => {
+  await page.setViewportSize({width:700,height:480});await page.emulateMedia({colorScheme:theme});
+  await installFakeTauri(page);await openEditor(page);
+  await page.locator('#btn-editor-options').click();
+  const box=await page.locator('#editor-options').boundingBox();expect(box.x).toBeGreaterThanOrEqual(0);expect(box.x+box.width).toBeLessThanOrEqual(700);expect(box.y+box.height).toBeLessThanOrEqual(480);
+  await page.screenshot({path:`/tmp/mdedit-editor-${theme}.png`});
+  await page.locator('#editor-options').press('Escape');
+  await activeEditor(page).press('Control+f');
+  const overflow=await page.evaluate(()=>document.documentElement.scrollWidth>innerWidth);expect(overflow).toBe(false);
+});
+
+test('editor essentials: native drop inserts attachments before opening dropped documents', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'a\n'},'/b.md':{content:'b'}},assets:{'assets/imported.png':{bytes:pixelBytes,mime:'image/png'}}});
+  await openEditor(page);await page.locator('#btn-open').click();await expect(activeEditor(page)).toHaveValue('a\n');
+  await activeEditor(page).press('Control+End');await page.evaluate(()=>window.__testBridge.drop(['/photo.png','/b.md']));
+  await expect(activeEditor(page)).toHaveValue('b');
+  await page.locator('#document-tabs [role="tab"]').filter({hasText:'a.md'}).click();
+  await expect(activeEditor(page)).toHaveValue('a\n![photo.png](assets/imported.png)\n');
+});
+
+test('editor essentials: Save As resolves visible images from the new document folder', async ({page}) => {
+  const svgBytes=Array.from(Buffer.from('<svg xmlns="http://www.w3.org/2000/svg" width="2" height="1"/>'));
+  await installFakeTauri(page,{openPaths:['/old/a.md'],documents:{'/old/a.md':{content:'![x](x.png)'}},savePath:'/new/a.md',assets:{'/old/a.md':{'x.png':{bytes:pixelBytes,mime:'image/png'}},'/new/a.md':{'x.png':{bytes:svgBytes,mime:'image/svg+xml'}}}});
+  await openEditor(page);await page.locator('#btn-open').click();
+  await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:image\/png/);
+  await activeEditor(page).press('Control+Shift+s');
+  await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:image\/svg\+xml/);
+});
+
+test('editor essentials: PNG and PDF exports include decoded local images', async ({page}) => {
+  await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'![x](assets/x.png)'}},assets:{'assets/x.png':{bytes:pixelBytes,mime:'image/png'}},savePath:'/out/a.png'});
+  await openEditor(page);await page.locator('#btn-open').click();await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:image\/png/);
+  await page.locator('#btn-export').click();await page.locator('[data-exp="png"]').click();
+  await expect.poll(()=>page.evaluate(()=>window.__testBridge.calls.writes.length)).toBe(1);
+  expect(await page.evaluate(()=>Array.from(window.__testBridge.calls.writes[0].data).slice(0,8))).toEqual([137,80,78,71,13,10,26,10]);
+  await page.evaluate(()=>{window.__printedImage=null;window.print=()=>{const img=document.querySelector('#preview img');window.__printedImage={src:img.src,width:img.naturalWidth};};});
+  await page.locator('#btn-export').click();await page.locator('[data-exp="pdf"]').click();
+  await expect.poll(()=>page.evaluate(()=>window.__printedImage?.width)).toBe(1);
+  expect(await page.evaluate(()=>window.__printedImage.src)).toMatch(/^data:image\/png/);
+});

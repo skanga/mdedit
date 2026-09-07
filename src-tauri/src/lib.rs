@@ -1,7 +1,17 @@
+pub mod desktop_files;
 pub mod document_io;
+pub mod recent_documents;
 pub mod recovery;
 
+use desktop_files::{
+    import_document_asset, import_document_attachment, probe_document, read_document_asset,
+    reveal_document, DocumentProbeCache,
+};
 use document_io::{canonicalize_document_path, read_document, save_document};
+use recent_documents::{
+    clear_recent_documents, list_recent_documents, remember_recent_document,
+    remove_recent_document, RecentDocumentsStore,
+};
 use recovery::{
     delete_recovery_document, load_recovery_document, load_recovery_manifest, recovery_directory,
     write_recovery_document, write_recovery_manifest, RecoveryStore,
@@ -41,6 +51,7 @@ fn take_pending_files(state: tauri::State<'_, PendingFiles>) -> Vec<String> {
 pub fn run() {
     let app = tauri::Builder::default()
         .manage(PendingFiles::default())
+        .manage(DocumentProbeCache::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
@@ -58,6 +69,15 @@ pub fn run() {
         }))
         .invoke_handler(tauri::generate_handler![
             take_pending_files,
+            import_document_asset,
+            import_document_attachment,
+            read_document_asset,
+            probe_document,
+            reveal_document,
+            list_recent_documents,
+            remember_recent_document,
+            remove_recent_document,
+            clear_recent_documents,
             read_document,
             save_document,
             canonicalize_document_path,
@@ -71,6 +91,7 @@ pub fn run() {
         .setup(|app| {
             let recovery_root = app.path().app_data_dir()?.join("session-v1");
             app.manage(RecoveryStore::new(recovery_root));
+            app.manage(RecentDocumentsStore::new(app.path().app_data_dir()?));
 
             for path in std::env::args().skip(1).filter(|a| is_existing_file(a)) {
                 app.state::<PendingFiles>().push_and_notify(path, || {});

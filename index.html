@@ -78,6 +78,23 @@
     overflow: hidden;
   }
 
+  .document-menu { position:fixed;z-index:200;min-width:200px;padding:5px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px #0003; }
+  .document-menu button { display:block;width:100%;text-align:left;padding:8px;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer; }
+  .document-menu button:focus-visible,.document-menu button:hover { background:var(--accent-soft); }
+  .document-menu button:disabled { opacity:.45;cursor:default; }
+  .external-banner { display:flex;align-items:center;gap:12px;padding:8px 14px;background:var(--accent-soft);color:var(--text);font-size:12px; }
+  .external-banner[hidden],.document-menu[hidden] { display:none; }
+  .external-banner button,.comparison-actions button { background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:6px 10px;cursor:pointer; }
+  #external-comparison { width:min(1000px,94vw);max-height:90vh;box-sizing:border-box;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:20px; }
+  #external-comparison::backdrop { background:#0007; }
+  #external-comparison h2 { font-size:18px;margin:0 0 8px; }
+  #external-comparison p { font-size:12px;overflow-wrap:anywhere; }
+  .comparison-columns { display:flex;gap:12px; }
+  .comparison-columns label { flex:1;min-width:0;font-size:13px; }
+  .comparison-columns textarea { display:block;width:100%;height:45vh;margin-top:6px;box-sizing:border-box;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:10px;font:12px/1.6 monospace; }
+  .comparison-actions { display:flex;justify-content:flex-end;gap:8px; }
+  .asset-unavailable { outline:1px dashed var(--text-soft); }
+
   /* ── Top bar ─────────────────────────────────── */
   header {
     display: flex;
@@ -678,6 +695,57 @@
 
   /* ── Reader popover ──────────────────────────── */
   .popover-wrap { position: relative; display: inline-flex; flex: none; }
+  .editor-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 70;
+    width: min(330px, calc(100vw - 24px)); padding: 12px; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--panel); color: var(--text);
+    box-shadow: 0 8px 24px rgba(0,0,0,.14); font-size: 12px;
+  }
+  .editor-panel h2 { margin: 0 0 10px; font-size: 13px; }
+  .editor-panel label { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .editor-panel input, .editor-panel select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 4px; border-radius: 4px; }
+  .editor-panel input[type=number] { width: 64px; }
+  .format-actions { display:flex; flex-wrap:wrap; gap:5px; }
+  .editor-panel button { font:inherit; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:5px 7px; cursor:pointer; }
+  .editor-panel button:hover { background:var(--accent-soft); color:var(--accent); }
+  .editor-gutter { position:relative; flex:none; width:42px; overflow:hidden; color:var(--text-soft); background:var(--panel); border-right:1px solid var(--border-soft); font-family:var(--mono); user-select:none; }
+  #find-bar { flex-wrap:wrap; }
+  #find-bar label { font-size:11px; color:var(--text-soft); white-space:nowrap; }
+  #find-error { color:var(--text); width:100%; font-size:11px; }
+  #find-error:empty { display:none; }
+  #recent-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: min(380px, calc(100vw - 24px));
+    max-height: min(480px, calc(100vh - 90px));
+    overflow: auto;
+    padding: 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+    z-index: 65;
+    font-size: 12px;
+  }
+  #recent-pop h2 { margin: 4px 8px 8px; font-size: 13px; }
+  #recent-list { list-style: none; padding: 0; margin: 0; }
+  #recent-list li { display: flex; align-items: center; gap: 4px; }
+  #recent-pop button {
+    background: transparent; color: var(--text); border: 0; border-radius: 6px;
+    font: inherit; cursor: pointer; padding: 8px; text-align: left;
+  }
+  #recent-pop button:hover { background: var(--accent-soft); color: var(--accent); }
+  #recent-pop button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #recent-pop button:disabled { opacity: 0.5; cursor: default; }
+  .recent-open { min-width: 0; flex: 1; }
+  .recent-name, .recent-folder { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-folder { color: var(--text-soft); font-size: 11px; margin-top: 3px; }
+  #recent-pop .recent-remove { flex: none; font-size: 18px; }
+  #recent-message { margin: 8px; overflow-wrap: anywhere; color: var(--text-soft); }
+  #recent-message:empty { display: none; }
+  #recent-pop #recent-clear { width: 100%; border-top: 1px solid var(--border-soft); margin-top: 4px; }
   #reader-pop {
     position: absolute;
     right: 0;
@@ -935,6 +1003,20 @@
   </div>
   <button class="btn" id="btn-new" title="New document">New</button>
   <button class="btn" id="btn-open" title="Open a markdown file (Ctrl+O)">Open</button>
+  <button class="btn" id="btn-attach" title="Insert an image or attachment" hidden>Attach</button>
+  <span class="popover-wrap">
+    <button class="btn" id="btn-editor-options" aria-haspopup="dialog" aria-expanded="false" aria-controls="editor-options">Editor</button>
+    <div id="editor-options" class="editor-panel" role="dialog" aria-label="Editor options" hidden></div>
+  </span>
+  <span class="popover-wrap" id="recent-wrap" hidden>
+    <button class="btn" id="btn-recent" aria-label="Open recent documents" aria-haspopup="dialog" aria-expanded="false" aria-controls="recent-pop" title="Open recent documents">Recent</button>
+    <div id="recent-pop" role="dialog" aria-labelledby="recent-heading" tabindex="-1" hidden>
+      <h2 id="recent-heading">Recent documents</h2>
+      <ul id="recent-list"></ul>
+      <p id="recent-message" role="status"></p>
+      <button id="recent-clear" type="button">Clear recent documents</button>
+    </div>
+  </span>
   <span class="popover-wrap">
     <button class="btn" id="btn-export" title="Export this document">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1001,12 +1083,16 @@
     <div id="find-bar">
       <input id="find-input" placeholder="Find" spellcheck="false" autocomplete="off">
       <input id="replace-input" placeholder="Replace with" spellcheck="false" autocomplete="off">
+      <label><input type="checkbox" id="find-case"> Match case</label>
+      <label><input type="checkbox" id="find-word"> Whole word</label>
+      <label><input type="checkbox" id="find-regex"> Regex</label>
       <span id="find-count"></span>
       <button id="find-prev" title="Previous match (Shift+Enter)">&#8593;</button>
       <button id="find-next" title="Next match (Enter)">&#8595;</button>
       <button id="find-replace" title="Replace this match">Replace</button>
       <button id="find-all" title="Replace every match">All</button>
       <button id="find-close" title="Close (Esc)">&#10005;</button>
+      <span id="find-error" role="status"></span>
     </div>
     <div id="editor-surfaces">
       <div class="editor-surface" data-document-id="legacy">
@@ -5193,6 +5279,15 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     return value;
   }
 
+  function copyFindOptions(find) {
+    const result = {};
+    for (const key of ["caseSensitive", "wholeWord", "regex"]) {
+      if (find[key] !== undefined && typeof find[key] !== "boolean") throw new TypeError("invalid find option");
+      if (find[key] === true) result[key] = true;
+    }
+    return result;
+  }
+
   function cloneWorkspace(workspace) {
     return {
       selectionStart: workspace.selectionStart,
@@ -5206,6 +5301,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         query: workspace.find.query,
         replacement: workspace.find.replacement,
         matchIndex: workspace.find.matchIndex,
+        ...copyFindOptions(workspace.find),
       },
     };
   }
@@ -5220,7 +5316,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       && left.find.open === right.find.open
       && left.find.query === right.find.query
       && left.find.replacement === right.find.replacement
-      && left.find.matchIndex === right.find.matchIndex;
+      && left.find.matchIndex === right.find.matchIndex
+      && ["caseSensitive", "wholeWord", "regex"].every(key => Boolean(left.find[key]) === Boolean(right.find[key]));
   }
 
   function normalizeWorkspace(value, contentLength) {
@@ -5256,6 +5353,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         query: value.find.query ?? "",
         replacement: value.find.replacement ?? "",
         matchIndex: value.find.matchIndex ?? -1,
+        ...copyFindOptions(value.find),
       };
     }
     return workspace;
@@ -5298,6 +5396,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         query: workspace.find.query,
         replacement: workspace.find.replacement,
         matchIndex: workspace.find.matchIndex,
+        ...copyFindOptions(workspace.find),
       },
     };
   }
@@ -7397,17 +7496,27 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return this._scheduleOperation((token) => this._openReadResultNow(result, token));
     }
 
+    _rememberRecentDocument(path) {
+      if (!path || typeof this.io.rememberRecentDocument !== "function") return;
+      // History is optional: never delay or fail a document operation for it.
+      try {
+        Promise.resolve(this.io.rememberRecentDocument(path)).catch(() => {});
+      } catch (_) {}
+    }
+
     _openReadResultNow(result, token = this._lifecycleToken, { replaceStartupPlaceholder = false } = {}) {
       if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
       const session = this._ensureSession();
       const existing = session.findByCanonicalPath(result.canonicalPath);
       if (existing) {
         this.activateDocument(existing.id);
+        this._rememberRecentDocument(result.path);
         return existing;
       }
       const reserved = this._reservedCanonicalPaths.get(result.canonicalPath);
       if (reserved && session.documents.get(reserved.id) === reserved) {
         this.activateDocument(reserved.id);
+        this._rememberRecentDocument(result.path);
         return reserved;
       }
       if (replaceStartupPlaceholder) this._discardStartupPlaceholder();
@@ -7416,6 +7525,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       const document = this._documentFromReadResult(result);
       session.add(document);
       this._presentActivatedDocument(document);
+      this._rememberRecentDocument(result.path);
       return document;
     }
 
@@ -7450,6 +7560,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       candidate.add(document);
       this._commitLocalSession(candidate);
       this._presentActivatedDocument(document);
+      this._rememberRecentDocument(result.path);
       return document;
     }
 
@@ -7575,6 +7686,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!capture || typeof capture !== "object") return false;
       if (!this._ownsOperationCapture(capture)) return false;
       return capture.document.editRevision === capture.editRevision
+        && capture.document.path === capture.path
         && (!requireActive || this.session.activeDocumentId === capture.documentId);
     }
 
@@ -7870,13 +7982,14 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       }
     }
 
-    renderDocument(documentId = this.session && this.session.activeDocumentId, { renderWhenHidden = false } = {}) {
+    renderDocument(documentId = this.session && this.session.activeDocumentId, { renderWhenHidden = false, force = false } = {}) {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
       const document = this.session.documents.get(documentId);
       if (!(document instanceof DocumentModel)) return Promise.resolve(null);
       if (!this.renderer) return Promise.resolve(null);
 
+      if (force) this._invalidatePreview(documentId);
       const capture = this._createRenderCapture(document);
       const cacheKey = this._previewCacheKey(capture);
       const cached = this._showCachedPreviewOrClear(capture);
@@ -7919,6 +8032,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         editRevision: document.editRevision,
         content: document.content,
         displayName: document.displayName,
+        path: document.path,
         optionsKey: this._rendererOptionsKey(),
         document,
       });
@@ -8088,6 +8202,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
           throw new Error("document save returned an invalid result");
         }
+        this._rememberRecentDocument(capture.path);
         if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
         let metadataChanged = false;
         if (typeof result.canonicalPath === "string" && result.canonicalPath !== document.canonicalPath) {
@@ -8313,6 +8428,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
           throw new Error("document save returned an invalid result");
         }
+        this._rememberRecentDocument(chosenPath);
         if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
 
         const savedCanonicalPath = typeof result.canonicalPath === "string"
@@ -8333,8 +8449,11 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         }, { persist: false });
         await this._checkpointAfterDocumentChange(capture, metadataChanged || baselineChanged, "save-as-checkpoint");
         if (this._ownsOperationCapture(capture)) {
-          this._renderSession();
-          this._renderDocumentView(document);
+          if (capture.path !== document.path) this._refreshReloadedDocument(document);
+          else {
+            this._renderSession();
+            this._renderDocumentView(document);
+          }
           this._setDocumentStatus(documentId, {
             status: "saved",
             message: `Saved ${document.displayName}`,
@@ -8459,7 +8578,105 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return { resolved: true, reloaded: true, documentId };
     }
 
+    externalVersion(documentId) {
+      const document = this.session && this.session.documents.get(documentId);
+      return document && document.fileStatus === "externally-changed"
+        ? this._externalVersions?.get(documentId) || null : null;
+    }
+
+    async checkExternalChanges() {
+      if (this._disposed || this._restoreState !== "restored" || !this.session
+          || this._checkingExternal || this._documentOperation || this._queuedOperationCount
+          || typeof this.io.probeDocument !== "function") return [];
+      this._checkingExternal = true;
+      this._externalVersions ||= new Map();
+      const events = [];
+      try {
+        for (const document of this.session.documents.values()) {
+          if (!(document instanceof DocumentModel) || !document.path || !document.expectedDiskSha256) continue;
+          if (this._disposed || this._documentOperation || this._queuedOperationCount) break;
+          const capture = this._captureDocument(document);
+          const current = () => this._ownsOperationCapture(capture)
+            && document.path === capture.path && document.editRevision === capture.editRevision
+            && document.expectedDiskSha256 === capture.expectedDiskSha256 && !this._documentOperation;
+          try {
+            const probe = await this.io.probeDocument(capture.path, capture.expectedDiskSha256);
+            if (!current()) continue;
+            if (probe.status === "unchanged") {
+              this._externalVersions.delete(document.id);
+              if (document.fileStatus !== "normal") {
+                document.updateMetadata({fileStatus:"normal"});
+                this.checkpointDocument(document.id, "external-restored");
+                this._renderSession();
+              }
+              continue;
+            }
+            if (probe.status === "missing") {
+              if (document.updateMetadata({fileStatus:"missing"})) {
+                this.checkpointDocument(document.id, "external-missing");
+                this._setDocumentStatus(document.id, {fileStatus:"missing", message:`${document.displayName} is missing on disk`});
+                this._renderSession();
+              }
+              continue;
+            }
+            if (probe.status !== "changed") throw new Error("invalid external file probe");
+            if (document.dirty && document.fileStatus === "externally-changed" && this._externalVersions.get(document.id)?.sha256 === probe.sha256) continue;
+            const result = await this.io.readDocument(capture.path);
+            const contentSha256 = await this.hashText(result.content);
+            if (!current()) continue;
+            if (result.sha256 === capture.expectedDiskSha256) continue;
+            if (document.dirty) {
+              this._externalVersions.set(document.id, result);
+              document.updateMetadata({fileStatus:"externally-changed"});
+              this.checkpointDocument(document.id, "external-change");
+              this._setDocumentStatus(document.id, {fileStatus:"externally-changed", message:`${document.displayName} changed outside MDedit`});
+              this._renderSession();
+              events.push({documentId:document.id,status:"conflict"});
+            } else {
+              document.applyContent(result.content);
+              document.updateMetadata({canonicalPath:result.canonicalPath || capture.canonicalPath});
+              const updated = this._captureDocument(document);
+              this.recordCapturedSave(updated,{contentSha256,diskSha256:result.sha256},{persist:false});
+              this.checkpointDocument(document.id, "external-reload");
+              this._externalVersions.delete(document.id);
+              this._refreshReloadedDocument(document);
+              this._setDocumentStatus(document.id,{message:`Reloaded external changes to ${document.displayName}`,fileStatus:"normal",dirty:false});
+              events.push({documentId:document.id,status:"reloaded"});
+            }
+          } catch (error) {
+            if (!current()) continue;
+            if (document.updateMetadata({fileStatus:"read-error"})) this.checkpointDocument(document.id,"external-read-error");
+            this._setDocumentStatus(document.id,{fileStatus:"read-error",message:`Could not check ${document.displayName}: ${normalizeError(error).message}`});
+          }
+        }
+      } finally { this._checkingExternal = false; }
+      return events;
+    }
+
+    canReopenClosedDocument() { return Boolean(this._closedDocuments?.length); }
+
+    reopenClosedDocument() {
+      return this._runDocumentOperation("reopen", async () => {
+        const entry = this._closedDocuments?.at(-1);
+        if (!entry) return {opened:false};
+        const existing = this.session.findByCanonicalPath(entry.canonicalPath);
+        if (existing) {
+          this.activateDocument(existing.id);
+          this._closedDocuments.pop();
+          return {opened:true,documentId:existing.id};
+        }
+        const result = await this.openPaths([entry.path]);
+        if (result.failed.length || !result.opened.length) return {opened:false,error:result.failed[0]?.error};
+        const document = result.opened[0];
+        document.updateWorkspace(entry.workspace);
+        this._presentActivatedDocument(document);
+        this._closedDocuments.pop();
+        return {opened:true,documentId:document.id};
+      });
+    }
+
     _refreshReloadedDocument(document) {
+      if (typeof this.view.beforeReloadDocument === "function") this.view.beforeReloadDocument(document);
       const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
       if (editor && editor.value !== document.content) editor.value = document.content;
       this._invalidatePreview(document.id);
@@ -8635,6 +8852,12 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         }
       }
       await this._removeDocumentDurably(documentId);
+      if (document.path) {
+        this._closedDocuments ||= [];
+        this._closedDocuments.push({path:document.path,canonicalPath:document.canonicalPath,workspace:{...document.workspace,find:{...document.workspace.find}}});
+        if (this._closedDocuments.length > 20) this._closedDocuments.shift();
+      }
+      this._externalVersions?.delete(documentId);
       return { closed: true, discarded: choice === "discard", documentId };
     }
 
@@ -9178,7 +9401,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
 
     _previewCacheKey(capture) {
-      return `${capture.documentId}\u0000${capture.editRevision}\u0000${capture.optionsKey}`;
+      return `${capture.documentId}\u0000${capture.editRevision}\u0000${capture.path || ""}\u0000${capture.optionsKey}`;
     }
 
     _isCurrentRender(capture) {
@@ -9186,6 +9409,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       const document = this.session.documents.get(capture.documentId);
       return document === capture.document
         && document.editRevision === capture.editRevision
+        && document.path === capture.path
         && this._latestRenderTokens.get(capture.documentId) === capture.token;
     }
 
@@ -10422,7 +10646,33 @@ function normalizeRawBytes(data) {
 function makeNativeApp(tauri) {
   if (!tauri || !tauri.dialog || !tauri.fs || typeof tauri.fs.writeFile !== "function"
     || !tauri.core || typeof tauri.core.invoke !== "function") return null;
+  let recentOperations = Promise.resolve();
+  function recentCommand(command, args) {
+    const result = recentOperations.then(() => tauri.core.invoke(command, args));
+    recentOperations = result.catch(() => {});
+    return result;
+  }
   return {
+    importDocumentAsset(documentPath, name, bytes) {
+      return tauri.core.invoke("import_document_asset", { documentPath, name, bytes: Array.from(bytes) });
+    },
+    importDocumentAttachment(documentPath, sourcePath) {
+      return tauri.core.invoke("import_document_attachment", { documentPath, sourcePath });
+    },
+    readDocumentAsset(documentPath, reference) {
+      return tauri.core.invoke("read_document_asset", { documentPath, reference });
+    },
+    probeDocument(path, expectedSha256) {
+      return tauri.core.invoke("probe_document", { path, expectedSha256 });
+    },
+    revealDocument(path) { return tauri.core.invoke("reveal_document", { path }); },
+    async pickAttachments() {
+      return normalizePaths(await tauri.dialog.open({multiple:true,directory:false}));
+    },
+    listRecentDocuments() { return recentCommand("list_recent_documents"); },
+    rememberRecentDocument(path) { return recentCommand("remember_recent_document", { path }); },
+    removeRecentDocument(canonicalPath) { return recentCommand("remove_recent_document", { canonicalPath }); },
+    clearRecentDocuments() { return recentCommand("clear_recent_documents"); },
     async pickFile() {
       const p = await tauri.dialog.open({
         multiple: false,
@@ -10491,6 +10741,646 @@ function makeNativeApp(tauri) {
 
 if (typeof window !== "undefined") window.nativeApp = makeNativeApp(window.__TAURI__);
 if (typeof module !== "undefined") module.exports = { makeNativeApp };
+</script>
+<script>(function initRecentDocuments(root, factory) {
+  const api = factory();
+  if (typeof module !== "undefined" && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== "undefined" ? window : null, () => {
+  "use strict";
+
+  function installRecentDocuments({ document, controller, nativeApp }) {
+    if (!nativeApp) return;
+    const wrap = document.getElementById("recent-wrap");
+    const trigger = document.getElementById("btn-recent");
+    const panel = document.getElementById("recent-pop");
+    const list = document.getElementById("recent-list");
+    const message = document.getElementById("recent-message");
+    const clear = document.getElementById("recent-clear");
+    let generation = 0;
+    let busy = false;
+    wrap.hidden = false;
+
+    function close(restoreFocus = false) {
+      generation += 1;
+      panel.hidden = true;
+      trigger.setAttribute("aria-expanded", "false");
+      trigger.classList.remove("toggled");
+      if (restoreFocus) trigger.focus();
+    }
+
+    function buttons() { return [...panel.querySelectorAll("button:not(:disabled)")]; }
+
+    async function refresh() {
+      const current = ++generation;
+      list.replaceChildren();
+      message.textContent = "Loading recent documents…";
+      clear.disabled = true;
+      try {
+        const entries = await nativeApp.listRecentDocuments();
+        if (current !== generation || panel.hidden) return;
+        if (!Array.isArray(entries)) throw new Error("Invalid recent document list");
+        for (const entry of entries) {
+          const row = document.createElement("li");
+          const open = document.createElement("button");
+          open.type = "button";
+          open.className = "recent-open";
+          open.setAttribute("aria-label", `Open ${entry.path}`);
+          open.title = entry.path;
+          const separator = Math.max(entry.path.lastIndexOf("/"), entry.path.lastIndexOf("\\"));
+          const name = document.createElement("span");
+          name.className = "recent-name";
+          name.textContent = entry.path.slice(separator + 1);
+          const folder = document.createElement("span");
+          folder.className = "recent-folder";
+          folder.textContent = entry.path.slice(0, separator) || "/";
+          open.append(name, folder);
+          open.addEventListener("click", () => run(async () => {
+            const existing = controller.session?.findByCanonicalPath(entry.canonicalPath);
+            if (existing) {
+              controller.activateDocument(existing.id);
+              nativeApp.rememberRecentDocument(entry.path).catch(() => {});
+            } else {
+              const result = await controller.openPaths([entry.path]);
+              if (result.failed.length) {
+                throw new Error(`Could not open ${entry.path}. ${result.failed[0].error.message} You can retry or remove it from this list.`);
+              }
+            }
+            close();
+          }));
+          const remove = document.createElement("button");
+          remove.type = "button";
+          remove.className = "recent-remove";
+          remove.textContent = "×";
+          remove.title = "Remove from list";
+          remove.setAttribute("aria-label", `Remove ${entry.path} from recent documents`);
+          remove.addEventListener("click", () => run(async () => {
+            await nativeApp.removeRecentDocument(entry.canonicalPath);
+            await refresh();
+          }));
+          row.append(open, remove);
+          list.append(row);
+        }
+        message.textContent = entries.length ? "" : "No recent documents";
+        clear.disabled = entries.length === 0;
+      } catch (error) {
+        if (current !== generation || panel.hidden) return;
+        message.textContent = `Could not load recent documents. ${error.message || error}`;
+        clear.disabled = false;
+      }
+      if (current === generation && !panel.hidden &&
+          (document.activeElement === trigger || panel.contains(document.activeElement) || document.activeElement === document.body)) {
+        (buttons()[0] || panel).focus();
+      }
+    }
+
+    async function run(action) {
+      if (busy) return;
+      busy = true;
+      const current = generation;
+      const priorFocus = document.activeElement;
+      const hadFocus = panel.contains(priorFocus);
+      const enabled = buttons();
+      enabled.forEach((button) => { button.disabled = true; });
+      if (hadFocus) panel.focus();
+      try { await action(); }
+      catch (error) { message.textContent = error.message || String(error); }
+      finally {
+        busy = false;
+        if (current === generation) {
+          enabled.forEach((button) => { button.disabled = false; });
+          if (!panel.hidden && document.activeElement === panel && enabled.includes(priorFocus)) priorFocus.focus();
+        }
+      }
+    }
+
+    trigger.addEventListener("click", () => {
+      if (!panel.hidden) { close(true); return; }
+      panel.hidden = false;
+      trigger.setAttribute("aria-expanded", "true");
+      trigger.classList.add("toggled");
+      refresh();
+    });
+    clear.addEventListener("click", () => run(async () => {
+      await nativeApp.clearRecentDocuments();
+      await refresh();
+    }));
+    document.addEventListener("click", (event) => {
+      if (!event.composedPath().includes(wrap)) close();
+    });
+    document.addEventListener("focusin", (event) => {
+      if (!wrap.contains(event.target)) close();
+    });
+    wrap.addEventListener("keydown", (event) => {
+      if (panel.hidden) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close(true);
+      } else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+        const items = buttons();
+        if (!items.length) return;
+        event.preventDefault();
+        const index = items.indexOf(document.activeElement);
+        const target = event.key === "Home" ? 0 : event.key === "End" ? items.length - 1
+          : (index + (event.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+        items[target].focus();
+      }
+    });
+  }
+
+  return { installRecentDocuments };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+  function edit(start, end, text, selectionStart = start + text.length, selectionEnd = selectionStart) {
+    return { start, end, text, selectionStart, selectionEnd };
+  }
+  function formatEdit(value, from, to, command) {
+    const selected = value.slice(from, to);
+    if (command.startsWith('heading-')) {
+      const level = Number(command.slice(8));
+      if (!Number.isInteger(level) || level < 1 || level > 6) return null;
+      const start = from === 0 ? 0 : value.lastIndexOf('\n', from - 1) + 1;
+      const last = to > from && value[to - 1] === '\n' ? to - 1 : to;
+      let end = value.indexOf('\n', last); if (end < 0) end = value.length;
+      const prefix = '#'.repeat(level) + ' ';
+      const lines = value.slice(start, end).split('\n');
+      const remove = lines.every(line => line.startsWith(prefix));
+      const text = lines.map(line => remove ? line.slice(prefix.length) : prefix + line.replace(/^#{1,6}\s+/, '')).join('\n');
+      return edit(start, end, text, start, start + text.length);
+    }
+    if (command === 'link') {
+      const label = selected || 'link text';
+      const text = '[' + label + '](https://)';
+      const position = from + label.length + 3;
+      return edit(from, to, text, position, position + 8);
+    }
+    if (command === 'code-block') {
+      const ticks = [...selected.matchAll(/`+/g)].reduce((max, m) => Math.max(max, m[0].length + 1), 3);
+      const fence = '`'.repeat(ticks);
+      const prefix = from > 0 && value[from - 1] !== '\n' ? '\n' : '';
+      const text = prefix + fence + '\n' + (selected || 'code') + '\n' + fence + (to < value.length && value[to] !== '\n' ? '\n' : '');
+      const position = from + prefix.length + fence.length + 1;
+      return edit(from, to, text, position, position + (selected || 'code').length);
+    }
+    let marker = ({bold:'**', italic:'*', code:'`'})[command];
+    if (!marker) return null;
+    if (command === 'code') {
+      const unpad = text => text.startsWith(' ') && text.endsWith(' ') && text.trim() ? text.slice(1,-1) : text;
+      const prefix = selected.match(/^`+/)?.[0], suffix = selected.match(/`+$/)?.[0];
+      if (prefix && prefix === suffix && selected.length > prefix.length * 2) {
+        const inner = selected.slice(prefix.length,-prefix.length);
+        if (![...inner.matchAll(/`+/g)].some(run => run[0].length === prefix.length)) {
+          const text=unpad(inner);return edit(from,to,text,from,from+text.length);
+        }
+      }
+      const before = value.slice(0,from).match(/(`+)( ?)$/), after = value.slice(to).match(/^( ?)(`+)/);
+      if (before && after && before[1] === after[2] && before[2] === after[1]
+          && ![...selected.matchAll(/`+/g)].some(run => run[0].length === before[1].length)) {
+        const start=from-before[0].length;
+        return edit(start,to+after[0].length,selected,start,start+selected.length);
+      }
+    }
+    const italicIsBold = command === 'italic' && selected.startsWith('**') && !selected.startsWith('***');
+    if (command !== 'code' && !italicIsBold && selected.startsWith(marker) && selected.endsWith(marker) && selected.length >= marker.length * 2) {
+      const text = selected.slice(marker.length, -marker.length);
+      return edit(from, to, text, from, from + text.length);
+    }
+    const surroundsBold = command === 'italic' && value.slice(0,from).match(/\*+$/)?.[0].length === 2;
+    if (command !== 'code' && !surroundsBold && value.slice(from - marker.length, from) === marker && value.slice(to, to + marker.length) === marker) {
+      return edit(from - marker.length, to + marker.length, selected, from - marker.length, to - marker.length);
+    }
+    if (command === 'code') marker = '`'.repeat([...selected.matchAll(/`+/g)].reduce((max, m) => Math.max(max, m[0].length + 1), 1));
+    const text = selected || (command === 'code' ? 'code' : 'text');
+    const pad = command === 'code' && (text.startsWith('`') || text.endsWith('`')) ? ' ' : '';
+    return edit(from, to, marker + pad + text + pad + marker, from + marker.length + pad.length, from + marker.length + pad.length + text.length);
+  }
+
+  function listEdit(value, from, to) {
+    if (from !== to) return null;
+    const start = from === 0 ? 0 : value.lastIndexOf('\n', from - 1) + 1;
+    let fence = null;
+    for (const line of value.slice(0, start).split('\n')) {
+      const match = line.match(/^ {0,3}(`{3,}|~{3,})/);
+      if (!match) continue;
+      if (!fence) fence = match[1];
+      else if (match[1][0] === fence[0] && match[1].length >= fence.length) fence = null;
+    }
+    if (fence) return null;
+    const before = value.slice(start, from);
+    const match = before.match(/^(\s*)([-+*]|\d+[.)])([ \t]+)(\[[ xX]\][ \t]+)?/);
+    if (!match) return null;
+    const endIndex = value.indexOf('\n', from);
+    const lineEnd = endIndex < 0 ? value.length : endIndex;
+    if (!value.slice(start + match[0].length, lineEnd).trim()) return edit(start, lineEnd, '');
+    let marker = match[2];
+    if (/^\d/.test(marker)) marker = String(Number.parseInt(marker, 10) + 1) + marker.slice(-1);
+    return edit(from, to, '\n' + match[1] + marker + match[3] + (match[4] ? '[ ] ' : ''));
+  }
+
+  function searchMatches(value, query, options = {}) {
+    if (!query) return {matches:[], error:null};
+    try {
+      let source = options.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      if (options.wholeWord) source = '(?<![\\p{L}\\p{N}_])(?:' + source + ')(?![\\p{L}\\p{N}_])';
+      const pattern = new RegExp(source, options.caseSensitive ? 'gu' : 'giu');
+      const matches = [...value.matchAll(pattern)].map(match => ({start:match.index, end:match.index + match[0].length, captures:[...match], groups:match.groups}));
+      return {matches, error:null};
+    } catch (error) { return {matches:[], error:error.message}; }
+  }
+
+  function replacementText(value, match, regex) {
+    if (!regex) return value;
+    return value.replace(/\$(\$|&|\d{1,2}|<[^>]+>)/g, (token, key) => {
+      if (key === '$') return '$';
+      if (key === '&') return match.captures[0];
+      if (key[0] === '<') return match.groups?.[key.slice(1, -1)] ?? token;
+      const index = Number(key);
+      if (index > 0 && index < match.captures.length) return match.captures[index] || '';
+      if (key.length === 2 && Number(key[0]) > 0 && Number(key[0]) < match.captures.length) return (match.captures[Number(key[0])] || '') + key[1];
+      return token;
+    });
+  }
+  return { formatEdit, listEdit, searchMatches, replacementText };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+  function installEditorEnhancements({document, activeEditor, replaceRange, onChange}) {
+    const win = document.defaultView;
+    const key = 'mdedit-editor-preferences-v1';
+    let stored = {};
+    try { stored = JSON.parse(win.localStorage.getItem(key) || '{}') || {}; } catch (_) {}
+    const prefs = {
+      fontSize: Number.isFinite(stored.fontSize) ? Math.max(10, Math.min(28, stored.fontSize)) : 13,
+      tabWidth: [2,4,8].includes(stored.tabWidth) ? stored.tabWidth : 2,
+      wrap: stored.wrap !== false,
+      lineNumbers: stored.lineNumbers === true,
+    };
+    const trigger = document.getElementById('btn-editor-options');
+    const panel = document.getElementById('editor-options');
+    panel.innerHTML = '<h2>Editor</h2><div class="format-actions">' +
+      [['bold','Bold'],['italic','Italic'],['link','Link'],['code','Inline code'],['code-block','Code block'],['heading-1','Heading 1'],['heading-2','Heading 2'],['heading-3','Heading 3']]
+        .map(([command,label]) => `<button type="button" data-format="${command}">${label}</button>`).join('') + '</div>' +
+      '<label>Font size <input id="editor-font-size" type="number" min="10" max="28" step="1"></label>' +
+      '<label>Tab width <select id="editor-tab-width"><option>2</option><option>4</option><option>8</option></select></label>' +
+      '<label><input id="editor-wrap" type="checkbox"> Wrap long lines</label>' +
+      '<label><input id="editor-line-numbers" type="checkbox"> Line numbers</label>';
+    const size = document.getElementById('editor-font-size'), tabs = document.getElementById('editor-tab-width');
+    const wrap = document.getElementById('editor-wrap'), numbers = document.getElementById('editor-line-numbers');
+    size.value = prefs.fontSize; tabs.value = prefs.tabWidth; wrap.checked = prefs.wrap; numbers.checked = prefs.lineNumbers;
+    let selection = null;
+    function close(focus = false) { panel.hidden = true; trigger.setAttribute('aria-expanded','false'); if (focus) trigger.focus(); }
+    trigger.addEventListener('click', () => {
+      if (!panel.hidden) return close(true);
+      const el = activeEditor();
+      selection = el ? {el,from:el.selectionStart,to:el.selectionEnd} : null;
+      panel.hidden = false; trigger.setAttribute('aria-expanded','true'); panel.querySelector('button').focus();
+    });
+    document.addEventListener('click', event => { if (!event.composedPath().includes(trigger.parentElement)) close(); });
+    panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); close(true); } });
+    function applyEdit(el, edit) {
+      if (!edit) return false;
+      replaceRange(el, edit.start, edit.end, edit.text);
+      el.setSelectionRange(edit.selectionStart, edit.selectionEnd);
+      onChange(); updateGutter(); return true;
+    }
+    function format(command) {
+      const el = activeEditor(); if (!el) return;
+      if (selection?.el === el && !panel.hidden) el.setSelectionRange(selection.from, selection.to);
+      const edit = win.MDEdit.formatEdit(el.value,el.selectionStart,el.selectionEnd,command);
+      close(); applyEdit(el,edit); selection = null;
+    }
+    panel.addEventListener('click', event => { const button = event.target.closest('[data-format]'); if (button) format(button.dataset.format); });
+    const host = document.getElementById('editor-surfaces');
+    host.addEventListener('keydown', event => {
+      const el = activeEditor(); if (event.target !== el || event.isComposing) return;
+      const mod = /Mac|iPhone|iPad/.test(win.navigator.platform) ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey;
+      let command = null;
+      if (mod && !event.altKey) {
+        if (!event.shiftKey) command = ({b:'bold',i:'italic',k:'link',e:'code'})[event.key.toLowerCase()];
+        else if (event.key.toLowerCase() === 'c') command = 'code-block';
+      } else if (mod && event.altKey && !event.shiftKey) {
+        const digit = /^Digit[1-6]$/.test(event.code) ? event.code.slice(-1) : event.key;
+        if (/^[1-6]$/.test(digit)) command = 'heading-' + digit;
+      }
+      if (command) { event.preventDefault(); event.stopImmediatePropagation(); selection = null; applyEdit(el,win.MDEdit.formatEdit(el.value,el.selectionStart,el.selectionEnd,command)); }
+      else if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
+        const edit = win.MDEdit.listEdit(el.value,el.selectionStart,el.selectionEnd);
+        if (edit) { event.preventDefault(); event.stopImmediatePropagation(); applyEdit(el,edit); }
+      }
+    }, true);
+    let frame = null, layout = null;
+    const measure = document.createElement('div');
+    measure.setAttribute('aria-hidden','true');
+    measure.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;padding:0;border:0;overflow-wrap:break-word;';
+    document.body.append(measure);
+    function applyPreferences() {
+      for (const el of host.querySelectorAll('textarea.document-editor')) {
+        el.style.fontSize = prefs.fontSize + 'px'; el.style.tabSize = String(prefs.tabWidth);
+        el.wrap = prefs.wrap ? 'soft' : 'off'; el.style.whiteSpace = prefs.wrap ? 'pre-wrap' : 'pre';
+        let gutter = el.parentElement.querySelector('.editor-gutter');
+        if (!gutter) { gutter = document.createElement('div'); gutter.className='editor-gutter'; gutter.setAttribute('aria-hidden','true'); el.before(gutter); }
+        gutter.hidden = !prefs.lineNumbers;
+        gutter.style.fontSize = prefs.fontSize + 'px';
+      }
+      updateGutter();
+    }
+    function paintGutter() {
+      frame = null;
+      const el = activeEditor(); if (!el || !prefs.lineNumbers) return;
+      const gutter = el.parentElement.querySelector('.editor-gutter'); if (!gutter) return;
+      const style = win.getComputedStyle(el), top = parseFloat(style.paddingTop), bottom = el.scrollTop + el.clientHeight;
+      const width = el.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+      const signature = [width,style.font,style.lineHeight,prefs.wrap,prefs.tabWidth].join('|');
+      if (!layout || layout.value !== el.value || layout.signature !== signature) layout = {value:el.value,signature,offset:0,y:top,rows:[],complete:false};
+      measure.style.font = style.font; measure.style.lineHeight = style.lineHeight; measure.style.tabSize = String(prefs.tabWidth);
+      measure.style.whiteSpace = prefs.wrap ? 'pre-wrap' : 'pre'; measure.style.width = width + 'px';
+      const lineHeight = parseFloat(style.lineHeight);
+      while (!layout.complete && layout.y < bottom + lineHeight) {
+        const end = el.value.indexOf('\n',layout.offset);
+        let height = lineHeight;
+        if (prefs.wrap) { measure.textContent = el.value.slice(layout.offset,end < 0 ? el.value.length : end) || '\u200b'; height = measure.getBoundingClientRect().height; }
+        layout.rows.push({y:layout.y,height}); layout.y += height;
+        layout.offset = end + 1; layout.complete = end < 0;
+      }
+      const fragment = document.createDocumentFragment();
+      layout.rows.forEach((row,index) => {
+        if (row.y + row.height < el.scrollTop || row.y > bottom) return;
+        const number = document.createElement('div'); number.textContent = String(index + 1);
+        number.style.cssText = `position:absolute;right:6px;top:${row.y - el.scrollTop}px;line-height:${lineHeight}px;`;
+        fragment.append(number);
+      });
+      gutter.replaceChildren(fragment);
+    }
+    function updateGutter() { if (frame === null && prefs.lineNumbers) frame = win.requestAnimationFrame(paintGutter); }
+    for (const input of [size,tabs,wrap,numbers]) input.addEventListener('change', () => {
+      prefs.fontSize = Math.max(10,Math.min(28,Number(size.value) || 13)); size.value = prefs.fontSize;
+      prefs.tabWidth = Number(tabs.value); prefs.wrap = wrap.checked; prefs.lineNumbers = numbers.checked;
+      try { win.localStorage.setItem(key,JSON.stringify(prefs)); } catch (_) {}
+      layout = null; applyPreferences();
+    });
+    host.addEventListener('input',updateGutter); host.addEventListener('scroll',updateGutter,true);
+    new win.MutationObserver(records => { if (records.some(r => [...r.addedNodes].some(n => n.nodeType === 1 && n.matches('.editor-surface')))) applyPreferences(); }).observe(host,{childList:true});
+    new win.ResizeObserver(updateGutter).observe(host);
+    applyPreferences();
+    return { tabWidth:() => prefs.tabWidth, updateGutter, applyPreferences };
+  }
+  return { installEditorEnhancements };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+  function createDesktopAssets({document,nativeApp,controller,activeEditor,replaceRange,onChange,setStatus}) {
+    if (!nativeApp) return null;
+    const win = document.defaultView, cache = new Map();
+    let importing = false, cacheBytes = 0;
+    const relative = reference => reference && !/^(?:[a-z][a-z\d+.-]*:|\/|#)/i.test(reference);
+    async function dataUrl(path,reference,fresh=false) {
+      const key = path + '\0' + reference;
+      const cached=cache.get(key);
+      if (!fresh && cached && Date.now()-cached.createdAt<3000) return cached;
+      if (cached) { cacheBytes-=cached.url.length;cache.delete(key); }
+      const asset = await nativeApp.readDocumentAsset(path,reference.split(/[?#]/)[0]);
+      const result = await new Promise((resolve,reject) => {
+        const reader = new win.FileReader(); reader.onload = () => resolve({url:reader.result,mime:asset.mime}); reader.onerror=()=>reject(reader.error);
+        reader.readAsDataURL(new win.Blob([new Uint8Array(asset.bytes)],{type:asset.mime}));
+      });
+      if (result.url.length < 32*1024*1024) {
+        while (cacheBytes + result.url.length > 32*1024*1024 && cache.size) { const key=cache.keys().next().value; cacheBytes-=cache.get(key).url.length; cache.delete(key); }
+        result.createdAt=Date.now();cache.set(key,result); cacheBytes+=result.url.length;
+      }
+      return result;
+    }
+    async function hydrate(root,path,isCurrent,forExport=false) {
+      if (!path) return;
+      for (const el of root.querySelectorAll('img[src],a[href]')) {
+        const image = el.tagName === 'IMG', attr = image?'src':'href', reference=el.getAttribute(attr);
+        if (!relative(reference)) continue;
+        if (!image && !forExport) { el.dataset.localReference=reference; continue; }
+        try {
+          const asset=await dataUrl(path,reference,forExport); if (!isCurrent()) return;
+          if (image && !asset.mime.startsWith('image/')) throw new Error('This file is not a supported image');
+          el.setAttribute(attr,asset.url);
+          if (image) await el.decode();
+          if (!image) el.setAttribute('download',decodeURIComponent(reference.split(/[?#]/)[0]).split('/').pop());
+        } catch (error) {
+          if (forExport) throw new Error(`Could not include ${reference}: ${error.message || error}`);
+          if (isCurrent()) { el.title=`Could not load ${reference}`; el.classList.add('asset-unavailable'); }
+        }
+      }
+    }
+    const label = name => String(name).replace(/[\r\n]/g,' ').replace(/[\\[\]]/g,'\\$&');
+    const uri = path => path.split('/').map(part=>encodeURIComponent(part).replace(/[()]/g,c=>'%'+c.charCodeAt(0).toString(16))).join('/');
+    async function importFiles(files, nativePaths=false) {
+      if (importing || !files.length || document.querySelector('dialog[open],#app-dialog:not([hidden])')) return;
+      importing=true;
+      const model=controller.activeDocument();
+      const original=activeEditor();
+      if (!model || !original) { importing=false; return; }
+      const initialRevision=model.editRevision;
+      let from=original.selectionStart,to=original.selectionEnd;
+      try {
+        if (!model.path) {
+          const saved=await controller.saveAs(model.id);
+          if (!saved?.saved) return;
+        }
+        const path=model.path;
+        let revision=initialRevision;
+        const current=()=>controller.activeDocument()===model && model.path===path && model.editRevision===revision && activeEditor()===original;
+        if (!current()) throw new Error('Document changed before the attachment could be inserted');
+        for (const file of files) {
+          if (!current()) throw new Error('Document changed before the attachment could be inserted');
+          if (!nativePaths && file.size > 20*1024*1024) throw new Error("Attachments must be 20 MiB or smaller");
+          const name=nativePaths?file.split(/[\\/]/).pop():file.name;
+          const asset=nativePaths?await nativeApp.importDocumentAttachment(path,file)
+            :await nativeApp.importDocumentAsset(path,name,new Uint8Array(await file.arrayBuffer()));
+          if (!current()) throw new Error(`Document changed. The attachment was saved as ${asset.relativePath}; its link was not inserted.`);
+          const markdown=(asset.mime.startsWith('image/')?'!':'')+'['+label(name)+']('+uri(asset.relativePath)+')';
+          replaceRange(original,from,to,markdown+'\n'); onChange();
+          revision=model.editRevision; from=to=original.selectionEnd;
+        }
+        setStatus('Inserted '+files.length+' attachment'+(files.length===1?'':'s'));
+      } catch(error) { setStatus(error.message || String(error)); }
+      finally { importing=false; }
+    }
+    const attach=document.getElementById('btn-attach'); attach.hidden=false;
+    attach.addEventListener('click', async()=>{
+      const model=controller.activeDocument(),revision=model?.editRevision;
+      try {
+        const paths=await nativeApp.pickAttachments();
+        if (controller.activeDocument()!==model || model?.editRevision!==revision) throw new Error('Document changed while choosing attachments');
+        await importFiles(paths,true);
+      } catch(error) { setStatus(error.message || String(error)); }
+    });
+    document.getElementById('editor-surfaces').addEventListener('paste',event=>{
+      if(event.target!==activeEditor())return;
+      const files=[...(event.clipboardData?.files || [])].filter(file=>file.type.startsWith('image/'));
+      if(files.length){event.preventDefault();importFiles(files);}
+    });
+    document.addEventListener('drop',event=>{
+      const files=[...(event.dataTransfer?.files || [])];
+      if(!files.length || files.every(file=>/\.(md|markdown|mdown|mkd|txt)$/i.test(file.name)))return;
+      event.preventDefault();event.stopImmediatePropagation();document.getElementById('drop-overlay').classList.remove('on');
+      importFiles(files);
+    },true);
+    document.getElementById('preview').addEventListener('click',async event=>{
+      const anchor=event.target.closest('a[data-local-reference]');if(!anchor)return;
+      event.preventDefault();const model=controller.activeDocument();if(!model?.path)return;
+      try {
+        const asset=await dataUrl(model.path,anchor.dataset.localReference);
+        const a=document.createElement('a');a.href=asset.url;a.download=decodeURIComponent(anchor.dataset.localReference).split('/').pop();a.click();
+      }catch(error){setStatus(error.message || String(error));}
+    });
+    const nativeWindow=win.__TAURI__?.window?.getCurrentWindow?.();
+    if(nativeWindow?.onDragDropEvent) nativeWindow.onDragDropEvent(async event=>{
+      const overlay=document.getElementById('drop-overlay');
+      if(event.payload.type==='enter')overlay.classList.add('on');
+      if(event.payload.type==='leave'||event.payload.type==='drop')overlay.classList.remove('on');
+      if(event.payload.type!=='drop')return;
+      const paths=event.payload.paths;
+      const docs=paths.filter(path=>/\.(md|markdown|mdown|mkd|txt)$/i.test(path));
+      const assets=paths.filter(path=>!docs.includes(path));
+      if(assets.length) await importFiles(assets,true);
+      if(docs.length)controller.openPaths(docs).catch(error=>setStatus(error.message));
+    }).catch(error=>setStatus('Could not enable file drop: '+error.message));
+    return {hydrate,importFiles,clearCache(){cache.clear();cacheBytes=0;}};
+  }
+  return {createDesktopAssets};
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+  function installDesktopWorkspace({document,nativeApp,controller,setStatus,onReload}) {
+    if (!nativeApp) return null;
+    const win=document.defaultView;
+    const menu=document.createElement('div');
+    menu.id='document-menu'; menu.className='document-menu'; menu.hidden=true;
+    menu.setAttribute('role','menu'); menu.setAttribute('aria-label','Document actions');
+    for (const [action,label] of [['reopen','Reopen closed tab'],['copy','Copy file path'],['reveal','Show in file manager'],['save-as','Save As…'],['close','Close tab']]) {
+      const button=document.createElement('button');button.type='button';button.dataset.action=action;
+      button.setAttribute('role','menuitem');button.textContent=label;menu.append(button);
+    }
+    document.body.append(menu);
+    const banner=document.createElement('div');banner.className='external-banner';banner.hidden=true;
+    banner.setAttribute('role','status');
+    const message=document.createElement('span'),compare=document.createElement('button');
+    compare.type='button';compare.textContent='Compare changes';banner.append(message,compare);
+    document.getElementById('document-tabs').parentElement.after(banner);
+    const dialog=document.createElement('dialog');dialog.id='external-comparison';
+    dialog.setAttribute('aria-labelledby','comparison-title');
+    dialog.innerHTML='<h2 id="comparison-title">File changed on disk</h2><p class="comparison-name"></p><div class="comparison-columns"><label>Your edits<textarea readonly aria-label="Your edits" spellcheck="false"></textarea></label><label>Disk version<textarea readonly aria-label="Disk version" spellcheck="false"></textarea></label></div><p>Your edits stay unchanged until you choose an action.</p><div class="comparison-actions"><button data-action="keep-editing">Keep editing</button><button data-action="save-as">Save As…</button><button data-action="reload">Reload from disk…</button></div>';
+    document.body.append(dialog);
+    let targetId=null,menuOwner=null,comparisonId=null;
+    function closeMenu(focus=false) { menu.hidden=true;if(focus && menuOwner?.isConnected)menuOwner.focus(); }
+    function openMenu(owner,x,y) {
+      targetId=owner.dataset.documentId;menuOwner=owner;
+      const model=controller.session?.documents.get(targetId);if(!model)return;
+      menu.querySelector('[data-action="reopen"]').disabled=!controller.canReopenClosedDocument();
+      for(const action of ['copy','reveal'])menu.querySelector(`[data-action="${action}"]`).disabled=!model.path;
+      menu.hidden=false;
+      menu.style.left=Math.max(4,Math.min(x,win.innerWidth-menu.offsetWidth-4))+'px';
+      menu.style.top=Math.max(4,Math.min(y,win.innerHeight-menu.offsetHeight-4))+'px';
+      menu.querySelector('button:not(:disabled)').focus();
+    }
+    const tabbar=document.getElementById('document-tabs');
+    tabbar.addEventListener('contextmenu',event=>{
+      const owner=event.target.closest('[role="tab"]');if(!owner)return;
+      event.preventDefault();openMenu(owner,event.clientX,event.clientY);
+    });
+    tabbar.addEventListener('keydown',event=>{
+      if(event.key!=='ContextMenu' && !(event.key==='F10'&&event.shiftKey))return;
+      const owner=event.target.closest('[role="tab"]');if(!owner)return;
+      event.preventDefault();const rect=owner.getBoundingClientRect();openMenu(owner,rect.left,rect.bottom);
+    });
+    menu.addEventListener('keydown',event=>{
+      if(event.key==='Escape'){event.preventDefault();closeMenu(true);return;}
+      if(event.key==='Tab'){closeMenu();return;}
+      if(!['ArrowDown','ArrowUp','Home','End'].includes(event.key))return;
+      event.preventDefault();const items=[...menu.querySelectorAll('button:not(:disabled)')],index=items.indexOf(document.activeElement);
+      items[event.key==='Home'?0:event.key==='End'?items.length-1:(index+(event.key==='ArrowDown'?1:-1)+items.length)%items.length]?.focus();
+    });
+    document.addEventListener('pointerdown',event=>{if(!menu.contains(event.target))closeMenu();});
+    win.addEventListener('resize',()=>closeMenu());
+    async function reopen() {
+      try { const result=await controller.reopenClosedDocument();if(result.error)setStatus(result.error.message||String(result.error)); }
+      catch(error){setStatus(error.message||String(error));}
+    }
+    menu.addEventListener('click',async event=>{
+      const action=event.target.closest('button')?.dataset.action;if(!action)return;
+      const model=controller.session?.documents.get(targetId);closeMenu(true);if(!model)return;
+      try {
+        if(action==='reopen')await reopen();
+        else if(action==='copy'){await win.navigator.clipboard.writeText(model.path);setStatus('Copied file path');}
+        else if(action==='reveal')await nativeApp.revealDocument(model.path);
+        else if(action==='save-as')await controller.saveAs(model.id);
+        else if(action==='close')await controller.closeDocument(model.id);
+      }catch(error){setStatus(error.message||String(error));}
+      refresh();
+    });
+    document.addEventListener('keydown',event=>{
+      if((event.ctrlKey||event.metaKey)&&event.shiftKey&&!event.altKey&&event.key.toLowerCase()==='t'&&!document.querySelector('dialog[open]')){
+        event.preventDefault();reopen();
+      }
+    });
+    function refresh() {
+      const model=controller.activeDocument();
+      const conflict=model && controller.externalVersion(model.id);
+      const missing=model?.fileStatus==='missing';
+      banner.hidden=!conflict&&!missing;
+      message.textContent=missing?'This file is missing on disk. Use Save As to keep a copy.':conflict?`${model.displayName} changed outside MDedit. Your edits are preserved.`:'';
+      compare.hidden=!conflict;
+    }
+    compare.addEventListener('click',()=>{
+      const model=controller.activeDocument(),disk=model&&controller.externalVersion(model.id);if(!disk)return;
+      comparisonId=model.id;
+      dialog.querySelector('.comparison-name').textContent=model.path;
+      dialog.querySelector('[aria-label="Your edits"]').value=model.content;
+      dialog.querySelector('[aria-label="Disk version"]').value=disk.content;
+      dialog.showModal();dialog.querySelector('[data-action="keep-editing"]').focus();
+    });
+    dialog.addEventListener('click',async event=>{
+      const action=event.target.closest('[data-action]')?.dataset.action;if(!action)return;
+      const id=comparisonId;dialog.close();
+      try { await controller.resolveConflict(id,action); }catch(error){setStatus(error.message||String(error));}
+      refresh();
+    });
+    let checking=false;
+    async function check() {
+      if(checking||document.hidden||dialog.open)return;
+      checking=true;
+      try {
+        const events=await controller.checkExternalChanges();
+        if(events.some(event=>event.status==='reloaded'))onReload?.();
+        refresh();
+      }catch(error){setStatus(error.message||String(error));}
+      finally{checking=false;}
+    }
+    const timer=win.setInterval(check,3000);win.addEventListener('focus',check);
+    win.addEventListener('pagehide',()=>{win.clearInterval(timer);win.removeEventListener('focus',check);},{once:true});
+    refresh();
+    return {refresh,check};
+  }
+  return {installDesktopWorkspace};
+});
 </script>
 <script>
 (() => {
@@ -10917,7 +11807,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true, rootElement = preview, interactive = true) {
+  function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
     rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
     if (HAS_MATH) injectMath(math, rootElement);
@@ -10933,13 +11823,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       buildToc(rootElement);
       updateStats(content);
     }
-    return diagrams;
+    return Promise.resolve(diagrams).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive));
   }
 
   async function renderForExport(capture) {
     const isolated = document.createElement("article");
     const owned = () => controller.isDocumentCaptureCurrent(capture);
-    await render(capture.content, owned, isolated, false);
+    await render(capture.content, owned, isolated, false, capture.path);
     if (!owned()) throw new Error("the document changed before its export could be rendered");
     return isolated.innerHTML;
   }
@@ -11310,6 +12200,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     holder.appendChild(clone);
     document.body.appendChild(holder);
     try {
+      await Promise.all([...clone.querySelectorAll('img[src^="data:"]')].map(img => img.decode()));
       const height = Math.ceil(clone.getBoundingClientRect().height);
       const W = width + P * 2, H = height + P * 2;
       if (H > 16000) {
@@ -11369,7 +12260,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     };
     try {
       if (wasDark) setTheme("light", false);
-      await controller.renderDocument(capture.documentId, { renderWhenHidden: true });
+      desktopAssets?.clearCache();
+      await controller.renderDocument(capture.documentId, { renderWhenHidden: true, force: true });
+      if (desktopAssets) await desktopAssets.hydrate(preview, capture.path, () => controller.canPrintCapture(capture, previewOwner), true);
       if (!controller.canPrintCapture(capture, previewOwner)) {
         throw new Error("PDF export canceled because the active document changed before printing");
       }
@@ -11441,7 +12334,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
      Everything goes through execCommand("insertText") rather than setRangeText:
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
-  const INDENT = "  ";
+  let desktopAssets = null, desktopWorkspace = null;
+  let editorEnhancements = null;
+  const indentText = () => " ".repeat(editorEnhancements ? editorEnhancements.tabWidth() : 2);
   function keyboardEvent(event) {
     return {
       key: event.key,
@@ -11512,12 +12407,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const out = text.split("\n").map((line, i) => {
       let delta;
       if (outdent) {
-        const lead = (line.match(/^(\t| {1,2})/) || [""])[0];
+        const lead = (line.match(new RegExp("^(\\t| {1," + indentText().length + "})")) || [""])[0];
         delta = -lead.length;
         line = line.slice(lead.length);
       } else {
-        delta = line.length ? INDENT.length : 0;   // don't indent blank lines
-        if (delta) line = INDENT + line;
+        delta = line.length ? indentText().length : 0;   // don't indent blank lines
+        if (delta) line = indentText() + line;
       }
       if (i === 0) firstDelta = delta;
       totalDelta += delta;
@@ -11549,7 +12444,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const spansLines = surface.value.slice(surface.selectionStart, surface.selectionEnd).includes("\n");
     if (e.shiftKey) shiftLines(surface, true);          // Shift+Tab always outdents
     else if (spansLines) shiftLines(surface, false);    // indent every line of a block
-    else replaceRange(surface, surface.selectionStart, surface.selectionEnd, INDENT);
+    else replaceRange(surface, surface.selectionStart, surface.selectionEnd, indentText());
   });
 
   // proportional scroll sync: editor → preview
@@ -11779,6 +12674,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       "<kbd>Alt+Shift+←/→</kbd><span>Move document tab</span>" +
       "<kbd>" + MOD + "W</kbd><span>Close document</span>" +
       "<kbd>" + MOD + "F</kbd><span>Find &amp; replace</span>" +
+      "<kbd>" + MOD + "B / I</kbd><span>Bold / italic</span>" +
+      "<kbd>" + MOD + "K / E</kbd><span>Link / inline code</span>" +
+      "<kbd>" + (isMac ? "⌘⇧C" : "Ctrl+Shift+C") + "</kbd><span>Code block</span>" +
+      "<kbd>" + (isMac ? "⌘⌥1–6" : "Ctrl+Alt+1–6") + "</kbd><span>Heading level</span>" +
+      (nativeApp ? "<kbd>" + (isMac ? "⌘⇧T" : "Ctrl+Shift+T") + "</kbd><span>Reopen closed tab</span>" : "") +
+      "<kbd>Enter / ⇧Enter</kbd><span>Continue list / plain newline</span>" +
       "<kbd>Tab</kbd><span>Indent</span>" +
       "<kbd>⇧Tab</kbd><span>Outdent</span>" +
       "</div>" +
@@ -11908,18 +12809,17 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
      on the native undo stack like every other edit. */
   const findBar = $("find-bar"), findInput = $("find-input"), replaceInput = $("replace-input");
   let matches = [], matchIdx = -1;
+  const findOptions = () => ({caseSensitive:$("find-case").checked, wholeWord:$("find-word").checked, regex:$("find-regex").checked});
+  for (const id of ["find-case", "find-word", "find-regex"]) $(id).addEventListener("change", () => { runFind(false); });
 
   function runFind(keepIndex) {
     const surface = activeEditor();
     const q = findInput.value;
-    matches = [];
-    if (surface && q) {
-      // Match the original text: Unicode lowercasing can change its length.
-      const pattern = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
-      for (const match of surface.value.matchAll(pattern)) {
-        matches.push({ start: match.index, end: match.index + match[0].length });
-      }
-    }
+    const result = MDEdit.searchMatches(surface ? surface.value : "", q, findOptions());
+    matches = result.matches;
+    $("find-error").textContent = result.error ? "Invalid regular expression: " + result.error : "";
+    findInput.setAttribute("aria-invalid", String(Boolean(result.error)));
+    $("find-replace").disabled = $("find-all").disabled = Boolean(result.error);
     if (!keepIndex || matchIdx < 0 || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
     paintCount();
   }
@@ -11957,7 +12857,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     runFind(true);
     if (matchIdx < 0 || !matches.length) return;
     const { start, end } = matches[matchIdx];
-    replaceRange(surface, start, end, replaceInput.value);
+    replaceRange(surface, start, end, MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex));
     afterEdit();
     runFind(true);
     revealMatch();
@@ -11969,7 +12869,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (!matches.length) return;
     const r = replaceInput.value, n = matches.length;
     let out = "", last = 0;
-    for (const { start, end } of matches) { out += surface.value.slice(last, start) + r; last = end; }
+    for (const match of matches) { out += surface.value.slice(last, match.start) + MDEdit.replacementText(r, match, findOptions().regex); last = match.end; }
     out += surface.value.slice(last);
     replaceRange(surface, 0, surface.value.length, out);   // one undo step for the lot
     afterEdit();
@@ -12063,6 +12963,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
         query: findInput.value,
         replacement: replaceInput.value,
         matchIndex: matchIdx,
+        ...findOptions(),
       },
     };
   }
@@ -12070,6 +12971,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   function applySharedWorkspace(workspace) {
     setView(workspace.viewMode || "split");
     setToc(Boolean(workspace.tocOpen));
+    $("find-case").checked = Boolean(workspace.find?.caseSensitive);
+    $("find-word").checked = Boolean(workspace.find?.wholeWord);
+    $("find-regex").checked = Boolean(workspace.find?.regex);
     findInput.value = workspace.find && workspace.find.query || "";
     replaceInput.value = workspace.find && workspace.find.replacement || "";
     matchIdx = workspace.find && Number.isInteger(workspace.find.matchIndex) ? workspace.find.matchIndex : -1;
@@ -12095,6 +12999,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       message: persistentRecoveryWarning,
     });
     scheduleActiveDocumentStats(active.id, active.content);
+    if (editorEnhancements) editorEnhancements.updateGutter();
+    if (desktopWorkspace) desktopWorkspace.refresh();
     return active;
   }
 
@@ -12169,6 +13075,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     syncActiveSurface();
     if (findInput.value) runFind(true);
   };
+  workspaceView.beforeReloadDocument = () => desktopAssets?.clearCache();
   workspaceView.clearPreview = () => {
     previewOwner = null;
     preview.replaceChildren();
@@ -12239,7 +13146,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
             // activation independent from Markdown/DOM construction.
             if (document.body.dataset.view === "edit" && !renderWhenHidden) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
-            mermaidPending = render(capture.content, isCurrent);
+            mermaidPending = render(capture.content, isCurrent, preview, true, capture.path);
             await mermaidPending;
             return isCurrent() ? preview.innerHTML : null;
           },
@@ -12255,6 +13162,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   });
   if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.controller = controller;
   resolveControllerReady(controller);
+  MDEdit.installRecentDocuments({ document, controller, nativeApp });
+  editorEnhancements = MDEdit.installEditorEnhancements({ document, activeEditor, replaceRange, onChange: afterEdit });
+
+  desktopAssets = MDEdit.createDesktopAssets({ document, nativeApp, controller, activeEditor, replaceRange, onChange: afterEdit, setStatus });
+  desktopWorkspace = MDEdit.installDesktopWorkspace({ document, nativeApp, controller, setStatus, onReload: () => desktopAssets?.clearCache() });
 
   async function installNativeCloseGuard() {
     const windowApi = window.__TAURI__ && window.__TAURI__.window;

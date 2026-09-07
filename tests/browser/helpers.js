@@ -9,9 +9,11 @@ async function installFakeTauri(page, options = {}) {
     const documents = configuration.documents || {};
     const saveResults = configuration.saveResults || {};
     const pendingFiles = [...(configuration.pendingFiles || [])];
+    const recentDocuments = [...(configuration.recentDocuments || [])];
     let releaseFileListener;
     const fileListenerGate = new Promise((resolve) => { releaseFileListener = resolve; });
     let closeHandler = null;
+    let dropHandler = null;
     let releaseFirstTitle = null;
     const firstTitleGate = new Promise((resolve) => { releaseFirstTitle = resolve; });
     let titleWriteCount = 0;
@@ -19,7 +21,11 @@ async function installFakeTauri(page, options = {}) {
     window.__testBridge = {
       calls,
       pendingFiles,
+      recentDocuments,
+      documents,
+      assets: configuration.assets,
       releaseFileListener() { releaseFileListener(); },
+      drop(paths) { return dropHandler?.({payload:{type:"drop",paths}}); },
       async requestClose() {
         if (!closeHandler) throw new Error("close handler is not installed");
         const event = { prevented: false, preventDefault() { this.prevented = true; } };
@@ -36,7 +42,7 @@ async function installFakeTauri(page, options = {}) {
 
     window.__TAURI__ = {
       dialog: {
-        open: async () => paths,
+        open: async (options) => options.filters ? paths : (configuration.attachmentPaths || []),
         save: async () => configuration.savePath || null,
       },
       fs: {
@@ -45,6 +51,39 @@ async function installFakeTauri(page, options = {}) {
       core: {
         invoke: async (command, args = {}) => {
           calls.invokes.push({ command, args });
+          if (command === "canonicalize_document_path") return documents[args.path]?.canonicalPath || args.path;
+          if (command === "probe_document") {
+            const entry = documents[args.path];
+            if (!entry || entry.missing) return { status: "missing" };
+            const sha256 = entry.sha256 || `fingerprint:${args.path}`;
+            return { status: sha256 === args.expectedSha256 ? "unchanged" : "changed", sha256 };
+          }
+          if (command === "read_document_asset") {
+            const asset = configuration.assets?.[args.documentPath]?.[args.reference] || configuration.assets?.[args.reference];
+            if (!asset) throw new Error("No fake asset: " + args.reference);
+            return asset;
+          }
+          if (command === "import_document_asset" || command === "import_document_attachment") {
+            if (configuration.importDelayMs) await new Promise(resolve => setTimeout(resolve, configuration.importDelayMs));
+            return configuration.importResult || { relativePath: "assets/imported.png", mime: "image/png" };
+          }
+          if (command === "list_recent_documents") {
+            if (configuration.recentListError) throw new Error(configuration.recentListError);
+            return recentDocuments.map((entry) => ({ ...entry }));
+          }
+          if (command === "remember_recent_document") {
+            if (configuration.recentWriteError) throw new Error(configuration.recentWriteError);
+            const canonicalPath = documents[args.path]?.canonicalPath || args.path;
+            const retained = recentDocuments.filter((entry) => entry.canonicalPath !== canonicalPath);
+            recentDocuments.splice(0, recentDocuments.length, { path: args.path, canonicalPath }, ...retained.slice(0, 19));
+            return;
+          }
+          if (command === "remove_recent_document") {
+            const retained = recentDocuments.filter((entry) => entry.canonicalPath !== args.canonicalPath);
+            recentDocuments.splice(0, recentDocuments.length, ...retained);
+            return;
+          }
+          if (command === "clear_recent_documents") { recentDocuments.splice(0); return; }
           if (command === "load_recovery_manifest") return configuration.recoveryManifest ?? null;
           if (command === "load_recovery_document") {
             const key = `${args.documentId}:${args.snapshotRevision}`;
@@ -54,8 +93,9 @@ async function installFakeTauri(page, options = {}) {
           if (command === "recovery_directory") return "/fake-recovery";
           if (command === "read_document") {
             const entry = documents[args.path];
+            if (entry?.delayMs) await new Promise((resolve) => setTimeout(resolve, entry.delayMs));
             if (entry && entry.error) throw new Error(entry.error);
-            if (!entry) throw new Error(`No fake document for ${args.path}`);
+            if (!entry) throw new Error(`failed to read document ${args.path}: No such file or directory (os error 2)`);
             return {
               path: args.path,
               canonicalPath: entry.canonicalPath || args.path,
@@ -72,6 +112,7 @@ async function installFakeTauri(page, options = {}) {
               if (next && next.error) throw new Error(next.error);
               if (next) return next;
             } else if (configured) return configured;
+            documents[args.path] = {content: args.content, sha256: `saved:${args.path}`};
             return { status: "saved", sha256: `saved:${args.path}`, canonicalPath: args.path };
           }
           return null;
@@ -86,6 +127,7 @@ async function installFakeTauri(page, options = {}) {
       },
       window: {
         getCurrentWindow: () => ({
+          onDragDropEvent: async (callback) => { dropHandler=callback;return ()=>{dropHandler=null;}; },
           onCloseRequested: async (callback) => {
             // Tauri's listener destroys the window after an unprevented event.
             // Counting close() alone misses the final permission boundary.

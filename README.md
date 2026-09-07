@@ -5,17 +5,23 @@ MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It c
 ## Features
 
 - Native **Open**, **Save**, and **Save As** for Markdown documents.
+- Desktop **Recent** menu remembers the last 20 files you opened or saved.
 - A tabbed workspace with independent editing state for every open document.
 - Synchronized **Edit**, **Split**, and **Preview** modes.
 - GitHub-flavored Markdown, task lists, tables, footnotes, and callouts.
 - Syntax highlighting, Mermaid diagrams, and KaTeX math.
-- Find and replace, table of contents, reader controls, and light/dark themes.
+- Formatting shortcuts, automatic list continuation, and editor font, indentation, wrapping, and line-number preferences.
+- Per-document find and replace with match-case, whole-word, and regular-expression modes.
+- Desktop image and attachment import, external-change comparison, and tab context menus.
+- Table of contents, reader controls, and light/dark themes.
 - HTML, PNG, PDF, CSV, and SVG exports.
 - Draft restoration and Markdown file associations.
 
 ## Working with documents
 
 Select **+** to create a new tab, or select **Open** to choose one or several files. Select a tab to make it active; the editor, preview, view mode, selection, scroll position, find state, exports, and Save commands follow the active document. You can also switch tabs with `Ctrl+Tab` and `Ctrl+Shift+Tab`.
+
+In the desktop app, select **Recent** in the toolbar to reopen a file or return to its existing tab. Each entry shows its folder. Use **×** to remove an entry or **Clear recent documents** to clear the history; neither action deletes files or changes open tabs. History stays on your device, separately from session recovery. Untitled documents enter the list only after they are saved.
 
 An unsaved change shows a dirty indicator on that document's tab and an asterisk in the window title. **Save** writes the active document, while **Save As** writes it to a new location. **Save All** writes every dirty document in tab order without closing MDedit. **Save All & Quit** in the close-application prompt performs the same ordered saves, then closes the application. Both commands ask for a destination for each untitled document and stop if a save is canceled or fails, leaving the remaining documents open and unchanged.
 
@@ -25,9 +31,23 @@ Closing the application always asks for confirmation. With clean documents, choo
 
 Desktop exports use raw bytes and Tauri's native save dialog. The save dialog dynamically grants write access only to the selected destination; MDedit has no wildcard filesystem scope. Document saves and private recovery storage remain behind validated Rust commands.
 
+### Editing and attachments
+
+Use **Editor** for formatting actions and preferences. Font size, tab width, wrapping, and line numbers apply to every tab and persist locally. Enter continues bullets, numbered lists, and unchecked tasks; Enter on an empty list item ends the list. Shift+Enter inserts a plain newline. Formatting, indentation, list continuation, and replacement support Undo.
+
+Find searches only the active document. **Match case**, **Whole word**, and **Regex** stay with that tab's query. Regex replacements support `$1`, `$2`, named groups (`$<name>`), `$&` for the match, and `$$` for a literal dollar sign. Invalid expressions show an error and disable replacement.
+
+On desktop, **Attach**, image paste, or dropping an image or other attachment copies it into an `assets` folder beside the Markdown document and inserts a relative link. Untitled documents prompt for Save As first. Each imported asset gets a unique filename, and files are limited to 20 MiB each. Relative images resolve from the document folder, including `../` references. HTML exports embed local images and attachments; PNG and PDF include local images. Remote images retain the existing export limitations. Keep the Markdown file and its relative assets together when moving or copying a document to another folder.
+
+### External changes and tab actions
+
+The desktop app checks named files every three seconds while visible and when the window regains focus. A clean document reloads when its disk contents change. Unsaved edits remain intact, with **Compare changes** showing the editor and disk versions side by side. Choose **Keep editing**, **Save As…**, or **Reload from disk…**; discarding unsaved edits requires confirmation. A missing file remains open so its contents can be saved elsewhere.
+
+Right-click a document tab, or focus it and press `Shift+F10`, for **Copy file path**, **Show in file manager**, **Save As…**, **Close tab**, and **Reopen closed tab**. Reopen remembers up to 20 closed saved files during the current session, reads their current disk contents, and restores their workspace state. Discarded untitled drafts are not retained in this list.
+
 ### Keyboard shortcuts
 
-On macOS, use `Command` instead of `Ctrl` for Save, Save As, Open, Find, and close-document shortcuts. Tab switching always uses `Ctrl`.
+On macOS, use `Command` instead of `Ctrl` for the shortcuts below, except tab switching. Tab switching always uses `Ctrl`.
 
 | Shortcut | Action |
 | --- | --- |
@@ -38,6 +58,13 @@ On macOS, use `Command` instead of `Ctrl` for Save, Save As, Open, Find, and clo
 | `Ctrl+Tab` / `Ctrl+Shift+Tab` | Switch to the next / previous tab |
 | `Alt+Shift+Left` / `Alt+Shift+Right` | Move the active tab |
 | `Ctrl+W` | Close the active document |
+| `Ctrl+Shift+T` | Reopen the last closed saved file (desktop) |
+| `Ctrl+B` / `Ctrl+I` | Toggle bold / italic |
+| `Ctrl+K` / `Ctrl+E` | Insert a link / toggle inline code |
+| `Ctrl+Shift+C` | Insert a fenced code block |
+| `Ctrl+Alt+1`–`6` | Set or remove a heading level |
+| `Enter` / `Shift+Enter` | Continue a list / insert a plain newline |
+| `Tab` / `Shift+Tab` | Indent / outdent |
 
 ## Download
 

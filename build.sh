@@ -46,6 +46,11 @@ LIBS = {
     "/*__SESSION_CONTROLLER__*/": "src/session-controller.js",
     "/*__WORKSPACE_VIEW__*/": "src/workspace-view.js",
     "/*__NATIVE_BRIDGE__*/": "src/native-bridge.js",
+    "/*__RECENT_DOCUMENTS__*/": "src/recent-documents.js",
+    "/*__EDITOR_TOOLS__*/": "src/editor-tools.js",
+    "/*__EDITOR_ENHANCEMENTS__*/": "src/editor-enhancements.js",
+    "/*__DESKTOP_ASSETS__*/": "src/desktop-assets.js",
+    "/*__DESKTOP_WORKSPACE__*/": "src/desktop-workspace.js",
 }
 HEAVY = {"/*__KATEX__*/", "/*__MERMAID__*/"}
 

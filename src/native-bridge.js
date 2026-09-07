@@ -44,7 +44,33 @@ function normalizeRawBytes(data) {
 function makeNativeApp(tauri) {
   if (!tauri || !tauri.dialog || !tauri.fs || typeof tauri.fs.writeFile !== "function"
     || !tauri.core || typeof tauri.core.invoke !== "function") return null;
+  let recentOperations = Promise.resolve();
+  function recentCommand(command, args) {
+    const result = recentOperations.then(() => tauri.core.invoke(command, args));
+    recentOperations = result.catch(() => {});
+    return result;
+  }
   return {
+    importDocumentAsset(documentPath, name, bytes) {
+      return tauri.core.invoke("import_document_asset", { documentPath, name, bytes: Array.from(bytes) });
+    },
+    importDocumentAttachment(documentPath, sourcePath) {
+      return tauri.core.invoke("import_document_attachment", { documentPath, sourcePath });
+    },
+    readDocumentAsset(documentPath, reference) {
+      return tauri.core.invoke("read_document_asset", { documentPath, reference });
+    },
+    probeDocument(path, expectedSha256) {
+      return tauri.core.invoke("probe_document", { path, expectedSha256 });
+    },
+    revealDocument(path) { return tauri.core.invoke("reveal_document", { path }); },
+    async pickAttachments() {
+      return normalizePaths(await tauri.dialog.open({multiple:true,directory:false}));
+    },
+    listRecentDocuments() { return recentCommand("list_recent_documents"); },
+    rememberRecentDocument(path) { return recentCommand("remember_recent_document", { path }); },
+    removeRecentDocument(canonicalPath) { return recentCommand("remove_recent_document", { canonicalPath }); },
+    clearRecentDocuments() { return recentCommand("clear_recent_documents"); },
     async pickFile() {
       const p = await tauri.dialog.open({
         multiple: false,

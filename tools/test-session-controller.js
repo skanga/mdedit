@@ -4825,3 +4825,101 @@ test("DocumentModel workspace replacement is validated and detached", () => {
   assert.equal(document.workspace.find.query, "b");
   assert.throws(() => document.updateWorkspace({ ...emptyWorkspace(), viewMode: "invalid" }), /view mode/i);
 });
+
+test("recent history records successful native opens and saves without blocking on history writes", async () => {
+  const remembered = [];
+  const fixture = makeDependencies({ io: {
+    rememberRecentDocument(path) { remembered.push(path); return new Promise(() => {}); },
+    async saveDocument({ path }) { return { status: "saved", sha256: "saved", canonicalPath: path }; },
+  } });
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  const opened = await controller.openPaths(["/notes/a.md"]);
+  assert.deepEqual(remembered, ["/notes/a.md"]);
+  const document = opened.opened[0];
+  controller.onEditorInput(document.id, "changed");
+  const outcome = await outcomeByImmediate(controller.saveDocument(document.id));
+  assert.equal(outcome.status, "fulfilled");
+  assert.deepEqual(remembered, ["/notes/a.md", "/notes/a.md"]);
+});
+
+test("recent history excludes failed opens and save probes but includes successful Save As", async () => {
+  const remembered = [];
+  const fixture = makeDependencies({ io: {
+    rememberRecentDocument(path) { remembered.push(path); return Promise.reject(new Error("disk full")); },
+    async readDocument() { throw Object.assign(new Error("No such file"), { code: "NotFound" }); },
+    async chooseSavePath() { return "/chosen/new.md"; },
+    async canonicalizeDocumentPath() { return "/chosen/new.md"; },
+    async saveDocument() { return { status: "saved", sha256: "saved", canonicalPath: "/chosen/new.md" }; },
+  } });
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  assert.equal((await controller.openPaths(["/missing.md"])).failed.length, 1);
+  assert.deepEqual(remembered, []);
+  const document = controller.createUntitled();
+  controller.onEditorInput(document.id, "new");
+  assert.equal((await controller.saveAs(document.id)).saved, true);
+  await settle();
+  assert.deepEqual(remembered, ["/chosen/new.md"]);
+  fixture.dependencies.io.saveDocument = async () => { throw new Error("save denied"); };
+  controller.onEditorInput(document.id, "later");
+  await assert.rejects(controller.saveDocument(document.id), /save denied/);
+  assert.deepEqual(remembered, ["/chosen/new.md"]);
+});
+
+test('external changes reload clean documents and retain dirty edits', async () => {
+  let disk = readResult('/a.md','/a.md','first');
+  const fixture = makeDependencies({io:{
+    readDocument:async()=>disk,
+    probeDocument:async(path,expected)=>({status:disk.sha256===expected?'unchanged':'changed',sha256:disk.sha256}),
+  }});
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  const doc = (await controller.openPaths(['/a.md'])).opened[0];
+  assert.equal(typeof controller.checkExternalChanges,'function');
+  disk = readResult('/a.md','/a.md','second');
+  await controller.checkExternalChanges();
+  assert.equal(doc.content,'second'); assert.equal(doc.dirty,false);
+  controller.onEditorInput(doc.id,'my edits');
+  disk = readResult('/a.md','/a.md','third');
+  await controller.checkExternalChanges();
+  assert.equal(doc.content,'my edits'); assert.equal(doc.fileStatus,'externally-changed');
+  assert.equal(controller.externalVersion(doc.id).content,'third');
+});
+
+test('external checks never overwrite edits made during a disk read', async () => {
+  const gate = deferred();
+  const fixture = makeDependencies({io:{probeDocument:async()=>({status:'changed',sha256:'new'})}});
+  const controller = new SessionController(fixture.dependencies);
+  await controller.restore();
+  const doc = (await controller.openPaths(['/a.md'])).opened[0];
+  fixture.dependencies.io.readDocument = ()=>gate.promise;
+  assert.equal(typeof controller.checkExternalChanges,'function');
+  const checking = controller.checkExternalChanges();
+  await settle(); controller.onEditorInput(doc.id,'new local edit');
+  gate.resolve(readResult('/a.md','/a.md','disk changed'));
+  await checking;
+  assert.equal(doc.content,'new local edit'); assert.equal(doc.dirty,true);
+});
+
+test('external missing state recovers when the same conflicting disk version returns', async () => {
+  let disk=readResult('/a.md','/a.md','first'),missing=false;
+  const fixture=makeDependencies({io:{readDocument:async()=>disk,probeDocument:async(path,expected)=>({status:missing?'missing':disk.sha256===expected?'unchanged':'changed',sha256:disk.sha256})}});
+  const controller=new SessionController(fixture.dependencies);await controller.restore();
+  const doc=(await controller.openPaths(['/a.md'])).opened[0];controller.onEditorInput(doc.id,'my edits');
+  disk=readResult('/a.md','/a.md','second');await controller.checkExternalChanges();
+  missing=true;await controller.checkExternalChanges();assert.equal(doc.fileStatus,'missing');
+  missing=false;await controller.checkExternalChanges();assert.equal(doc.fileStatus,'externally-changed');
+  assert.equal(controller.externalVersion(doc.id).content,'second');assert.equal(doc.content,'my edits');
+});
+
+test('reopen restores a closed saved document workspace and reads current disk content', async () => {
+  const fixture=makeDependencies();const controller=new SessionController(fixture.dependencies);await controller.restore();
+  const doc=(await controller.openPaths(['/a.md'])).opened[0];doc.updateWorkspace({...doc.workspace,viewMode:'edit',find:{...doc.workspace.find,query:'a',regex:true}});
+  fixture.dependencies.view.captureWorkspace=()=>doc.workspace;
+  await controller.closeDocument(doc.id);assert.equal(controller.canReopenClosedDocument(),true);
+  fixture.dependencies.io.readDocument=async()=>readResult('/a.md','/a.md','new on disk');
+  const result=await controller.reopenClosedDocument();assert.equal(result.opened,true);
+  assert.equal(controller.activeDocument().content,'new on disk');assert.equal(controller.activeDocument().workspace.viewMode,'edit');
+  assert.equal(controller.activeDocument().workspace.find.regex,true);assert.equal(controller.canReopenClosedDocument(),false);
+});

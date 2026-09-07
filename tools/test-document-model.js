@@ -410,3 +410,14 @@ test("toSnapshot returns a detached snapshot tree", () => {
   assert.ok(!("recoveryStatus" in snapshot));
   assert.ok(!("persistedRevision" in snapshot));
 });
+
+test('search options round-trip in recovery snapshots and legacy snapshots default to literal search', () => {
+  const doc=DocumentModel.fromSnapshot(baseSnapshot());
+  assert.equal(Boolean(doc.workspace.find.regex),false);
+  doc.updateWorkspace({...doc.workspace,find:{...doc.workspace.find,regex:true,caseSensitive:true,wholeWord:true}});
+  const restored=DocumentModel.fromSnapshot(doc.toSnapshot());
+  assert.equal(restored.workspace.find.regex,true);assert.equal(restored.workspace.find.caseSensitive,true);assert.equal(restored.workspace.find.wholeWord,true);
+  restored.updateWorkspace({...restored.workspace,find:{...restored.workspace.find,regex:false}});
+  assert.equal(Boolean(restored.workspace.find.regex),false);
+  const bad=doc.toSnapshot();bad.workspace.find.regex='true';assert.throws(()=>DocumentModel.fromSnapshot(bad),/invalid find option/);
+});

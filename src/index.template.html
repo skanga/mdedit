@@ -78,6 +78,23 @@
     overflow: hidden;
   }
 
+  .document-menu { position:fixed;z-index:200;min-width:200px;padding:5px;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:8px;box-shadow:0 8px 28px #0003; }
+  .document-menu button { display:block;width:100%;text-align:left;padding:8px;border:0;border-radius:4px;background:transparent;color:inherit;cursor:pointer; }
+  .document-menu button:focus-visible,.document-menu button:hover { background:var(--accent-soft); }
+  .document-menu button:disabled { opacity:.45;cursor:default; }
+  .external-banner { display:flex;align-items:center;gap:12px;padding:8px 14px;background:var(--accent-soft);color:var(--text);font-size:12px; }
+  .external-banner[hidden],.document-menu[hidden] { display:none; }
+  .external-banner button,.comparison-actions button { background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:5px;padding:6px 10px;cursor:pointer; }
+  #external-comparison { width:min(1000px,94vw);max-height:90vh;box-sizing:border-box;background:var(--panel);color:var(--text);border:1px solid var(--border);border-radius:10px;padding:20px; }
+  #external-comparison::backdrop { background:#0007; }
+  #external-comparison h2 { font-size:18px;margin:0 0 8px; }
+  #external-comparison p { font-size:12px;overflow-wrap:anywhere; }
+  .comparison-columns { display:flex;gap:12px; }
+  .comparison-columns label { flex:1;min-width:0;font-size:13px; }
+  .comparison-columns textarea { display:block;width:100%;height:45vh;margin-top:6px;box-sizing:border-box;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:10px;font:12px/1.6 monospace; }
+  .comparison-actions { display:flex;justify-content:flex-end;gap:8px; }
+  .asset-unavailable { outline:1px dashed var(--text-soft); }
+
   /* ── Top bar ─────────────────────────────────── */
   header {
     display: flex;
@@ -678,6 +695,57 @@
 
   /* ── Reader popover ──────────────────────────── */
   .popover-wrap { position: relative; display: inline-flex; flex: none; }
+  .editor-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 70;
+    width: min(330px, calc(100vw - 24px)); padding: 12px; border: 1px solid var(--border);
+    border-radius: 10px; background: var(--panel); color: var(--text);
+    box-shadow: 0 8px 24px rgba(0,0,0,.14); font-size: 12px;
+  }
+  .editor-panel h2 { margin: 0 0 10px; font-size: 13px; }
+  .editor-panel label { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .editor-panel input, .editor-panel select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 4px; border-radius: 4px; }
+  .editor-panel input[type=number] { width: 64px; }
+  .format-actions { display:flex; flex-wrap:wrap; gap:5px; }
+  .editor-panel button { font:inherit; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:5px 7px; cursor:pointer; }
+  .editor-panel button:hover { background:var(--accent-soft); color:var(--accent); }
+  .editor-gutter { position:relative; flex:none; width:42px; overflow:hidden; color:var(--text-soft); background:var(--panel); border-right:1px solid var(--border-soft); font-family:var(--mono); user-select:none; }
+  #find-bar { flex-wrap:wrap; }
+  #find-bar label { font-size:11px; color:var(--text-soft); white-space:nowrap; }
+  #find-error { color:var(--text); width:100%; font-size:11px; }
+  #find-error:empty { display:none; }
+  #recent-pop {
+    position: absolute;
+    top: calc(100% + 6px);
+    right: 0;
+    width: min(380px, calc(100vw - 24px));
+    max-height: min(480px, calc(100vh - 90px));
+    overflow: auto;
+    padding: 8px;
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.14);
+    z-index: 65;
+    font-size: 12px;
+  }
+  #recent-pop h2 { margin: 4px 8px 8px; font-size: 13px; }
+  #recent-list { list-style: none; padding: 0; margin: 0; }
+  #recent-list li { display: flex; align-items: center; gap: 4px; }
+  #recent-pop button {
+    background: transparent; color: var(--text); border: 0; border-radius: 6px;
+    font: inherit; cursor: pointer; padding: 8px; text-align: left;
+  }
+  #recent-pop button:hover { background: var(--accent-soft); color: var(--accent); }
+  #recent-pop button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  #recent-pop button:disabled { opacity: 0.5; cursor: default; }
+  .recent-open { min-width: 0; flex: 1; }
+  .recent-name, .recent-folder { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .recent-folder { color: var(--text-soft); font-size: 11px; margin-top: 3px; }
+  #recent-pop .recent-remove { flex: none; font-size: 18px; }
+  #recent-message { margin: 8px; overflow-wrap: anywhere; color: var(--text-soft); }
+  #recent-message:empty { display: none; }
+  #recent-pop #recent-clear { width: 100%; border-top: 1px solid var(--border-soft); margin-top: 4px; }
   #reader-pop {
     position: absolute;
     right: 0;
@@ -934,6 +1002,20 @@
   </div>
   <button class="btn" id="btn-new" title="New document">New</button>
   <button class="btn" id="btn-open" title="Open a markdown file (Ctrl+O)">Open</button>
+  <button class="btn" id="btn-attach" title="Insert an image or attachment" hidden>Attach</button>
+  <span class="popover-wrap">
+    <button class="btn" id="btn-editor-options" aria-haspopup="dialog" aria-expanded="false" aria-controls="editor-options">Editor</button>
+    <div id="editor-options" class="editor-panel" role="dialog" aria-label="Editor options" hidden></div>
+  </span>
+  <span class="popover-wrap" id="recent-wrap" hidden>
+    <button class="btn" id="btn-recent" aria-label="Open recent documents" aria-haspopup="dialog" aria-expanded="false" aria-controls="recent-pop" title="Open recent documents">Recent</button>
+    <div id="recent-pop" role="dialog" aria-labelledby="recent-heading" tabindex="-1" hidden>
+      <h2 id="recent-heading">Recent documents</h2>
+      <ul id="recent-list"></ul>
+      <p id="recent-message" role="status"></p>
+      <button id="recent-clear" type="button">Clear recent documents</button>
+    </div>
+  </span>
   <span class="popover-wrap">
     <button class="btn" id="btn-export" title="Export this document">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
@@ -1000,12 +1082,16 @@
     <div id="find-bar">
       <input id="find-input" placeholder="Find" spellcheck="false" autocomplete="off">
       <input id="replace-input" placeholder="Replace with" spellcheck="false" autocomplete="off">
+      <label><input type="checkbox" id="find-case"> Match case</label>
+      <label><input type="checkbox" id="find-word"> Whole word</label>
+      <label><input type="checkbox" id="find-regex"> Regex</label>
       <span id="find-count"></span>
       <button id="find-prev" title="Previous match (Shift+Enter)">&#8593;</button>
       <button id="find-next" title="Next match (Enter)">&#8595;</button>
       <button id="find-replace" title="Replace this match">Replace</button>
       <button id="find-all" title="Replace every match">All</button>
       <button id="find-close" title="Close (Esc)">&#10005;</button>
+      <span id="find-error" role="status"></span>
     </div>
     <div id="editor-surfaces">
       <div class="editor-surface" data-document-id="legacy">
@@ -1042,6 +1128,11 @@
 <script>/*__SESSION_CONTROLLER__*/</script>
 <script>/*__WORKSPACE_VIEW__*/</script>
 <script>/*__NATIVE_BRIDGE__*/</script>
+<script>/*__RECENT_DOCUMENTS__*/</script>
+<script>/*__EDITOR_TOOLS__*/</script>
+<script>/*__EDITOR_ENHANCEMENTS__*/</script>
+<script>/*__DESKTOP_ASSETS__*/</script>
+<script>/*__DESKTOP_WORKSPACE__*/</script>
 <script>
 (() => {
   "use strict";
@@ -1467,7 +1558,7 @@
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true, rootElement = preview, interactive = true) {
+  function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
     rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
     if (HAS_MATH) injectMath(math, rootElement);
@@ -1483,13 +1574,13 @@
       buildToc(rootElement);
       updateStats(content);
     }
-    return diagrams;
+    return Promise.resolve(diagrams).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive));
   }
 
   async function renderForExport(capture) {
     const isolated = document.createElement("article");
     const owned = () => controller.isDocumentCaptureCurrent(capture);
-    await render(capture.content, owned, isolated, false);
+    await render(capture.content, owned, isolated, false, capture.path);
     if (!owned()) throw new Error("the document changed before its export could be rendered");
     return isolated.innerHTML;
   }
@@ -1860,6 +1951,7 @@
     holder.appendChild(clone);
     document.body.appendChild(holder);
     try {
+      await Promise.all([...clone.querySelectorAll('img[src^="data:"]')].map(img => img.decode()));
       const height = Math.ceil(clone.getBoundingClientRect().height);
       const W = width + P * 2, H = height + P * 2;
       if (H > 16000) {
@@ -1919,7 +2011,9 @@
     };
     try {
       if (wasDark) setTheme("light", false);
-      await controller.renderDocument(capture.documentId, { renderWhenHidden: true });
+      desktopAssets?.clearCache();
+      await controller.renderDocument(capture.documentId, { renderWhenHidden: true, force: true });
+      if (desktopAssets) await desktopAssets.hydrate(preview, capture.path, () => controller.canPrintCapture(capture, previewOwner), true);
       if (!controller.canPrintCapture(capture, previewOwner)) {
         throw new Error("PDF export canceled because the active document changed before printing");
       }
@@ -1991,7 +2085,9 @@
      Everything goes through execCommand("insertText") rather than setRangeText:
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
-  const INDENT = "  ";
+  let desktopAssets = null, desktopWorkspace = null;
+  let editorEnhancements = null;
+  const indentText = () => " ".repeat(editorEnhancements ? editorEnhancements.tabWidth() : 2);
   function keyboardEvent(event) {
     return {
       key: event.key,
@@ -2062,12 +2158,12 @@
     const out = text.split("\n").map((line, i) => {
       let delta;
       if (outdent) {
-        const lead = (line.match(/^(\t| {1,2})/) || [""])[0];
+        const lead = (line.match(new RegExp("^(\\t| {1," + indentText().length + "})")) || [""])[0];
         delta = -lead.length;
         line = line.slice(lead.length);
       } else {
-        delta = line.length ? INDENT.length : 0;   // don't indent blank lines
-        if (delta) line = INDENT + line;
+        delta = line.length ? indentText().length : 0;   // don't indent blank lines
+        if (delta) line = indentText() + line;
       }
       if (i === 0) firstDelta = delta;
       totalDelta += delta;
@@ -2099,7 +2195,7 @@
     const spansLines = surface.value.slice(surface.selectionStart, surface.selectionEnd).includes("\n");
     if (e.shiftKey) shiftLines(surface, true);          // Shift+Tab always outdents
     else if (spansLines) shiftLines(surface, false);    // indent every line of a block
-    else replaceRange(surface, surface.selectionStart, surface.selectionEnd, INDENT);
+    else replaceRange(surface, surface.selectionStart, surface.selectionEnd, indentText());
   });
 
   // proportional scroll sync: editor → preview
@@ -2329,6 +2425,12 @@
       "<kbd>Alt+Shift+←/→</kbd><span>Move document tab</span>" +
       "<kbd>" + MOD + "W</kbd><span>Close document</span>" +
       "<kbd>" + MOD + "F</kbd><span>Find &amp; replace</span>" +
+      "<kbd>" + MOD + "B / I</kbd><span>Bold / italic</span>" +
+      "<kbd>" + MOD + "K / E</kbd><span>Link / inline code</span>" +
+      "<kbd>" + (isMac ? "⌘⇧C" : "Ctrl+Shift+C") + "</kbd><span>Code block</span>" +
+      "<kbd>" + (isMac ? "⌘⌥1–6" : "Ctrl+Alt+1–6") + "</kbd><span>Heading level</span>" +
+      (nativeApp ? "<kbd>" + (isMac ? "⌘⇧T" : "Ctrl+Shift+T") + "</kbd><span>Reopen closed tab</span>" : "") +
+      "<kbd>Enter / ⇧Enter</kbd><span>Continue list / plain newline</span>" +
       "<kbd>Tab</kbd><span>Indent</span>" +
       "<kbd>⇧Tab</kbd><span>Outdent</span>" +
       "</div>" +
@@ -2458,18 +2560,17 @@
      on the native undo stack like every other edit. */
   const findBar = $("find-bar"), findInput = $("find-input"), replaceInput = $("replace-input");
   let matches = [], matchIdx = -1;
+  const findOptions = () => ({caseSensitive:$("find-case").checked, wholeWord:$("find-word").checked, regex:$("find-regex").checked});
+  for (const id of ["find-case", "find-word", "find-regex"]) $(id).addEventListener("change", () => { runFind(false); });
 
   function runFind(keepIndex) {
     const surface = activeEditor();
     const q = findInput.value;
-    matches = [];
-    if (surface && q) {
-      // Match the original text: Unicode lowercasing can change its length.
-      const pattern = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
-      for (const match of surface.value.matchAll(pattern)) {
-        matches.push({ start: match.index, end: match.index + match[0].length });
-      }
-    }
+    const result = MDEdit.searchMatches(surface ? surface.value : "", q, findOptions());
+    matches = result.matches;
+    $("find-error").textContent = result.error ? "Invalid regular expression: " + result.error : "";
+    findInput.setAttribute("aria-invalid", String(Boolean(result.error)));
+    $("find-replace").disabled = $("find-all").disabled = Boolean(result.error);
     if (!keepIndex || matchIdx < 0 || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
     paintCount();
   }
@@ -2507,7 +2608,7 @@
     runFind(true);
     if (matchIdx < 0 || !matches.length) return;
     const { start, end } = matches[matchIdx];
-    replaceRange(surface, start, end, replaceInput.value);
+    replaceRange(surface, start, end, MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex));
     afterEdit();
     runFind(true);
     revealMatch();
@@ -2519,7 +2620,7 @@
     if (!matches.length) return;
     const r = replaceInput.value, n = matches.length;
     let out = "", last = 0;
-    for (const { start, end } of matches) { out += surface.value.slice(last, start) + r; last = end; }
+    for (const match of matches) { out += surface.value.slice(last, match.start) + MDEdit.replacementText(r, match, findOptions().regex); last = match.end; }
     out += surface.value.slice(last);
     replaceRange(surface, 0, surface.value.length, out);   // one undo step for the lot
     afterEdit();
@@ -2613,6 +2714,7 @@
         query: findInput.value,
         replacement: replaceInput.value,
         matchIndex: matchIdx,
+        ...findOptions(),
       },
     };
   }
@@ -2620,6 +2722,9 @@
   function applySharedWorkspace(workspace) {
     setView(workspace.viewMode || "split");
     setToc(Boolean(workspace.tocOpen));
+    $("find-case").checked = Boolean(workspace.find?.caseSensitive);
+    $("find-word").checked = Boolean(workspace.find?.wholeWord);
+    $("find-regex").checked = Boolean(workspace.find?.regex);
     findInput.value = workspace.find && workspace.find.query || "";
     replaceInput.value = workspace.find && workspace.find.replacement || "";
     matchIdx = workspace.find && Number.isInteger(workspace.find.matchIndex) ? workspace.find.matchIndex : -1;
@@ -2645,6 +2750,8 @@
       message: persistentRecoveryWarning,
     });
     scheduleActiveDocumentStats(active.id, active.content);
+    if (editorEnhancements) editorEnhancements.updateGutter();
+    if (desktopWorkspace) desktopWorkspace.refresh();
     return active;
   }
 
@@ -2719,6 +2826,7 @@
     syncActiveSurface();
     if (findInput.value) runFind(true);
   };
+  workspaceView.beforeReloadDocument = () => desktopAssets?.clearCache();
   workspaceView.clearPreview = () => {
     previewOwner = null;
     preview.replaceChildren();
@@ -2789,7 +2897,7 @@
             // activation independent from Markdown/DOM construction.
             if (document.body.dataset.view === "edit" && !renderWhenHidden) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
-            mermaidPending = render(capture.content, isCurrent);
+            mermaidPending = render(capture.content, isCurrent, preview, true, capture.path);
             await mermaidPending;
             return isCurrent() ? preview.innerHTML : null;
           },
@@ -2805,6 +2913,11 @@
   });
   if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.controller = controller;
   resolveControllerReady(controller);
+  MDEdit.installRecentDocuments({ document, controller, nativeApp });
+  editorEnhancements = MDEdit.installEditorEnhancements({ document, activeEditor, replaceRange, onChange: afterEdit });
+
+  desktopAssets = MDEdit.createDesktopAssets({ document, nativeApp, controller, activeEditor, replaceRange, onChange: afterEdit, setStatus });
+  desktopWorkspace = MDEdit.installDesktopWorkspace({ document, nativeApp, controller, setStatus, onReload: () => desktopAssets?.clearCache() });
 
   async function installNativeCloseGuard() {
     const windowApi = window.__TAURI__ && window.__TAURI__.window;

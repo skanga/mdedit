@@ -92,6 +92,15 @@
     return value;
   }
 
+  function copyFindOptions(find) {
+    const result = {};
+    for (const key of ["caseSensitive", "wholeWord", "regex"]) {
+      if (find[key] !== undefined && typeof find[key] !== "boolean") throw new TypeError("invalid find option");
+      if (find[key] === true) result[key] = true;
+    }
+    return result;
+  }
+
   function cloneWorkspace(workspace) {
     return {
       selectionStart: workspace.selectionStart,
@@ -105,6 +114,7 @@
         query: workspace.find.query,
         replacement: workspace.find.replacement,
         matchIndex: workspace.find.matchIndex,
+        ...copyFindOptions(workspace.find),
       },
     };
   }
@@ -119,7 +129,8 @@
       && left.find.open === right.find.open
       && left.find.query === right.find.query
       && left.find.replacement === right.find.replacement
-      && left.find.matchIndex === right.find.matchIndex;
+      && left.find.matchIndex === right.find.matchIndex
+      && ["caseSensitive", "wholeWord", "regex"].every(key => Boolean(left.find[key]) === Boolean(right.find[key]));
   }
 
   function normalizeWorkspace(value, contentLength) {
@@ -155,6 +166,7 @@
         query: value.find.query ?? "",
         replacement: value.find.replacement ?? "",
         matchIndex: value.find.matchIndex ?? -1,
+        ...copyFindOptions(value.find),
       };
     }
     return workspace;
@@ -197,6 +209,7 @@
         query: workspace.find.query,
         replacement: workspace.find.replacement,
         matchIndex: workspace.find.matchIndex,
+        ...copyFindOptions(workspace.find),
       },
     };
   }

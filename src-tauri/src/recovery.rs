@@ -418,7 +418,7 @@ where
     ))
 }
 
-fn atomic_rotate_write<V>(
+pub(crate) fn atomic_rotate_write<V>(
     current: &Path,
     previous: &Path,
     bytes: &[u8],

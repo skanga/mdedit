@@ -1171,17 +1171,27 @@
       return this._scheduleOperation((token) => this._openReadResultNow(result, token));
     }
 
+    _rememberRecentDocument(path) {
+      if (!path || typeof this.io.rememberRecentDocument !== "function") return;
+      // History is optional: never delay or fail a document operation for it.
+      try {
+        Promise.resolve(this.io.rememberRecentDocument(path)).catch(() => {});
+      } catch (_) {}
+    }
+
     _openReadResultNow(result, token = this._lifecycleToken, { replaceStartupPlaceholder = false } = {}) {
       if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
       const session = this._ensureSession();
       const existing = session.findByCanonicalPath(result.canonicalPath);
       if (existing) {
         this.activateDocument(existing.id);
+        this._rememberRecentDocument(result.path);
         return existing;
       }
       const reserved = this._reservedCanonicalPaths.get(result.canonicalPath);
       if (reserved && session.documents.get(reserved.id) === reserved) {
         this.activateDocument(reserved.id);
+        this._rememberRecentDocument(result.path);
         return reserved;
       }
       if (replaceStartupPlaceholder) this._discardStartupPlaceholder();
@@ -1190,6 +1200,7 @@
       const document = this._documentFromReadResult(result);
       session.add(document);
       this._presentActivatedDocument(document);
+      this._rememberRecentDocument(result.path);
       return document;
     }
 
@@ -1224,6 +1235,7 @@
       candidate.add(document);
       this._commitLocalSession(candidate);
       this._presentActivatedDocument(document);
+      this._rememberRecentDocument(result.path);
       return document;
     }
 
@@ -1349,6 +1361,7 @@
       if (!capture || typeof capture !== "object") return false;
       if (!this._ownsOperationCapture(capture)) return false;
       return capture.document.editRevision === capture.editRevision
+        && capture.document.path === capture.path
         && (!requireActive || this.session.activeDocumentId === capture.documentId);
     }
 
@@ -1644,13 +1657,14 @@
       }
     }
 
-    renderDocument(documentId = this.session && this.session.activeDocumentId, { renderWhenHidden = false } = {}) {
+    renderDocument(documentId = this.session && this.session.activeDocumentId, { renderWhenHidden = false, force = false } = {}) {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
       const document = this.session.documents.get(documentId);
       if (!(document instanceof DocumentModel)) return Promise.resolve(null);
       if (!this.renderer) return Promise.resolve(null);
 
+      if (force) this._invalidatePreview(documentId);
       const capture = this._createRenderCapture(document);
       const cacheKey = this._previewCacheKey(capture);
       const cached = this._showCachedPreviewOrClear(capture);
@@ -1693,6 +1707,7 @@
         editRevision: document.editRevision,
         content: document.content,
         displayName: document.displayName,
+        path: document.path,
         optionsKey: this._rendererOptionsKey(),
         document,
       });
@@ -1862,6 +1877,7 @@
         if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
           throw new Error("document save returned an invalid result");
         }
+        this._rememberRecentDocument(capture.path);
         if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
         let metadataChanged = false;
         if (typeof result.canonicalPath === "string" && result.canonicalPath !== document.canonicalPath) {
@@ -2087,6 +2103,7 @@
         if (!result || result.status !== "saved" || typeof result.sha256 !== "string") {
           throw new Error("document save returned an invalid result");
         }
+        this._rememberRecentDocument(chosenPath);
         if (!this._ownsOperationCapture(capture)) return { saved: true, documentId, closed: true };
 
         const savedCanonicalPath = typeof result.canonicalPath === "string"
@@ -2107,8 +2124,11 @@
         }, { persist: false });
         await this._checkpointAfterDocumentChange(capture, metadataChanged || baselineChanged, "save-as-checkpoint");
         if (this._ownsOperationCapture(capture)) {
-          this._renderSession();
-          this._renderDocumentView(document);
+          if (capture.path !== document.path) this._refreshReloadedDocument(document);
+          else {
+            this._renderSession();
+            this._renderDocumentView(document);
+          }
           this._setDocumentStatus(documentId, {
             status: "saved",
             message: `Saved ${document.displayName}`,
@@ -2233,7 +2253,105 @@
       return { resolved: true, reloaded: true, documentId };
     }
 
+    externalVersion(documentId) {
+      const document = this.session && this.session.documents.get(documentId);
+      return document && document.fileStatus === "externally-changed"
+        ? this._externalVersions?.get(documentId) || null : null;
+    }
+
+    async checkExternalChanges() {
+      if (this._disposed || this._restoreState !== "restored" || !this.session
+          || this._checkingExternal || this._documentOperation || this._queuedOperationCount
+          || typeof this.io.probeDocument !== "function") return [];
+      this._checkingExternal = true;
+      this._externalVersions ||= new Map();
+      const events = [];
+      try {
+        for (const document of this.session.documents.values()) {
+          if (!(document instanceof DocumentModel) || !document.path || !document.expectedDiskSha256) continue;
+          if (this._disposed || this._documentOperation || this._queuedOperationCount) break;
+          const capture = this._captureDocument(document);
+          const current = () => this._ownsOperationCapture(capture)
+            && document.path === capture.path && document.editRevision === capture.editRevision
+            && document.expectedDiskSha256 === capture.expectedDiskSha256 && !this._documentOperation;
+          try {
+            const probe = await this.io.probeDocument(capture.path, capture.expectedDiskSha256);
+            if (!current()) continue;
+            if (probe.status === "unchanged") {
+              this._externalVersions.delete(document.id);
+              if (document.fileStatus !== "normal") {
+                document.updateMetadata({fileStatus:"normal"});
+                this.checkpointDocument(document.id, "external-restored");
+                this._renderSession();
+              }
+              continue;
+            }
+            if (probe.status === "missing") {
+              if (document.updateMetadata({fileStatus:"missing"})) {
+                this.checkpointDocument(document.id, "external-missing");
+                this._setDocumentStatus(document.id, {fileStatus:"missing", message:`${document.displayName} is missing on disk`});
+                this._renderSession();
+              }
+              continue;
+            }
+            if (probe.status !== "changed") throw new Error("invalid external file probe");
+            if (document.dirty && document.fileStatus === "externally-changed" && this._externalVersions.get(document.id)?.sha256 === probe.sha256) continue;
+            const result = await this.io.readDocument(capture.path);
+            const contentSha256 = await this.hashText(result.content);
+            if (!current()) continue;
+            if (result.sha256 === capture.expectedDiskSha256) continue;
+            if (document.dirty) {
+              this._externalVersions.set(document.id, result);
+              document.updateMetadata({fileStatus:"externally-changed"});
+              this.checkpointDocument(document.id, "external-change");
+              this._setDocumentStatus(document.id, {fileStatus:"externally-changed", message:`${document.displayName} changed outside MDedit`});
+              this._renderSession();
+              events.push({documentId:document.id,status:"conflict"});
+            } else {
+              document.applyContent(result.content);
+              document.updateMetadata({canonicalPath:result.canonicalPath || capture.canonicalPath});
+              const updated = this._captureDocument(document);
+              this.recordCapturedSave(updated,{contentSha256,diskSha256:result.sha256},{persist:false});
+              this.checkpointDocument(document.id, "external-reload");
+              this._externalVersions.delete(document.id);
+              this._refreshReloadedDocument(document);
+              this._setDocumentStatus(document.id,{message:`Reloaded external changes to ${document.displayName}`,fileStatus:"normal",dirty:false});
+              events.push({documentId:document.id,status:"reloaded"});
+            }
+          } catch (error) {
+            if (!current()) continue;
+            if (document.updateMetadata({fileStatus:"read-error"})) this.checkpointDocument(document.id,"external-read-error");
+            this._setDocumentStatus(document.id,{fileStatus:"read-error",message:`Could not check ${document.displayName}: ${normalizeError(error).message}`});
+          }
+        }
+      } finally { this._checkingExternal = false; }
+      return events;
+    }
+
+    canReopenClosedDocument() { return Boolean(this._closedDocuments?.length); }
+
+    reopenClosedDocument() {
+      return this._runDocumentOperation("reopen", async () => {
+        const entry = this._closedDocuments?.at(-1);
+        if (!entry) return {opened:false};
+        const existing = this.session.findByCanonicalPath(entry.canonicalPath);
+        if (existing) {
+          this.activateDocument(existing.id);
+          this._closedDocuments.pop();
+          return {opened:true,documentId:existing.id};
+        }
+        const result = await this.openPaths([entry.path]);
+        if (result.failed.length || !result.opened.length) return {opened:false,error:result.failed[0]?.error};
+        const document = result.opened[0];
+        document.updateWorkspace(entry.workspace);
+        this._presentActivatedDocument(document);
+        this._closedDocuments.pop();
+        return {opened:true,documentId:document.id};
+      });
+    }
+
     _refreshReloadedDocument(document) {
+      if (typeof this.view.beforeReloadDocument === "function") this.view.beforeReloadDocument(document);
       const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
       if (editor && editor.value !== document.content) editor.value = document.content;
       this._invalidatePreview(document.id);
@@ -2409,6 +2527,12 @@
         }
       }
       await this._removeDocumentDurably(documentId);
+      if (document.path) {
+        this._closedDocuments ||= [];
+        this._closedDocuments.push({path:document.path,canonicalPath:document.canonicalPath,workspace:{...document.workspace,find:{...document.workspace.find}}});
+        if (this._closedDocuments.length > 20) this._closedDocuments.shift();
+      }
+      this._externalVersions?.delete(documentId);
       return { closed: true, discarded: choice === "discard", documentId };
     }
 
@@ -2952,7 +3076,7 @@
     }
 
     _previewCacheKey(capture) {
-      return `${capture.documentId}\u0000${capture.editRevision}\u0000${capture.optionsKey}`;
+      return `${capture.documentId}\u0000${capture.editRevision}\u0000${capture.path || ""}\u0000${capture.optionsKey}`;
     }
 
     _isCurrentRender(capture) {
@@ -2960,6 +3084,7 @@
       const document = this.session.documents.get(capture.documentId);
       return document === capture.document
         && document.editRevision === capture.editRevision
+        && document.path === capture.path
         && this._latestRenderTokens.get(capture.documentId) === capture.token;
     }
 
