@@ -2319,7 +2319,9 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
+    // Apple filesystems reject this invalid byte sequence before the code under
+    // test can inspect it. Other Unix platforms allow creating the fixture.
+    #[cfg(all(unix, not(target_vendor = "apple")))]
     #[test]
     fn canonical_comparison_path_rejects_non_utf8_paths() {
         use std::ffi::OsString;
