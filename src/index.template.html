@@ -29,6 +29,7 @@
 <link rel="apple-touch-icon" href="icon-192.png">
 <style>
   :root {
+    color-scheme: light;
     --bg: #fafafa;
     --panel: #ffffff;
     --border: #e4e4e7;
@@ -47,6 +48,7 @@
     --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
   }
   [data-theme="dark"] {
+    color-scheme: dark;
     --bg: #111113;
     --panel: #18181b;
     --border: #27272a;
@@ -897,6 +899,7 @@
   @media print {
     /* Always print on white — dark backgrounds waste ink and read badly. */
     :root, :root[data-theme="dark"], :root[data-theme="light"] {
+      color-scheme: light;
       --bg: #ffffff; --panel: #ffffff; --text: #18181b; --text-soft: #52525b;
       --text-faint: #71717a; --border: #d4d4d8; --border-soft: #e4e4e7;
       --code-bg: #f6f6f7; --accent: #2563eb;
@@ -1910,16 +1913,24 @@
   async function exportPdf(capture) {
     capture = capture || captureActiveDocument("pdf");
     const wasDark = theme === "dark";
-    if (wasDark) setTheme("light", false);
-    await controller.renderDocument(capture.documentId);
-    if (!controller.canPrintCapture(capture, previewOwner)) {
+    const restoreTheme = () => {
+      window.removeEventListener("afterprint", restoreTheme);
       if (wasDark) setTheme("dark", false);
-      throw new Error("PDF export canceled because the active document changed before printing");
+    };
+    try {
+      if (wasDark) setTheme("light", false);
+      await controller.renderDocument(capture.documentId, { renderWhenHidden: true });
+      if (!controller.canPrintCapture(capture, previewOwner)) {
+        throw new Error("PDF export canceled because the active document changed before printing");
+      }
+      setStatus('Choose "Save as PDF" as the destination in the print dialog', true, capture.documentId);
+      if (wasDark) window.addEventListener("afterprint", restoreTheme, { once: true });
+      window.print();
+      return { message: `Print dialog opened for ${capture.displayName}` };
+    } catch (error) {
+      restoreTheme();
+      throw error;
     }
-    setStatus('Choose "Save as PDF" as the destination in the print dialog', true, capture.documentId);
-    if (wasDark) window.addEventListener("afterprint", () => setTheme("dark", false), { once: true });
-    window.print();
-    return { message: `Print dialog opened for ${capture.displayName}` };
   }
 
   /* ── New document ───────────────────────────── */
@@ -2453,11 +2464,13 @@
     const q = findInput.value;
     matches = [];
     if (surface && q) {
-      const hay = surface.value.toLowerCase(), needle = q.toLowerCase();
-      let i = hay.indexOf(needle);
-      while (i !== -1) { matches.push(i); i = hay.indexOf(needle, i + needle.length); }
+      // Match the original text: Unicode lowercasing can change its length.
+      const pattern = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "giu");
+      for (const match of surface.value.matchAll(pattern)) {
+        matches.push({ start: match.index, end: match.index + match[0].length });
+      }
     }
-    if (!keepIndex || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
+    if (!keepIndex || matchIdx < 0 || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
     paintCount();
   }
   function paintCount() {
@@ -2469,7 +2482,7 @@
     const surface = activeEditor();
     if (!surface) return;
     if (matchIdx < 0 || !matches.length) return;
-    const start = matches[matchIdx], end = start + findInput.value.length;
+    const { start, end } = matches[matchIdx];
     surface.focus();
     surface.setSelectionRange(start, end);
     // approximate, but enough to bring a match on screen in a wrapped textarea
@@ -2491,9 +2504,10 @@
   function replaceCurrent() {
     const surface = activeEditor();
     if (!surface) return;
+    runFind(true);
     if (matchIdx < 0 || !matches.length) return;
-    const start = matches[matchIdx];
-    replaceRange(surface, start, start + findInput.value.length, replaceInput.value);
+    const { start, end } = matches[matchIdx];
+    replaceRange(surface, start, end, replaceInput.value);
     afterEdit();
     runFind(true);
     revealMatch();
@@ -2501,10 +2515,11 @@
   function replaceAll() {
     const surface = activeEditor();
     if (!surface) return;
+    runFind(true);
     if (!matches.length) return;
-    const q = findInput.value, r = replaceInput.value, n = matches.length;
+    const r = replaceInput.value, n = matches.length;
     let out = "", last = 0;
-    for (const m of matches) { out += surface.value.slice(last, m) + r; last = m + q.length; }
+    for (const { start, end } of matches) { out += surface.value.slice(last, start) + r; last = end; }
     out += surface.value.slice(last);
     replaceRange(surface, 0, surface.value.length, out);   // one undo step for the lot
     afterEdit();
@@ -2651,7 +2666,11 @@
     ...nativeApp,
     listenFileOpened(handler) {
       if (!window.__TAURI__ || !window.__TAURI__.event) return () => {};
-      return window.__TAURI__.event.listen("file-opened", handler);
+      // Notifications only wake the listener. The native queue owns delivery,
+      // including requests that arrived before this listener was registered.
+      return window.__TAURI__.event.listen("file-opened", () => nativeApp.takePendingFiles()
+        .then((paths) => Promise.all(paths.map((path) => handler({ payload: path }))))
+        .catch((error) => setStatus("Could not open queued files — " + error.message)));
     },
   } : {
     ...browserRecoveryEnvironment.io,
@@ -2692,10 +2711,14 @@
     },
     onEditorInput(documentId, content) {
       controller.onEditorInput(documentId, content);
+      if (findInput.value) runFind(true);
       syncActiveSurface();
     },
   });
-  workspaceView.renderDocument = () => { syncActiveSurface(); };
+  workspaceView.renderDocument = () => {
+    syncActiveSurface();
+    if (findInput.value) runFind(true);
+  };
   workspaceView.clearPreview = () => {
     previewOwner = null;
     preview.replaceChildren();
@@ -2755,7 +2778,7 @@
     requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
     renderer: {
       optionsKey: () => theme,
-      render(capture) {
+      render(capture, { renderWhenHidden = false } = {}) {
         return {
           async commit(_sameCapture, isCurrent) {
             if (!isCurrent()) return null;
@@ -2764,7 +2787,7 @@
             // In Edit-only mode the shared preview is not rendered. Deferring
             // this work until Preview or Split is requested keeps large-tab
             // activation independent from Markdown/DOM construction.
-            if (document.body.dataset.view === "edit") return null;
+            if (document.body.dataset.view === "edit" && !renderWhenHidden) return null;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
             mermaidPending = render(capture.content, isCurrent);
             await mermaidPending;
@@ -2867,6 +2890,7 @@ Shortcuts: **${isMac ? "⌘" : "Ctrl+"}S** save · **${isMac ? "⌘⇧" : "Ctrl+
     await nativeCloseGuardReady;
     let pendingOpen = null;
     if (nativeApp && window.__TAURI__ && window.__TAURI__.core) {
+      await controller.start().catch((error) => setStatus("File-open listener failed — " + error.message));
       const paths = await nativeApp.takePendingFiles().catch(() => []);
       if (paths.length) pendingOpen = controller.openPaths(paths, { replaceStartupPlaceholder: true });
     }

@@ -1644,7 +1644,7 @@
       }
     }
 
-    renderDocument(documentId = this.session && this.session.activeDocumentId) {
+    renderDocument(documentId = this.session && this.session.activeDocumentId, { renderWhenHidden = false } = {}) {
       if (this._disposed) return Promise.reject(new Error("session controller is disposed"));
       if (!this.session) return Promise.reject(new Error("session has not been created"));
       const document = this.session.documents.get(documentId);
@@ -1661,7 +1661,7 @@
       try {
         const render = typeof this.renderer === "function" ? this.renderer : this.renderer.render;
         if (typeof render !== "function") throw new TypeError("renderer must be a function or provide render");
-        rendering = render.call(this.renderer, capture);
+        rendering = render.call(this.renderer, capture, { renderWhenHidden });
       } catch (reason) {
         return Promise.reject(reason);
       }
@@ -2005,10 +2005,7 @@
       }, { persist: false });
       await this._checkpointAfterDocumentChange(reloadCapture, baselineChanged, "browser-reload-checkpoint");
       if (this._ownsOperationCapture(reloadCapture)) {
-        const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
-        if (editor && editor.value !== document.content) editor.value = document.content;
-        this._renderSession();
-        this._renderDocumentView(document);
+        this._refreshReloadedDocument(document);
       }
       return { resolved: true, reloaded: true, documentId: document.id };
     }
@@ -2231,12 +2228,25 @@
       }, { persist: false });
       await this._checkpointAfterDocumentChange(reloadCapture, metadataChanged || baselineChanged, "reload-checkpoint");
       if (this._ownsOperationCapture(reloadCapture)) {
-        const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
-        if (editor && editor.value !== document.content) editor.value = document.content;
-        this._renderSession();
-        this._renderDocumentView(document);
+        this._refreshReloadedDocument(document);
       }
       return { resolved: true, reloaded: true, documentId };
+    }
+
+    _refreshReloadedDocument(document) {
+      const editor = typeof this.view.ensureEditor === "function" ? this.view.ensureEditor(document) : null;
+      if (editor && editor.value !== document.content) editor.value = document.content;
+      this._invalidatePreview(document.id);
+      this._renderSession();
+      this._renderDocumentView(document);
+      if (this.session.activeDocumentId === document.id) {
+        this.renderDocument(document.id).catch((reason) => {
+          this._setDocumentStatus(document.id, {
+            status: "failed",
+            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
+          });
+        });
+      }
     }
 
     _captureDocument(document) {

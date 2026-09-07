@@ -1,5 +1,5 @@
 const { test, expect } = require("@playwright/test");
-const { activeEditor, installFakeTauri, openEditor } = require("./helpers.js");
+const { activeEditor, installFakeTauri, openEditor, setEditorContent } = require("./helpers.js");
 
 test("welcome appears only for a truly new session and restored blank content stays blank", async ({ page }) => {
   await installFakeTauri(page);
@@ -496,6 +496,7 @@ test("browser handle saves detect external changes and keep both versions availa
   await page.getByRole("button", { name: "Reload Disk Version" }).click();
   await page.getByRole("button", { name: "Discard and Reload" }).click();
   await expect(activeEditor(page)).toHaveValue("disk-external");
+  await expect(page.locator("#preview")).toContainText("disk-external");
 
   await activeEditor(page).evaluate((editor) => {
     editor.value = "editor-copy";
@@ -541,12 +542,12 @@ test("browser Save All and dirty close share guarded handles while canceled Save
   await openEditor(page);
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByRole("tab", { name: /b\.md/ })).toHaveAttribute("aria-selected", "true");
-  await activeEditor(page).fill("b edited");
+  await setEditorContent(page, "b edited");
   await expect.poll(() => page.getByRole("tab", { name: /^b\.md/ }).evaluate(
     (tab) => tab.parentElement.classList.contains("is-dirty"),
   )).toBe(true);
   await page.getByRole("tab", { name: /a\.md/ }).click();
-  await activeEditor(page).fill("a edited");
+  await setEditorContent(page, "a edited");
   await expect.poll(() => page.getByRole("tab", { name: /a\.md/ }).evaluate(
     (tab) => tab.parentElement.classList.contains("is-dirty"),
   )).toBe(true);
@@ -559,17 +560,17 @@ test("browser Save All and dirty close share guarded handles while canceled Save
     b: ["b edited"],
   });
 
-  await activeEditor(page).fill("a close edit");
+  await setEditorContent(page, "a close edit");
   await page.getByRole("button", { name: "Close a.md" }).click();
   await page.getByRole("button", { name: "Save", exact: true }).click();
   await expect(page.getByRole("tab", { name: /a\.md/ })).toHaveCount(0);
   expect(await page.evaluate(() => window.__browserBulkTest.state.writes.a)).toEqual(["a edited", "a close edit"]);
 
   await page.getByRole("button", { name: "New document" }).click();
-  await activeEditor(page).fill("unsaved draft");
+  await setEditorContent(page, "unsaved draft");
   await page.keyboard.press("Alt+Shift+ArrowLeft");
   await page.getByRole("tab", { name: /b\.md/ }).click();
-  await activeEditor(page).fill("b after canceled draft");
+  await setEditorContent(page, "b after canceled draft");
   await page.getByRole("tab", { name: /Untitled 2/ }).click();
   await page.getByRole("button", { name: "Save All", exact: true }).click();
   await expect(page.getByRole("status")).toContainText("Save All canceled");
@@ -605,12 +606,12 @@ test("browser Save All stops after conflict and Save All and Quit only succeeds 
   await openEditor(page);
   await page.getByRole("button", { name: "Open", exact: true }).click();
   await expect(page.getByRole("tab", { name: /b\.md/ })).toHaveAttribute("aria-selected", "true");
-  await activeEditor(page).fill("b edited");
+  await setEditorContent(page, "b edited");
   await expect.poll(() => page.getByRole("tab", { name: /b\.md/ }).evaluate(
     (tab) => tab.parentElement.classList.contains("is-dirty"),
   )).toBe(true);
   await page.getByRole("tab", { name: /a\.md/ }).click();
-  await activeEditor(page).fill("a edited");
+  await setEditorContent(page, "a edited");
   await expect.poll(() => page.getByRole("tab", { name: /a\.md/ }).evaluate(
     (tab) => tab.parentElement.classList.contains("is-dirty"),
   )).toBe(true);
@@ -694,7 +695,7 @@ test("browser Save All stops createWritable at the first failed handle", async (
   await expect(page.getByRole("tab", { name: /c\.md/ })).toHaveAttribute("aria-selected", "true");
   for (const name of ["a", "b", "c"]) {
     await page.getByRole("tab", { name: new RegExp(`${name}\\.md`) }).click();
-    await activeEditor(page).fill(`${name} edited`);
+    await setEditorContent(page, `${name} edited`);
   }
 
   await page.getByRole("button", { name: "Save All", exact: true }).click();
@@ -713,3 +714,160 @@ test("browser Save All stops createWritable at the first failed handle", async (
     c: [],
   });
 });
+
+for (const action of ['find-replace', 'find-all']) {
+  test(`review regression: ${action} uses current editor offsets`, async ({ page }) => {
+    await installFakeTauri(page);
+    await openEditor(page);
+    await activeEditor(page).fill('cat dog');
+    await activeEditor(page).press('Control+f');
+    await page.locator('#find-input').fill('dog');
+    await page.locator('#replace-input').fill('fox');
+    await activeEditor(page).fill('XXX cat dog');
+    await page.locator(`#${action}`).click();
+    await expect(activeEditor(page)).toHaveValue('XXX cat fox');
+    await activeEditor(page).fill('no matches');
+    await expect(page.locator('#find-count')).toHaveText('0/0');
+    await page.locator(`#${action}`).click();
+    await expect(activeEditor(page)).toHaveValue('no matches');
+  });
+
+  test(`review regression: ${action} preserves Unicode and literal query offsets`, async ({ page }) => {
+    await installFakeTauri(page);
+    await openEditor(page);
+    await activeEditor(page).fill('İ cat CAT');
+    await activeEditor(page).press('Control+f');
+    await page.locator('#find-input').fill('cat');
+    await page.locator('#replace-input').fill('dog');
+    await page.locator(`#${action}`).click();
+    await expect(activeEditor(page)).toHaveValue(action === 'find-all' ? 'İ dog dog' : 'İ dog CAT');
+    await activeEditor(page).fill('İ [a].* [A].*');
+    await page.locator('#find-input').fill('[a].*');
+    await page.locator(`#${action}`).click();
+    await expect(activeEditor(page)).toHaveValue(action === 'find-all' ? 'İ dog dog' : 'İ dog [A].*');
+  });
+}
+
+test('review regression: native reload refreshes the preview and find matches', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/notes/reload.md'],
+    documents: { '/notes/reload.md': { content: '# original', sha256: 'original' } },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('#preview')).toContainText('original');
+  await activeEditor(page).press('Control+f');
+  await page.locator('#find-input').fill('original');
+  await page.evaluate(async () => {
+    const controller = window.__MDEDIT_TEST_HOOK__.controller;
+    controller.io.readDocument = async () => ({ path: '/notes/reload.md', canonicalPath: '/notes/reload.md', content: '# changed', sha256: 'changed' });
+    await controller.resolveConflict(controller.activeDocument().id, 'reload');
+  });
+  await expect(activeEditor(page)).toHaveValue('# changed');
+  await expect(page.locator('#preview')).toContainText('changed');
+  await expect(page.locator('#preview')).not.toContainText('original');
+  await expect(page.locator('#find-count')).toHaveText('0/0');
+});
+
+for (const theme of ['light', 'dark']) {
+  test(`review regression: PDF prints current Edit-mode content in ${theme} theme`, async ({ page }) => {
+    await installFakeTauri(page);
+    await page.addInitScript((theme) => localStorage.setItem('mdedit-theme', theme), theme);
+    await openEditor(page);
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await activeEditor(page).fill('# Print the current revision');
+    const printed = await page.evaluate(async () => {
+      let printed;
+      window.print = () => {
+        printed = { content: document.querySelector('#preview').textContent, theme: document.documentElement.dataset.theme };
+        window.dispatchEvent(new Event('afterprint'));
+      };
+      await window.__MDEDIT_TEST_HOOK__.controller.exportActive('pdf');
+      return printed;
+    });
+    expect(printed).toEqual({ content: 'Print the current revision\n', theme: 'light' });
+    await expect(page.locator('body')).toHaveAttribute('data-view', 'edit');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme);
+  });
+}
+
+test('review regression: native wakeups drain queued files once', async ({ page }) => {
+  await installFakeTauri(page, {
+    pendingFiles: ['/notes/early.md'],
+    documents: {
+      '/notes/early.md': { content: 'early' },
+      '/notes/late.md': { content: 'late' },
+    },
+  });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => window.__MDEDIT_TEST_HOOK__.restored)).toBe(true);
+  await expect(activeEditor(page)).toHaveValue('early');
+  await page.evaluate(async () => {
+    window.__testBridge.pendingFiles.push('/notes/late.md');
+    await Promise.all([
+      window.__testBridge.emit('file-opened', null),
+      window.__testBridge.emit('file-opened', null),
+    ]);
+  });
+  await expect(activeEditor(page)).toHaveValue('late');
+  await expect(page.getByRole('tab')).toHaveCount(2);
+  expect(await page.evaluate(() => window.__testBridge.calls.invokes
+    .filter(call => call.command === 'read_document').map(call => call.args.path)))
+    .toEqual(['/notes/early.md', '/notes/late.md']);
+});
+
+test('native startup waits for listener registration before draining queued opens', async ({ page }) => {
+  await installFakeTauri(page, {
+    delayFileListener: true,
+    documents: { '/notes/early.md': { content: 'arrived before listener' } },
+  });
+  await page.goto('/');
+  await expect.poll(() => page.evaluate(() => Boolean(window.__MDEDIT_TEST_HOOK__.controller))).toBe(true);
+  await page.evaluate(async () => {
+    window.__testBridge.pendingFiles.push('/notes/early.md');
+    await window.__testBridge.emit('file-opened', null);
+    window.__testBridge.releaseFileListener();
+  });
+  await expect.poll(() => page.evaluate(() => window.__MDEDIT_TEST_HOOK__.restored)).toBe(true);
+  await expect(activeEditor(page)).toHaveValue('arrived before listener');
+  await expect(page.getByRole('tab')).toHaveCount(1);
+});
+
+for (const interruption of ['edit', 'switch', 'print-error']) {
+  test(`PDF restores dark theme after ${interruption} and never prints a stale capture`, async ({ page }) => {
+    await installFakeTauri(page);
+    await page.addInitScript(() => localStorage.setItem('mdedit-theme', 'dark'));
+    await openEditor(page);
+    await page.getByRole('button', { name: 'Edit', exact: true }).click();
+    await activeEditor(page).fill('# Captured content');
+    const result = await page.evaluate(async (interruption) => {
+      const controller = window.__MDEDIT_TEST_HOOK__.controller;
+      let printCalls = 0;
+      window.print = () => { printCalls++; throw new Error('print unavailable'); };
+      const exporting = controller.exportActive('pdf');
+      if (interruption === 'edit') controller.onEditorInput(controller.activeDocument().id, '# New content');
+      if (interruption === 'switch') controller.createUntitled();
+      let error;
+      try { await exporting; } catch (reason) { error = reason.message; }
+      return { printCalls, error };
+    }, interruption);
+    expect(result.printCalls).toBe(interruption === 'print-error' ? 1 : 0);
+    expect(result.error).toContain(interruption === 'print-error' ? 'print unavailable' : 'active document changed');
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  });
+}
+
+for (const appTheme of ['light', 'dark']) {
+  test(`native scrollbar scheme follows ${appTheme} app theme instead of OS preference`, async ({ page }) => {
+    const osTheme = appTheme === 'light' ? 'dark' : 'light';
+    await page.emulateMedia({ colorScheme: osTheme });
+    await installFakeTauri(page);
+    await page.addInitScript((theme) => localStorage.setItem('mdedit-theme', theme), appTheme);
+    await openEditor(page);
+    const schemes = () => page.evaluate(() => ['html', '.document-editor', '#preview-pane', '#document-tabs']
+      .map(selector => getComputedStyle(document.querySelector(selector)).colorScheme));
+    expect(await schemes()).toEqual(Array(4).fill(appTheme));
+    await page.locator('#btn-theme').click();
+    expect(await schemes()).toEqual(Array(4).fill(osTheme));
+  });
+}

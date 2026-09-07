@@ -7,6 +7,9 @@ async function installFakeTauri(page, options = {}) {
     const paths = configuration.openPaths || [];
     const documents = configuration.documents || {};
     const saveResults = configuration.saveResults || {};
+    const pendingFiles = [...(configuration.pendingFiles || [])];
+    let releaseFileListener;
+    const fileListenerGate = new Promise((resolve) => { releaseFileListener = resolve; });
     let closeHandler = null;
     let releaseFirstTitle = null;
     const firstTitleGate = new Promise((resolve) => { releaseFirstTitle = resolve; });
@@ -14,6 +17,8 @@ async function installFakeTauri(page, options = {}) {
 
     window.__testBridge = {
       calls,
+      pendingFiles,
+      releaseFileListener() { releaseFileListener(); },
       async requestClose() {
         if (!closeHandler) throw new Error("close handler is not installed");
         const event = { prevented: false, preventDefault() { this.prevented = true; } };
@@ -44,7 +49,7 @@ async function installFakeTauri(page, options = {}) {
             const key = `${args.documentId}:${args.snapshotRevision}`;
             return (configuration.recoveryDocuments && configuration.recoveryDocuments[key]) ?? null;
           }
-          if (command === "take_pending_files") return [];
+          if (command === "take_pending_files") return pendingFiles.splice(0);
           if (command === "recovery_directory") return "/fake-recovery";
           if (command === "read_document") {
             const entry = documents[args.path];
@@ -73,6 +78,7 @@ async function installFakeTauri(page, options = {}) {
       },
       event: {
         listen: async (name, callback) => {
+          if (configuration.delayFileListener) await fileListenerGate;
           listeners.set(name, callback);
           return () => listeners.delete(name);
         },
@@ -105,4 +111,14 @@ function activeEditor(page) {
   return page.locator(".editor-surface:not([hidden]):not(.is-inactive) > textarea.document-editor");
 }
 
-module.exports = { activeEditor, installFakeTauri, openEditor };
+async function setEditorContent(page, content) {
+  // Save tests need an exact payload, independent of deferred caret restoration
+  // during tab activation and Playwright's select-all/insert sequence.
+  await activeEditor(page).evaluate((editor, value) => {
+    editor.value = value;
+    editor.dispatchEvent(new Event("input", { bubbles: true }));
+  }, content);
+  await expect(activeEditor(page)).toHaveValue(content);
+}
+
+module.exports = { activeEditor, installFakeTauri, openEditor, setEditorContent };
