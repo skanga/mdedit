@@ -2,6 +2,8 @@
 
 MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It combines a focused source editor and live preview with native file handling, Mermaid diagrams, KaTeX math, and offline exports. Your documents stay local.
 
+![MDedit screenshot in dark mode](screenshots/Screenshot-Dark-Windows.png)
+
 ## Features
 
 - Native **Open**, **Save**, and **Save As** for Markdown documents.
