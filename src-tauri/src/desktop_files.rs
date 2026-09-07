@@ -175,11 +175,11 @@ struct Signature {
     #[cfg(unix)]
     identity: (u64, u64, i64, i64),
     #[cfg(windows)]
-    created: Option<SystemTime>,
+    identity: Option<(u64, [u8; 16], i64)>,
 }
 
 impl Signature {
-    fn from_metadata(metadata: &fs::Metadata) -> Self {
+    fn from_metadata(metadata: &fs::Metadata, _file: &File) -> Self {
         Self {
             size: metadata.len(),
             modified: metadata.modified().ok(),
@@ -194,9 +194,51 @@ impl Signature {
                 )
             },
             #[cfg(windows)]
-            created: metadata.created().ok(),
+            identity: windows_file_identity(_file),
         }
     }
+
+    fn cacheable(&self) -> bool {
+        #[cfg(windows)]
+        if self.identity.is_none() {
+            // Some filesystems do not expose identity/change time. Rehash there.
+            return false;
+        }
+        self.modified.is_some()
+    }
+}
+
+#[cfg(windows)]
+fn windows_file_identity(file: &File) -> Option<(u64, [u8; 16], i64)> {
+    use std::mem::size_of;
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, FileIdInfo, GetFileInformationByHandleEx, FILE_BASIC_INFO, FILE_ID_INFO,
+    };
+
+    let mut identity = FILE_ID_INFO::default();
+    let mut basic = FILE_BASIC_INFO::default();
+    // SAFETY: the live File owns the handle; each output pointer has the exact
+    // structure and size required by its information class.
+    let success = unsafe {
+        GetFileInformationByHandleEx(
+            file.as_raw_handle(),
+            FileIdInfo,
+            (&mut identity as *mut FILE_ID_INFO).cast(),
+            size_of::<FILE_ID_INFO>() as u32,
+        ) != 0
+            && GetFileInformationByHandleEx(
+                file.as_raw_handle(),
+                FileBasicInfo,
+                (&mut basic as *mut FILE_BASIC_INFO).cast(),
+                size_of::<FILE_BASIC_INFO>() as u32,
+            ) != 0
+    };
+    success.then_some((
+        identity.VolumeSerialNumber,
+        identity.FileId.Identifier,
+        basic.ChangeTime,
+    ))
 }
 
 #[derive(Default)]
@@ -212,8 +254,8 @@ impl DocumentProbeCache {
             return Err("Document path must be absolute".into());
         }
         let mut cache = self.entries.lock().map_err(|e| e.to_string())?;
-        let metadata = match fs::metadata(path) {
-            Ok(metadata) if metadata.is_file() => metadata,
+        match fs::metadata(path) {
+            Ok(metadata) if metadata.is_file() => {}
             Ok(_) => return Err("Document path is not a regular file".into()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 cache.remove(path);
@@ -224,14 +266,17 @@ impl DocumentProbeCache {
             }
             Err(e) => return Err(e.to_string()),
         };
-        let signature = Signature::from_metadata(&metadata);
+        let mut file = File::open(path).map_err(|e| e.to_string())?;
+        let metadata = file.metadata().map_err(|e| e.to_string())?;
+        if !metadata.is_file() {
+            return Err("Document path is not a regular file".into());
+        }
+        let signature = Signature::from_metadata(&metadata, &file);
         let sha256 = match cache.get(path) {
-            Some((cached, hash)) if cached == &signature && signature.modified.is_some() => {
-                hash.clone()
-            }
+            Some((cached, hash)) if cached == &signature && signature.cacheable() => hash.clone(),
             _ => {
-                let mut file = File::open(path).map_err(|e| e.to_string())?;
-                let before = Signature::from_metadata(&file.metadata().map_err(|e| e.to_string())?);
+                let before =
+                    Signature::from_metadata(&file.metadata().map_err(|e| e.to_string())?, &file);
                 let mut digest = Sha256::new();
                 let mut buffer = [0; 64 * 1024];
                 loop {
@@ -245,7 +290,8 @@ impl DocumentProbeCache {
                 self.hash_reads
                     .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 let hash = format!("{:x}", digest.finalize());
-                let after = Signature::from_metadata(&file.metadata().map_err(|e| e.to_string())?);
+                let after =
+                    Signature::from_metadata(&file.metadata().map_err(|e| e.to_string())?, &file);
                 if before == after {
                     // Bound the cache even across a long session of opened files.
                     if cache.len() >= 256 {
