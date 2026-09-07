@@ -110,6 +110,7 @@ test("the main window can finish an authorized application close", () => {
   const capability = readJson("src-tauri/capabilities/default.json");
   assert.ok(capability.windows.includes("main"));
   assert.ok(capability.permissions.includes("core:window:allow-close"));
+  assert.ok(capability.permissions.includes("core:window:allow-destroy"));
 });
 
 test("README describes the MDedit desktop product and GitHub Releases downloads", () => {
@@ -393,6 +394,7 @@ test("the native capability description includes recovery and multi-document acc
     "core:default",
     "core:window:allow-set-title",
     "core:window:allow-close",
+    "core:window:allow-destroy",
     "dialog:default",
     "fs:allow-write-file",
   ]);

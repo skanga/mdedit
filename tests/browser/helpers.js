@@ -1,9 +1,10 @@
 const { expect } = require("@playwright/test");
+const { permissions } = require("../../src-tauri/capabilities/default.json");
 
 async function installFakeTauri(page, options = {}) {
   await page.addInitScript((configuration) => {
     const listeners = new Map();
-    const calls = { invokes: [], saves: [], writes: [], closeCalls: 0, titleRequests: [], titles: [], nativeTitle: "" };
+    const calls = { invokes: [], saves: [], writes: [], closeCalls: 0, destroyCalls: 0, titleRequests: [], titles: [], nativeTitle: "" };
     const paths = configuration.openPaths || [];
     const documents = configuration.documents || {};
     const saveResults = configuration.saveResults || {};
@@ -85,8 +86,29 @@ async function installFakeTauri(page, options = {}) {
       },
       window: {
         getCurrentWindow: () => ({
-          onCloseRequested: async (callback) => { closeHandler = callback; return () => { closeHandler = null; }; },
-          close: async () => { calls.closeCalls += 1; },
+          onCloseRequested: async (callback) => {
+            // Tauri's listener destroys the window after an unprevented event.
+            // Counting close() alone misses the final permission boundary.
+            closeHandler = async (event) => {
+              const result = await callback(event);
+              if (!event.prevented) {
+                if (!configuration.windowPermissions.includes("core:window:allow-destroy")) {
+                  throw new Error("window.destroy not allowed");
+                }
+                calls.destroyCalls += 1;
+              }
+              return result;
+            };
+            return () => { closeHandler = null; };
+          },
+          close: async () => {
+            if (!configuration.windowPermissions.includes("core:window:allow-close")) {
+              throw new Error("window.close not allowed");
+            }
+            calls.closeCalls += 1;
+            const request = await window.__testBridge.requestClose();
+            await request.promise;
+          },
           setTitle: async (title) => {
             calls.titleRequests.push(title);
             titleWriteCount += 1;
@@ -97,7 +119,7 @@ async function installFakeTauri(page, options = {}) {
         }),
       },
     };
-  }, options);
+  }, { ...options, windowPermissions: permissions });
 }
 
 async function openEditor(page) {

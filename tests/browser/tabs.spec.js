@@ -152,6 +152,7 @@ test("dirty close and consolidated quit trap focus and preserve cancel", async (
   await expect(dialog).toBeHidden();
   await expect(page.getByRole("tab")).toHaveCount(2);
   expect(await page.evaluate(() => window.__testBridge.calls.closeCalls)).toBe(0);
+  expect(await page.evaluate(() => window.__testBridge.calls.destroyCalls)).toBe(0);
 });
 
 for (const action of ["Close", "Save All & Quit", "Quit and Restore Next Time", "Discard All & Quit"]) {
@@ -172,6 +173,7 @@ for (const action of ["Close", "Save All & Quit", "Quit and Restore Next Time", 
     const result = await page.evaluate(async () => (await window.__quitRequest).promise);
     expect(result.allowClose, JSON.stringify(result)).toBe(true);
     expect(await page.evaluate(() => window.__testBridge.calls.closeCalls)).toBe(1);
+    expect(await page.evaluate(() => window.__testBridge.calls.destroyCalls)).toBe(1);
     await expect(page.getByRole("dialog")).toBeHidden();
   });
 }
