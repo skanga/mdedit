@@ -1872,13 +1872,7 @@ mod tests {
 
         let result = save_document_path(&path, "café 📝", None).unwrap();
 
-        let canonical_path = directory
-            .path()
-            .canonicalize()
-            .unwrap()
-            .join("new 文件.md")
-            .to_string_lossy()
-            .into_owned();
+        let canonical_path = canonical_comparison_path(&path).unwrap();
         assert!(matches!(
             result,
             SaveDocumentResult::Saved {
