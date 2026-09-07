@@ -154,6 +154,28 @@ test("dirty close and consolidated quit trap focus and preserve cancel", async (
   expect(await page.evaluate(() => window.__testBridge.calls.closeCalls)).toBe(0);
 });
 
+for (const action of ["Close", "Save All & Quit", "Quit and Restore Next Time", "Discard All & Quit"]) {
+  test(`desktop quit completes after choosing ${action}`, async ({ page }) => {
+    await installFakeTauri(page, {
+      savePath: "/quit.md",
+      documents: {
+        "/quit.md": { error: "failed to read document /quit.md: No such file or directory (os error 2)" },
+      },
+    });
+    await openEditor(page);
+    if (action !== "Close") await setEditorContent(page, "Unsaved quit content");
+    await page.evaluate(() => {
+      window.__quitRequest = window.__testBridge.requestClose();
+    });
+    await expect(page.getByRole("dialog")).toBeVisible();
+    await page.getByRole("button", { name: action, exact: true }).click();
+    const result = await page.evaluate(async () => (await window.__quitRequest).promise);
+    expect(result.allowClose, JSON.stringify(result)).toBe(true);
+    expect(await page.evaluate(() => window.__testBridge.calls.closeCalls)).toBe(1);
+    await expect(page.getByRole("dialog")).toBeHidden();
+  });
+}
+
 test("overflow keeps active tab and new-document button reachable", async ({ page }) => {
   await installFakeTauri(page);
   await openEditor(page);

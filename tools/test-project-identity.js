@@ -106,6 +106,12 @@ test("the main window can update its active-document title", () => {
   assert.ok(capability.permissions.includes("core:window:allow-set-title"));
 });
 
+test("the main window can finish an authorized application close", () => {
+  const capability = readJson("src-tauri/capabilities/default.json");
+  assert.ok(capability.windows.includes("main"));
+  assert.ok(capability.permissions.includes("core:window:allow-close"));
+});
+
 test("README describes the MDedit desktop product and GitHub Releases downloads", () => {
   const readme = readText("README.md");
   const download = readMarkdownSection(readme, "## Download");
@@ -386,6 +392,7 @@ test("the native capability description includes recovery and multi-document acc
   assert.deepEqual(capability.permissions, [
     "core:default",
     "core:window:allow-set-title",
+    "core:window:allow-close",
     "dialog:default",
     "fs:allow-write-file",
   ]);
