@@ -924,6 +924,7 @@
   }
   footer .spacer { flex: 1; }
   #status { color: var(--text-soft); font-family: var(--sans); }
+  #document-details { margin-left: auto; white-space: nowrap; font-variant-numeric: tabular-nums; }
 
   /* ── Drop overlay ────────────────────────────── */
   #drop-overlay {
@@ -1103,7 +1104,7 @@
   <span id="stat-lines" class="hide-sm">1 line</span>
   <span class="spacer"></span>
   <span id="status" role="status" aria-live="polite"></span>
-  <span class="hide-sm">everything stays on your device</span>
+  <span id="document-details" title="Cursor position, encoding, line endings, and current document size"></span>
 </footer>
 
 <div id="drop-overlay"><div class="card">Drop your markdown file<div class="sub">.md, .markdown or any text file — it stays on your device</div></div></div>
@@ -10159,7 +10160,53 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     runFind(true);
   }
 
+  const documentDetailsCache = new WeakMap();
+
+  function updateDocumentDetails() {
+    const active = controller && controller.activeDocument();
+    const surface = activeEditor();
+    const details = $("document-details");
+    if (!active || !surface) {
+      details.textContent = "";
+      return;
+    }
+    let metadata = documentDetailsCache.get(active);
+    if (!metadata || metadata.revision !== active.editRevision) {
+      // Use model content: textarea.value normalizes CRLF and CR to LF.
+      const content = active.content;
+      const endings = [
+        /\r\n/.test(content) && "CRLF",
+        /(^|[^\r])\n/.test(content) && "LF",
+        /\r(?!\n)/.test(content) && "CR",
+      ].filter(Boolean);
+      const ending = endings.length > 1 ? "Mixed" : endings[0] || "None";
+      const encoding = content.startsWith("\uFEFF") ? "UTF-8 BOM" : "UTF-8";
+      const bytes = new TextEncoder().encode(content).byteLength;
+      const unit = bytes < 1024 ? 0 : bytes < 1024 ** 2 ? 1 : bytes < 1024 ** 3 ? 2 : 3;
+      const size = `${Number((bytes / 1024 ** unit).toFixed(1))} ${["B", "KB", "MB", "GB"][unit]}`;
+      metadata = { revision: active.editRevision, text: `${encoding} ◦ ${ending} ◦ ${size}` };
+      documentDetailsCache.set(active, metadata);
+    }
+    const caret = surface.selectionDirection === "backward" ? surface.selectionStart : surface.selectionEnd;
+    const text = surface.value;
+    let line = 1, lineStart = 0, next;
+    while ((next = text.indexOf("\n", lineStart)) !== -1 && next < caret) {
+      line++;
+      lineStart = next + 1;
+    }
+    const column = Array.from(text.slice(lineStart, caret)).length + 1;
+    details.textContent = `Ln: ${line}, Col: ${column} ◦ ${metadata.text}`;
+  }
+
+  document.addEventListener("selectionchange", updateDocumentDetails);
+  for (const name of ["select", "keyup", "click"]) {
+    document.addEventListener(name, event => {
+      if (isActiveEditorEvent(event)) updateDocumentDetails();
+    }, true);
+  }
+
   function syncActiveSurface() {
+    updateDocumentDetails();
     const active = controller && controller.activeDocument();
     if (!active || !workspaceView) {
       $("btn-save-all").disabled = true;

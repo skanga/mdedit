@@ -1,6 +1,46 @@
 const { test, expect } = require("@playwright/test");
 const { activeEditor, installFakeTauri, openEditor, setEditorContent } = require("./helpers.js");
 
+test("document details follow the caret, edits, and active tab", async ({ page }) => {
+  await installFakeTauri(page);
+  await openEditor(page);
+  await activeEditor(page).fill("hello\né😀");
+  const details = page.locator("#document-details");
+  await expect(details).toHaveText("Ln: 2, Col: 3 ◦ UTF-8 ◦ LF ◦ 12 B");
+  await activeEditor(page).press("ArrowLeft");
+  await expect(details).toHaveText("Ln: 2, Col: 2 ◦ UTF-8 ◦ LF ◦ 12 B");
+  await activeEditor(page).evaluate(editor => editor.setSelectionRange(0, 2, "backward"));
+  await expect(details).toHaveText("Ln: 1, Col: 1 ◦ UTF-8 ◦ LF ◦ 12 B");
+  await page.getByRole("button", { name: "New document" }).click();
+  await expect(details).toHaveText("Ln: 1, Col: 1 ◦ UTF-8 ◦ None ◦ 0 B");
+  await page.getByRole("tab", { name: /Untitled 1/ }).click();
+  await expect(details).toContainText("UTF-8 ◦ LF ◦ 12 B");
+  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await expect(details).toBeVisible();
+});
+
+test("document details use original bytes and line endings when opening files", async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ["/docs/crlf.md", "/docs/mixed.md", "/docs/cr.md"],
+    documents: {
+      "/docs/crlf.md": { content: "\uFEFFé\r\nx" },
+      "/docs/mixed.md": { content: "a\r\nb\nc" },
+      "/docs/cr.md": { content: "a\rb" },
+    },
+  });
+  await openEditor(page);
+  await page.getByRole("button", { name: "Open", exact: true }).click();
+  const details = page.locator("#document-details");
+  await page.getByRole("tab", { name: /crlf.md/ }).click();
+  await expect(details).toContainText("UTF-8 BOM ◦ CRLF ◦ 8 B");
+  await page.getByRole("tab", { name: /mixed.md/ }).click();
+  await expect(details).toContainText("UTF-8 ◦ Mixed ◦ 6 B");
+  await page.getByRole("tab", { name: /cr.md/ }).click();
+  await expect(details).toContainText("UTF-8 ◦ CR ◦ 3 B");
+  await activeEditor(page).fill("x".repeat(12 * 1024));
+  await expect(details).toContainText("UTF-8 ◦ None ◦ 12 KB");
+});
+
 test("welcome appears only for a truly new session and restored blank content stays blank", async ({ page }) => {
   await installFakeTauri(page);
   await openEditor(page);
