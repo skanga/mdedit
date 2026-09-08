@@ -29,6 +29,8 @@ An unsaved change shows a dirty indicator on that document's tab and an asterisk
 
 MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload Disk Version**, **Keep Editing**, and **Save Editor Version As**. A deleted source remains open and can be saved to a new location.
 
+On Windows, desktop settings, WebView data, session recovery, and recent-file history are stored under `%LOCALAPPDATA%\com.skanga.mdedit`. Older recovery data and history under `%APPDATA%\com.skanga.mdedit` are not migrated or loaded. To fully reset the app, close MDedit and delete the Local AppData folder; this removes unsaved recovery copies but leaves documents saved elsewhere untouched.
+
 Closing the application always asks for confirmation. With clean documents, choose **Close** or **Cancel**. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
 
 Desktop exports use raw bytes and Tauri's native save dialog. The save dialog dynamically grants write access only to the selected destination; MDedit has no wildcard filesystem scope. Document saves and private recovery storage remain behind validated Rust commands.

@@ -89,9 +89,10 @@ pub fn run() {
             recovery_directory
         ])
         .setup(|app| {
-            let recovery_root = app.path().app_data_dir()?.join("session-v1");
+            let data_root = app.path().app_local_data_dir()?;
+            let recovery_root = data_root.join("session-v1");
             app.manage(RecoveryStore::new(recovery_root));
-            app.manage(RecentDocumentsStore::new(app.path().app_data_dir()?));
+            app.manage(RecentDocumentsStore::new(data_root));
 
             for path in std::env::args().skip(1).filter(|a| is_existing_file(a)) {
                 app.state::<PendingFiles>().push_and_notify(path, || {});
