@@ -2735,8 +2735,21 @@
   }
 
   const documentDetailsCache = new WeakMap();
+  let documentDetailsTimer = null;
 
   function updateDocumentDetails() {
+    clearTimeout(documentDetailsTimer);
+    const id = controller && controller.activeDocument()?.id || "";
+    const details = $("document-details");
+    if (details.dataset.documentId !== id) {
+      details.dataset.documentId = id;
+      details.textContent = "";
+    }
+    // Like word counts, defer document scans until tab switching or typing settles.
+    documentDetailsTimer = setTimeout(renderDocumentDetails, 150);
+  }
+
+  function renderDocumentDetails() {
     const active = controller && controller.activeDocument();
     const surface = activeEditor();
     const details = $("document-details");
@@ -2748,10 +2761,12 @@
     if (!metadata || metadata.revision !== active.editRevision) {
       // Use model content: textarea.value normalizes CRLF and CR to LF.
       const content = active.content;
+      const hasCRLF = content.includes("\r\n");
+      const otherEndings = hasCRLF ? content.replace(/\r\n/g, "") : content;
       const endings = [
-        /\r\n/.test(content) && "CRLF",
-        /(^|[^\r])\n/.test(content) && "LF",
-        /\r(?!\n)/.test(content) && "CR",
+        hasCRLF && "CRLF",
+        otherEndings.includes("\n") && "LF",
+        otherEndings.includes("\r") && "CR",
       ].filter(Boolean);
       const ending = endings.length > 1 ? "Mixed" : endings[0] || "None";
       const encoding = content.startsWith("\uFEFF") ? "UTF-8 BOM" : "UTF-8";
@@ -2762,13 +2777,15 @@
       documentDetailsCache.set(active, metadata);
     }
     const caret = surface.selectionDirection === "backward" ? surface.selectionStart : surface.selectionEnd;
-    const text = surface.value;
+    const text = surface.value.slice(0, caret);
     let line = 1, lineStart = 0, next;
     while ((next = text.indexOf("\n", lineStart)) !== -1 && next < caret) {
       line++;
       lineStart = next + 1;
     }
-    const column = Array.from(text.slice(lineStart, caret)).length + 1;
+    // Count code points without allocating an array for a potentially huge line.
+    let column = caret - lineStart + 1;
+    for (const pair of text.slice(lineStart).matchAll(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g)) column--;
     details.textContent = `Ln: ${line}, Col: ${column} ◦ ${metadata.text}`;
   }
 
