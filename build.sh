@@ -49,6 +49,7 @@ LIBS = {
     "/*__RECENT_DOCUMENTS__*/": "src/recent-documents.js",
     "/*__EDITOR_TOOLS__*/": "src/editor-tools.js",
     "/*__EDITOR_ENHANCEMENTS__*/": "src/editor-enhancements.js",
+    "/*__FORMATTING_TOOLBAR__*/": "src/formatting-toolbar.js",
     "/*__DESKTOP_ASSETS__*/": "src/desktop-assets.js",
     "/*__DESKTOP_WORKSPACE__*/": "src/desktop-workspace.js",
 }

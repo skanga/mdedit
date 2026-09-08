@@ -1,6 +1,61 @@
 const { test, expect } = require("@playwright/test");
 const { activeEditor, installFakeTauri, openEditor, setEditorContent } = require("./helpers.js");
 
+test('formatting toolbar preserves selection and undo, exposes menus, and follows view mode', async ({ page }) => {
+  await installFakeTauri(page); await openEditor(page);
+  const bar = page.getByRole('toolbar', { name: 'Formatting' });
+  await expect(bar).toBeVisible();
+  await activeEditor(page).fill('hello world');
+  await activeEditor(page).evaluate(el => el.setSelectionRange(6, 11));
+  await bar.getByRole('button', { name: 'Bold', exact: true }).click();
+  await expect(activeEditor(page)).toHaveValue('hello **world**');
+  await activeEditor(page).press('ControlOrMeta+z');
+  await expect(activeEditor(page)).toHaveValue('hello world');
+  await bar.getByRole('button', { name: 'Heading', exact: true }).click();
+  await bar.getByRole('button', { name: 'Heading 6', exact: true }).click();
+  await expect(activeEditor(page)).toHaveValue('###### hello world');
+  await bar.getByRole('button', { name: 'List', exact: true }).focus();
+  await page.keyboard.press('ArrowDown');
+  await expect(bar.getByRole('button', { name: 'Bulleted list', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(bar.getByRole('button', { name: 'List', exact: true })).toBeFocused();
+  await page.getByRole('button', { name: 'Preview', exact: true }).click();
+  await expect(bar).toBeHidden();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  await expect(bar).toBeVisible();
+});
+
+test('formatting toolbar adapts to narrow panes and persists its visibility preference', async ({ page }) => {
+  await page.setViewportSize({ width: 1000, height: 800 });
+  await page.addInitScript(() => localStorage.setItem('mdedit-theme', 'dark'));
+  await installFakeTauri(page); await openEditor(page);
+  await activeEditor(page).fill('# A focused writing space\n\nSelect text to format it, or insert a table, image, or list.');
+  await expect(page.locator('#preview')).toContainText('A focused writing space');
+  const bar = page.getByRole('toolbar', { name: 'Formatting' });
+  await page.screenshot({ path: 'test-results/formatting-dark.png' });
+  await page.locator('#btn-theme').click();
+  await expect(page.locator('#preview')).toContainText('A focused writing space');
+  await page.screenshot({ path: 'test-results/formatting-light.png' });
+  await page.setViewportSize({ width: 800, height: 700 });
+  await expect(bar.locator(':scope > .format-secondary')).toHaveCount(4);
+  await expect(bar.locator(':scope > .format-secondary').first()).toBeHidden();
+  await bar.getByRole('button', { name: 'More formatting', exact: true }).click();
+  const menuBox = await page.locator('#format-menu-more').boundingBox();
+  expect(menuBox.x).toBeGreaterThanOrEqual(0);
+  expect(menuBox.x + menuBox.width).toBeLessThanOrEqual(800);
+  await bar.getByRole('button', { name: 'Table', exact: true }).click();
+  await expect(activeEditor(page)).toHaveValue(/\| Column 1 \| Column 2 \|/);
+  await page.locator('#btn-editor-options').click();
+  await expect(page.locator('#editor-options [data-format]')).toHaveCount(0);
+  await page.getByLabel('Show formatting toolbar', { exact: true }).uncheck();
+  await expect(bar).toBeHidden();
+  await page.reload();
+  await expect(page.locator('#formatting-toolbar')).toBeHidden();
+  await page.locator('#btn-editor-options').click();
+  await page.getByLabel('Show formatting toolbar', { exact: true }).check();
+  await expect(bar).toBeVisible();
+});
+
 test("document details follow the caret, edits, and active tab", async ({ page }) => {
   await installFakeTauri(page);
   await openEditor(page);

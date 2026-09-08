@@ -9,6 +9,38 @@
   }
   function formatEdit(value, from, to, command) {
     const selected = value.slice(from, to);
+    if (command.startsWith('list-') || command === 'quote') {
+      const patterns = { 'list-bullet': /^([-+*])\s+(?!\[[ xX]\]\s)/, 'list-numbered': /^\d+[.)]\s+/, 'list-task': /^[-+*]\s+\[[ xX]\]\s+/, quote: /^> ?/ };
+      const pattern = patterns[command]; if (!pattern) return null;
+      const start = from === 0 ? 0 : value.lastIndexOf('\n', from - 1) + 1;
+      const last = to > from && value[to - 1] === '\n' ? to - 1 : to;
+      let end = value.indexOf('\n', last); if (end < 0) end = value.length;
+      const lines = value.slice(start, end).split('\n');
+      const remove = lines.every(line => pattern.test(line.trimStart()));
+      const text = lines.map((line, index) => {
+        const indent = line.match(/^[ \t]*/)[0], body = line.slice(indent.length);
+        if (remove) return indent + body.replace(pattern, '');
+        const prefix = command === 'quote' ? '> ' : command === 'list-task' ? '- [ ] ' : command === 'list-numbered' ? `${index + 1}. ` : '- ';
+        return indent + prefix + (command === 'quote' ? body : body.replace(/^(?:[-+*]|\d+[.)])\s+(?:\[[ xX]\]\s+)?/, ''));
+      }).join('\n');
+      return edit(start, end, text, start, start + text.length);
+    }
+    if (command === 'table' || command === 'rule') {
+      const before = value.slice(0, from), after = value.slice(to);
+      const prefix = !before || before.endsWith('\n\n') ? '' : before.endsWith('\n') ? '\n' : '\n\n';
+      const suffix = after.startsWith('\n\n') ? '' : after.startsWith('\n') ? '\n' : '\n\n';
+      const body = command === 'table' ? '| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |' : '---';
+      const position = from + prefix.length + (command === 'table' ? 2 : body.length + suffix.length);
+      return edit(from, to, prefix + body + suffix, position, position + (command === 'table' ? 8 : 0));
+    }
+    if (command === 'image') {
+      const label = selected || 'alt text', position = from + label.length + 4;
+      return edit(from, to, `![${label}](image.png)`, position, position + 9);
+    }
+    if (command === 'equation') {
+      const formula = selected || 'x';
+      return edit(from, to, '$' + formula + '$', from + 1, from + 1 + formula.length);
+    }
     if (command.startsWith('heading-')) {
       const level = Number(command.slice(8));
       if (!Number.isInteger(level) || level < 1 || level > 6) return null;

@@ -14,26 +14,25 @@
       tabWidth: [2,4,8].includes(stored.tabWidth) ? stored.tabWidth : 2,
       wrap: stored.wrap !== false,
       lineNumbers: stored.lineNumbers === true,
+      formattingToolbar: stored.formattingToolbar !== false,
     };
     const trigger = document.getElementById('btn-editor-options');
     const panel = document.getElementById('editor-options');
-    panel.innerHTML = '<h2>Editor</h2><div class="format-actions">' +
-      [['bold','Bold'],['italic','Italic'],['link','Link'],['code','Inline code'],['code-block','Code block'],['heading-1','Heading 1'],['heading-2','Heading 2'],['heading-3','Heading 3']]
-        .map(([command,label]) => `<button type="button" data-format="${command}">${label}</button>`).join('') + '</div>' +
+    panel.innerHTML = '<h2>Editor preferences</h2>' +
       '<label>Font size <input id="editor-font-size" type="number" min="10" max="28" step="1"></label>' +
       '<label>Tab width <select id="editor-tab-width"><option>2</option><option>4</option><option>8</option></select></label>' +
       '<label><input id="editor-wrap" type="checkbox"> Wrap long lines</label>' +
-      '<label><input id="editor-line-numbers" type="checkbox"> Line numbers</label>';
+      '<label><input id="editor-line-numbers" type="checkbox"> Line numbers</label>' +
+      '<label><input id="editor-formatting-toolbar" type="checkbox"> Show formatting toolbar</label>';
     const size = document.getElementById('editor-font-size'), tabs = document.getElementById('editor-tab-width');
     const wrap = document.getElementById('editor-wrap'), numbers = document.getElementById('editor-line-numbers');
+    const toolbarToggle = document.getElementById('editor-formatting-toolbar');
+    toolbarToggle.checked = prefs.formattingToolbar;
     size.value = prefs.fontSize; tabs.value = prefs.tabWidth; wrap.checked = prefs.wrap; numbers.checked = prefs.lineNumbers;
-    let selection = null;
     function close(focus = false) { panel.hidden = true; trigger.setAttribute('aria-expanded','false'); if (focus) trigger.focus(); }
     trigger.addEventListener('click', () => {
       if (!panel.hidden) return close(true);
-      const el = activeEditor();
-      selection = el ? {el,from:el.selectionStart,to:el.selectionEnd} : null;
-      panel.hidden = false; trigger.setAttribute('aria-expanded','true'); panel.querySelector('button').focus();
+      panel.hidden = false; trigger.setAttribute('aria-expanded','true'); size.focus();
     });
     document.addEventListener('click', event => { if (!event.composedPath().includes(trigger.parentElement)) close(); });
     panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); close(true); } });
@@ -45,11 +44,9 @@
     }
     function format(command) {
       const el = activeEditor(); if (!el) return;
-      if (selection?.el === el && !panel.hidden) el.setSelectionRange(selection.from, selection.to);
       const edit = win.MDEdit.formatEdit(el.value,el.selectionStart,el.selectionEnd,command);
-      close(); applyEdit(el,edit); selection = null;
+      close(); applyEdit(el,edit);
     }
-    panel.addEventListener('click', event => { const button = event.target.closest('[data-format]'); if (button) format(button.dataset.format); });
     const host = document.getElementById('editor-surfaces');
     host.addEventListener('keydown', event => {
       const el = activeEditor(); if (event.target !== el || event.isComposing) return;
@@ -62,7 +59,7 @@
         const digit = /^Digit[1-6]$/.test(event.code) ? event.code.slice(-1) : event.key;
         if (/^[1-6]$/.test(digit)) command = 'heading-' + digit;
       }
-      if (command) { event.preventDefault(); event.stopImmediatePropagation(); selection = null; applyEdit(el,win.MDEdit.formatEdit(el.value,el.selectionStart,el.selectionEnd,command)); }
+      if (command) { event.preventDefault(); event.stopImmediatePropagation(); applyEdit(el,win.MDEdit.formatEdit(el.value,el.selectionStart,el.selectionEnd,command)); }
       else if (event.key === 'Enter' && !event.shiftKey && !event.ctrlKey && !event.metaKey && !event.altKey) {
         const edit = win.MDEdit.listEdit(el.value,el.selectionStart,el.selectionEnd);
         if (edit) { event.preventDefault(); event.stopImmediatePropagation(); applyEdit(el,edit); }
@@ -74,6 +71,7 @@
     measure.style.cssText = 'position:fixed;left:-100000px;top:0;visibility:hidden;padding:0;border:0;overflow-wrap:break-word;';
     document.body.append(measure);
     function applyPreferences() {
+      document.getElementById('formatting-toolbar').hidden = !prefs.formattingToolbar;
       for (const el of host.querySelectorAll('textarea.document-editor')) {
         el.style.fontSize = prefs.fontSize + 'px'; el.style.tabSize = String(prefs.tabWidth);
         el.wrap = prefs.wrap ? 'soft' : 'off'; el.style.whiteSpace = prefs.wrap ? 'pre-wrap' : 'pre';
@@ -112,9 +110,10 @@
       gutter.replaceChildren(fragment);
     }
     function updateGutter() { if (frame === null && prefs.lineNumbers) frame = win.requestAnimationFrame(paintGutter); }
-    for (const input of [size,tabs,wrap,numbers]) input.addEventListener('change', () => {
+    for (const input of [size,tabs,wrap,numbers,toolbarToggle]) input.addEventListener('change', () => {
       prefs.fontSize = Math.max(10,Math.min(28,Number(size.value) || 13)); size.value = prefs.fontSize;
       prefs.tabWidth = Number(tabs.value); prefs.wrap = wrap.checked; prefs.lineNumbers = numbers.checked;
+      prefs.formattingToolbar = toolbarToggle.checked;
       try { win.localStorage.setItem(key,JSON.stringify(prefs)); } catch (_) {}
       layout = null; applyPreferences();
     });
@@ -122,7 +121,7 @@
     new win.MutationObserver(records => { if (records.some(r => [...r.addedNodes].some(n => n.nodeType === 1 && n.matches('.editor-surface')))) applyPreferences(); }).observe(host,{childList:true});
     new win.ResizeObserver(updateGutter).observe(host);
     applyPreferences();
-    return { tabWidth:() => prefs.tabWidth, updateGutter, applyPreferences };
+    return { tabWidth:() => prefs.tabWidth, updateGutter, applyPreferences, format };
   }
   return { installEditorEnhancements };
 });

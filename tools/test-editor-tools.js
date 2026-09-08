@@ -2,6 +2,21 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const tools = require('../src/editor-tools.js');
 const apply = (value, edit) => value.slice(0, edit.start) + edit.text + value.slice(edit.end);
+test('toolbar block commands convert and toggle selected lines without touching the next line', () => {
+  const value = 'one\ntwo\nthree';
+  assert.equal(apply(value, tools.formatEdit(value, 0, 8, 'list-numbered')), '1. one\n2. two\nthree');
+  assert.equal(apply('- one\n- two', tools.formatEdit('- one\n- two', 0, 11, 'list-bullet')), 'one\ntwo');
+  assert.equal(apply('  2. one', tools.formatEdit('  2. one', 0, 8, 'list-task')), '  - [ ] one');
+  assert.equal(apply('one\ntwo', tools.formatEdit('one\ntwo', 0, 7, 'quote')), '> one\n> two');
+});
+test('toolbar insertions create usable Markdown and select editable placeholders', () => {
+  const table = tools.formatEdit('beforeafter', 6, 6, 'table');
+  assert.equal(apply('beforeafter', table), 'before\n\n| Column 1 | Column 2 |\n| --- | --- |\n| Cell | Cell |\n\nafter');
+  assert.equal(table.text.slice(table.selectionStart - table.start, table.selectionEnd - table.start), 'Column 1');
+  assert.equal(apply('', tools.formatEdit('', 0, 0, 'rule')), '---\n\n');
+  assert.equal(apply('alt', tools.formatEdit('alt', 0, 3, 'image')), '![alt](image.png)');
+  assert.equal(apply('x', tools.formatEdit('x', 0, 1, 'equation')), '$x$');
+});
 test('formatting wraps, toggles and preserves selection', () => {
   assert.equal(apply('hello world', tools.formatEdit('hello world', 6, 11, 'bold')), 'hello **world**');
   assert.equal(apply('**world**', tools.formatEdit('**world**', 2, 7, 'bold')), 'world');
