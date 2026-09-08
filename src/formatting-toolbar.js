@@ -17,7 +17,7 @@
     const command = (id, label, face = label, shortcut = '', className = '') =>
       `<button type="button" class="${className}" data-format="${id}" aria-label="${label}" title="${label}${shortcut ? ' (' + shortcut + ')' : ''}">${face}</button>`;
     const disclosure = (id, label, face, items, className = '') =>
-      `<span class="format-disclosure ${className}"><button type="button" aria-label="${label}" title="${label}" aria-expanded="false" aria-controls="format-menu-${id}">${face}${id === 'more' ? '' : '<span class="format-caret" aria-hidden="true">▾</span>'}</button><div id="format-menu-${id}" class="format-menu" hidden>${items}</div></span>`;
+      `<span class="format-disclosure ${className}"><button type="button" aria-label="${label}" title="${label}" aria-expanded="false" aria-controls="format-menu-${id}">${face}${id === 'more' ? '' : '<svg class="format-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>'}</button><div id="format-menu-${id}" class="format-menu" hidden>${items}</div></span>`;
     const quote = command('quote', 'Blockquote', icon('quote'), '', 'format-secondary');
     const image = command('image', 'Image', icon('image'), '', 'format-secondary');
     const table = command('table', 'Table', icon('table'), '', 'format-secondary');

@@ -704,7 +704,7 @@
   #formatting-toolbar button:hover, #formatting-toolbar button[aria-expanded="true"] { background:var(--accent-soft); color:var(--accent); }
   #formatting-toolbar button:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
   #formatting-toolbar svg { width:17px; height:17px; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round; stroke-linejoin:round; }
-  .format-caret { font-size:9px; opacity:0.65; }
+  #formatting-toolbar svg.format-caret { width:12px; height:12px; flex:none; }
   .format-divider { width:1px; height:14px; background:var(--border); margin:0 4px; }
   .format-disclosure { position:relative; display:inline-flex; }
   .format-menu { position:absolute; top:calc(100% + 5px); left:0; min-width:158px; padding:5px; border:1px solid var(--border); border-radius:7px; background:var(--panel); box-shadow:0 8px 24px rgba(0,0,0,0.18); }
@@ -8390,7 +8390,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const command = (id, label, face = label, shortcut = '', className = '') =>
       `<button type="button" class="${className}" data-format="${id}" aria-label="${label}" title="${label}${shortcut ? ' (' + shortcut + ')' : ''}">${face}</button>`;
     const disclosure = (id, label, face, items, className = '') =>
-      `<span class="format-disclosure ${className}"><button type="button" aria-label="${label}" title="${label}" aria-expanded="false" aria-controls="format-menu-${id}">${face}${id === 'more' ? '' : '<span class="format-caret" aria-hidden="true">▾</span>'}</button><div id="format-menu-${id}" class="format-menu" hidden>${items}</div></span>`;
+      `<span class="format-disclosure ${className}"><button type="button" aria-label="${label}" title="${label}" aria-expanded="false" aria-controls="format-menu-${id}">${face}${id === 'more' ? '' : '<svg class="format-caret" viewBox="0 0 12 12" aria-hidden="true"><path d="m2 4 4 4 4-4"/></svg>'}</button><div id="format-menu-${id}" class="format-menu" hidden>${items}</div></span>`;
     const quote = command('quote', 'Blockquote', icon('quote'), '', 'format-secondary');
     const image = command('image', 'Image', icon('image'), '', 'format-secondary');
     const table = command('table', 'Table', icon('table'), '', 'format-secondary');
