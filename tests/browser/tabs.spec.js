@@ -5,6 +5,9 @@ test('formatting toolbar preserves selection and undo, exposes menus, and follow
   await installFakeTauri(page); await openEditor(page);
   const bar = page.getByRole('toolbar', { name: 'Formatting' });
   await expect(bar).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'More formatting', exact: true })).toBeHidden();
+  await expect(bar.getByRole('button', { name: 'Horizontal rule', exact: true })).toBeVisible();
+  await expect(bar.getByRole('button', { name: 'Equation', exact: true })).toBeVisible();
   await activeEditor(page).fill('hello world');
   await activeEditor(page).evaluate(el => el.setSelectionRange(6, 11));
   await bar.getByRole('button', { name: 'Bold', exact: true }).click();
@@ -37,7 +40,7 @@ test('formatting toolbar adapts to narrow panes and persists its visibility pref
   await expect(page.locator('#preview')).toContainText('A focused writing space');
   await page.screenshot({ path: 'test-results/formatting-light.png' });
   await page.setViewportSize({ width: 800, height: 700 });
-  await expect(bar.locator(':scope > .format-secondary')).toHaveCount(4);
+  await expect(bar.locator(':scope > .format-secondary')).toHaveCount(6);
   await expect(bar.locator(':scope > .format-secondary').first()).toBeHidden();
   await bar.getByRole('button', { name: 'More formatting', exact: true }).click();
   const menuBox = await page.locator('#format-menu-more').boundingBox();
@@ -54,6 +57,22 @@ test('formatting toolbar adapts to narrow panes and persists its visibility pref
   await page.locator('#btn-editor-options').click();
   await page.getByLabel('Show formatting toolbar', { exact: true }).check();
   await expect(bar).toBeVisible();
+});
+
+test('opening formatting menus preserves caret and independent scroll positions', async ({ page }) => {
+  await installFakeTauri(page); await openEditor(page);
+  const content = Array.from({ length: 100 }, (_, i) => `Paragraph ${i} with some text.\n`).join('\n');
+  await activeEditor(page).fill(content);
+  await expect(page.locator('#preview')).toContainText('Paragraph 99');
+  await activeEditor(page).evaluate(el => { el.setSelectionRange(0, 0); el.scrollTop = 500; });
+  await expect.poll(() => page.locator('#preview-pane').evaluate(el => el.scrollTop)).toBeGreaterThan(0);
+  // Preview can be scrolled independently; the caret need not be in the viewport.
+  await page.locator('#preview-pane').evaluate(el => { el.scrollTop = 0; });
+  const before = await activeEditor(page).evaluate(el => ({ start: el.selectionStart, end: el.selectionEnd, scroll: el.scrollTop }));
+  await page.getByRole('toolbar', { name: 'Formatting' }).getByRole('button', { name: 'Heading', exact: true }).click();
+  await expect.poll(() => activeEditor(page).evaluate(el => ({ start: el.selectionStart, end: el.selectionEnd, scroll: el.scrollTop }))).toEqual(before);
+  await expect(page.locator('#document-details')).toContainText('Ln: 1, Col: 1');
+  expect(await page.locator('#preview-pane').evaluate(el => el.scrollTop)).toBe(0);
 });
 
 test("document details follow the caret, edits, and active tab", async ({ page }) => {

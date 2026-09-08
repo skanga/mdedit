@@ -698,7 +698,7 @@
   .editor-panel label { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .editor-panel input, .editor-panel select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 4px; border-radius: 4px; }
   .editor-panel input[type=number] { width: 64px; }
-  #formatting-toolbar { display:flex; align-items:center; gap:3px; flex:none; height:35px; padding:0 14px; border-bottom:1px solid var(--border-soft); color:var(--text-soft); position:relative; z-index:5; }
+  #formatting-toolbar { display:flex; align-items:center; gap:3px; flex:none; height:35px; padding:0 14px; border-bottom:1px solid var(--border-soft); background:var(--panel); color:var(--text-soft); position:relative; z-index:5; }
   #formatting-toolbar[hidden], .format-menu[hidden] { display:none; }
   #formatting-toolbar button { display:inline-flex; align-items:center; justify-content:center; gap:3px; min-width:29px; height:28px; padding:0 5px; border:0; border-radius:4px; background:transparent; color:inherit; font:13px var(--sans); cursor:pointer; }
   #formatting-toolbar button:hover, #formatting-toolbar button[aria-expanded="true"] { background:var(--accent-soft); color:var(--accent); }
@@ -711,8 +711,10 @@
   #format-menu-more { left:auto; right:0; }
   #formatting-toolbar .format-menu button { display:flex; width:100%; justify-content:flex-start; padding:0 9px; height:30px; white-space:nowrap; }
   .format-overflow { display:none; border-bottom:1px solid var(--border-soft); padding-bottom:4px; margin-bottom:4px; }
+  #formatting-toolbar > .format-more { display:none; }
   @container (max-width: 440px) {
     #formatting-toolbar > .format-secondary { display:none; }
+    #formatting-toolbar > .format-more { display:inline-flex; }
     .format-overflow { display:block; }
   }
   .editor-panel button { font:inherit; background:var(--bg); color:var(--text); border:1px solid var(--border); border-radius:5px; padding:5px 7px; cursor:pointer; }
@@ -8376,8 +8378,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const mod = /Mac|iPhone|iPad/.test(root.navigator.platform) ? '⌘' : 'Ctrl+';
     const icons = {
       list: '<path d="M9 6h12M9 12h12M9 18h12M3 6h1M3 12h1M3 18h1"/>',
-      quote: '<path d="M10 7H4v6h5c0 3-2 4-4 4M20 7h-6v6h5c0 3-2 4-4 4"/>',
-      link: '<path d="m10 13 4-4m-6 6-2 2a4 4 0 0 1-6-6l4-4a4 4 0 0 1 6 0m4 2 2-2a4 4 0 0 1 6 6l-4 4a4 4 0 0 1-6 0" transform="translate(1 -1)"/>',
+      quote: '<path fill="currentColor" stroke="none" d="M10 5C6 5 3 8 3 12v7h7v-8H6c0-2 2-4 4-4V5Zm11 0c-4 0-7 3-7 7v7h7v-8h-4c0-2 2-4 4-4V5Z"/>',
+      link: '<path d="m9 15 6-6m-7 1-3 3a4 4 0 0 0 6 6l3-3m-4-8 3-3a4 4 0 0 1 6 6l-3 3"/>',
+      rule: '<path d="M4 12h16"/>',
       image: '<rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8" cy="8" r="1"/><path d="m3 17 5-5 4 4 4-6 5 7"/>',
       table: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M3 15h18M11 9v12"/>',
       code: '<path d="m7 6-5 6 5 6m10-12 5 6-5 6m-3-15-4 18"/>',
@@ -8387,7 +8390,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const command = (id, label, face = label, shortcut = '', className = '') =>
       `<button type="button" class="${className}" data-format="${id}" aria-label="${label}" title="${label}${shortcut ? ' (' + shortcut + ')' : ''}">${face}</button>`;
     const disclosure = (id, label, face, items, className = '') =>
-      `<span class="format-disclosure ${className}"><button type="button" aria-label="${label}" title="${label}" aria-expanded="false" aria-controls="format-menu-${id}">${face}<span class="format-caret" aria-hidden="true">▾</span></button><div id="format-menu-${id}" class="format-menu" hidden>${items}</div></span>`;
+      `<span class="format-disclosure ${className}"><button type="button" aria-label="${label}" title="${label}" aria-expanded="false" aria-controls="format-menu-${id}">${face}${id === 'more' ? '' : '<span class="format-caret" aria-hidden="true">▾</span>'}</button><div id="format-menu-${id}" class="format-menu" hidden>${items}</div></span>`;
     const quote = command('quote', 'Blockquote', icon('quote'), '', 'format-secondary');
     const image = command('image', 'Image', icon('image'), '', 'format-secondary');
     const table = command('table', 'Table', icon('table'), '', 'format-secondary');
@@ -8398,9 +8401,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       disclosure('lists', 'List', icon('list'), command('list-bullet', 'Bulleted list') + command('list-numbered', 'Numbered list') + command('list-task', 'Task list')) + quote +
       '<span class="format-divider" aria-hidden="true"></span>' + command('link', 'Link', icon('link'), mod + 'K') + image + table +
       disclosure('code', 'Code', icon('code'), codeItems, 'format-secondary') +
+      command('rule', 'Horizontal rule', icon('rule'), '', 'format-secondary') +
+      command('equation', 'Equation', 'Σ', '', 'format-secondary') +
       disclosure('more', 'More formatting', icon('more'),
         '<div class="format-overflow">' + command('quote', 'Blockquote') + command('image', 'Image') + command('table', 'Table') + codeItems + '</div>' +
-        command('rule', 'Horizontal rule') + command('equation', 'Equation'));
+        command('rule', 'Horizontal rule') + command('equation', 'Equation'), 'format-more');
 
     function closeMenus() {
       for (const button of bar.querySelectorAll('[aria-expanded]')) button.setAttribute('aria-expanded', 'false');

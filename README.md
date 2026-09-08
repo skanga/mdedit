@@ -35,7 +35,7 @@ Desktop exports use raw bytes and Tauri's native save dialog. The save dialog dy
 
 ### Editing and attachments
 
-Use the compact toolbar above the source editor for headings, bold, italic, lists, blockquotes, links, images, tables, and code. **More formatting** includes horizontal rules and equations, plus secondary actions when the pane is narrow. The toolbar appears in Edit and Split modes. Use **Editor → Show formatting toolbar** to hide or restore it; this preference persists locally. On desktop, Image opens the existing image/attachment importer; in the browser it inserts a Markdown image placeholder.
+Use the compact toolbar above the source editor for headings, bold, italic, lists, blockquotes, links, images, tables, code, horizontal rules, and equations. **More formatting** appears only when the pane is narrow, collecting secondary actions. The toolbar appears in Edit and Split modes. Use **Editor → Show formatting toolbar** to hide or restore it; this preference persists locally. On desktop, Image opens the existing image/attachment importer; in the browser it inserts a Markdown image placeholder.
 
 Use **Editor** for preferences. Font size, tab width, wrapping, and line numbers apply to every tab and persist locally. Enter continues bullets, numbered lists, and unchecked tasks; Enter on an empty list item ends the list. Shift+Enter inserts a plain newline. Formatting, indentation, list continuation, and replacement support Undo.
 
