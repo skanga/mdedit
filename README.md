@@ -2,12 +2,14 @@
 
 MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It combines a focused source editor and live preview with native file handling, Mermaid diagrams, KaTeX math, and offline exports. Your documents stay local.
 
+**Dark Mode Screenshot**
 ![MDedit screenshot in dark mode](screenshots/Screenshot-Dark-Windows.png)
+
+**Light Mode Screenshot**
+![MDedit screenshot in light mode](screenshots/Screenshot-Light-Windows.png)
 
 ## Features
 
-- Native **Open**, **Save**, and **Save As** for Markdown documents.
-- Desktop **Recent** menu remembers the last 20 files you opened or saved.
 - A tabbed workspace with independent editing state for every open document.
 - Synchronized **Edit**, **Split**, and **Preview** modes.
 - GitHub-flavored Markdown, task lists, tables, footnotes, and callouts.
@@ -18,6 +20,7 @@ MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It c
 - Table of contents, reader controls, and light/dark themes.
 - HTML, PNG, PDF, CSV, and SVG exports.
 - Draft restoration and Markdown file associations.
+- Desktop **Recent** menu remembers the last 20 files you opened or saved.
 
 ## Working with documents
 
@@ -29,7 +32,7 @@ An unsaved change shows a dirty indicator on that document's tab and an asterisk
 
 MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload Disk Version**, **Keep Editing**, and **Save Editor Version As**. A deleted source remains open and can be saved to a new location.
 
-On Windows, desktop settings, WebView data, session recovery, and recent-file history are stored under `%LOCALAPPDATA%\com.skanga.mdedit`. Older recovery data and history under `%APPDATA%\com.skanga.mdedit` are not migrated or loaded. To fully reset the app, close MDedit and delete the Local AppData folder; this removes unsaved recovery copies but leaves documents saved elsewhere untouched.
+On Windows, desktop settings, WebView data, session recovery, and recent-file history are stored under `%LOCALAPPDATA%\com.skanga.mdedit`. To fully reset the app, close MDedit and delete the Local AppData folder; this removes unsaved recovery copies but leaves documents saved elsewhere untouched.
 
 Closing the application always asks for confirmation. With clean documents, choose **Close** or **Cancel**. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
 
