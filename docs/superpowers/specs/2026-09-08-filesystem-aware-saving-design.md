@@ -2,6 +2,8 @@
 
 ## Status and scope
 
+**Historical v0.3.8 design:** the blanket native-permission preservation requirement was subsequently superseded, with user approval, by [explicit compatibility mode](2026-09-09-wsl-compatibility-mode.md). The no-direct-overwrite and no-delete-then-rename rules still apply.
+
 The user approved capability-based Windows saving with no direct-overwrite fallback and approved the proposed design in conversation. This document records that design for review before the detailed implementation plan. No implementation is included.
 
 **Goal:** Allow safe document saves through Windows filesystem providers such as the WSL bridge while preserving existing native Windows save protections.

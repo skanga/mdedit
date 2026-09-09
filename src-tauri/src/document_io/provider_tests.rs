@@ -32,6 +32,55 @@ fn native_windows_existing_save_round_trip() {
 }
 
 #[test]
+fn native_windows_compatibility_primitive_replaces_without_backup() {
+    let directory = tempfile::tempdir().unwrap();
+    let destination = directory.path().join("document.md");
+    let temporary = directory.path().join("temporary.md");
+    fs::write(&destination, "original").unwrap();
+    let mut file = File::create(&temporary).unwrap();
+    file.write_all(b"editor").unwrap();
+    file.sync_all().unwrap();
+    drop(file);
+    let original = DocumentIdentity {
+        sha256: sha256(b"original"),
+        size: 8,
+    };
+    let editor = DocumentIdentity {
+        sha256: sha256(b"editor"),
+        size: 6,
+    };
+    complete_compatibility_replacement(
+        windows_save::replace_compatible(&temporary, &destination),
+        &temporary,
+        &destination,
+        directory.path(),
+        &original,
+        &editor,
+    )
+    .unwrap();
+    assert_eq!(fs::read(&destination).unwrap(), b"editor");
+    assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+}
+
+#[test]
+fn native_windows_compatibility_primitive_rejects_different_directories() {
+    let source = tempfile::tempdir().unwrap();
+    let target = tempfile::tempdir().unwrap();
+    let temporary = source.path().join("temporary.md");
+    let destination = target.path().join("document.md");
+    fs::write(&temporary, "editor").unwrap();
+    fs::write(&destination, "original").unwrap();
+    assert_eq!(
+        windows_save::replace_compatible(&temporary, &destination)
+            .unwrap_err()
+            .kind(),
+        io::ErrorKind::InvalidInput,
+    );
+    assert_eq!(fs::read(&destination).unwrap(), b"original");
+    assert_eq!(fs::read(&temporary).unwrap(), b"editor");
+}
+
+#[test]
 #[ignore = "requires MDEDIT_SAVE_TEST_ROOT on a configured Windows provider runner"]
 fn provider_new_save_round_trip_and_no_clobber() {
     let directory = provider_directory();
@@ -62,11 +111,46 @@ fn provider_existing_save_obeys_security_policy() {
         assert!(matches!(result, Ok(SaveDocumentResult::Saved { .. })));
         assert_eq!(fs::read(&destination).unwrap(), b"editor");
     } else {
-        // This is a safe-rejection test, not proof of WSL replacement support.
-        let error = result.unwrap_err();
-        assert!(error.contains("native permissions"));
-        assert!(error.contains("Save As"));
+        let token = match result.unwrap() {
+            SaveDocumentResult::CompatibilityRequired { compatibility_path } => compatibility_path,
+            other => panic!("expected consent request, got {other:?}"),
+        };
         assert_eq!(fs::read(&destination).unwrap(), b"original");
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        // Consent for another resolved destination must not transfer here.
+        let wrong_token = format!("{token}-other");
+        assert!(matches!(
+            save_document_path_with_compatibility(
+                &destination,
+                "editor",
+                Some(&original.sha256),
+                Some(&wrong_token),
+            )
+            .unwrap(),
+            SaveDocumentResult::CompatibilityRequired { .. },
+        ));
+        assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
+        let saved = save_document_path_with_compatibility(
+            &destination,
+            "editor",
+            Some(&original.sha256),
+            Some(&token),
+        )
+        .unwrap();
+        assert!(matches!(saved, SaveDocumentResult::Saved { .. }));
+        assert_eq!(fs::read(&destination).unwrap(), b"editor");
+        // Retrying with consent must not discard the expected-content guard.
+        assert!(matches!(
+            save_document_path_with_compatibility(
+                &destination,
+                "stale",
+                Some(&original.sha256),
+                Some(&token),
+            )
+            .unwrap(),
+            SaveDocumentResult::Conflict { .. },
+        ));
+        assert_eq!(fs::read(&destination).unwrap(), b"editor");
     }
     assert_eq!(fs::read_dir(&directory).unwrap().count(), 1);
 }

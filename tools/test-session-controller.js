@@ -3386,6 +3386,214 @@ test("saveDocument writes the captured revision and leaves a later edit dirty", 
   assert.equal(document.dirty, true);
 });
 
+test("compatibility save requires consent and retries the same captured content and digest", async () => {
+  const inputs = [];
+  let dialog;
+  const fixture = makeDependencies({
+    io: { async saveDocument(input) {
+      inputs.push(input);
+      return input.compatibilityPath
+        ? { status: "saved", canonicalPath: "/notes/a.md", sha256: "sha:editor" }
+        : { status: "compatibility-required", compatibilityPath: "/resolved/CaseSensitive.md" };
+    } },
+    view: { async showDialog(value) { dialog = value; return true; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("/notes/a.md", "/notes/a.md", "old"));
+  await controller.restore();
+  controller.onEditorInput(document.id, "editor");
+  assert.equal((await controller.saveDocument(document.id)).saved, true);
+  assert.deepEqual(inputs, [
+    { path: "/notes/a.md", expectedSha256: "sha:old", content: "editor" },
+    { path: "/notes/a.md", expectedSha256: "sha:old", content: "editor", compatibilityPath: "/resolved/CaseSensitive.md" },
+  ]);
+  assert.match(dialog.message, /permissions/i);
+  assert.match(dialog.message, /ownership/i);
+  assert.match(dialog.message, /folder.default/i);
+  assert.match(dialog.message, /session/i);
+  assert.equal(dialog.actions[0].value, false);
+  assert.equal(dialog.actions[0].primary, true);
+  assert.equal(document.dirty, false);
+});
+
+test("canceling compatibility saving leaves the document dirty and makes no retry", async () => {
+  let calls = 0;
+  const fixture = makeDependencies({
+    io: { async saveDocument() { calls += 1; return { status: "compatibility-required", compatibilityPath: "/notes/a.md" }; } },
+    view: { async showDialog() { return false; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("/notes/a.md", "/notes/a.md", "old"));
+  await controller.restore();
+  controller.onEditorInput(document.id, "editor");
+  const result = await controller.saveDocument(document.id);
+  assert.equal(result.saved, false);
+  assert.equal(result.canceled, true);
+  assert.equal(calls, 1);
+  assert.equal(document.dirty, true);
+  assert.equal(document.expectedDiskSha256, "sha:old");
+  const lastOperationStatus = fixture.calls.statuses.findLast(([, status]) => status.status);
+  assert.equal(lastOperationStatus[1].status, "canceled");
+});
+
+test("compatibility consent is reused for its exact path in this session but not for Save As elsewhere", async () => {
+  const prompts = [];
+  const fixture = makeDependencies({
+    io: {
+      async canonicalizeDocumentPath(path) { return path; },
+      async saveDocument(input) {
+        return input.compatibilityPath === input.path
+          ? { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` }
+          : { status: "compatibility-required", compatibilityPath: input.path };
+      },
+    },
+    view: { async showDialog(dialog) { prompts.push(dialog); return true; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("/notes/a.md"));
+  await controller.restore();
+  controller.onEditorInput(document.id, "one");
+  assert.equal((await controller.saveDocument(document.id)).saved, true);
+  controller.onEditorInput(document.id, "two");
+  assert.equal((await controller.saveDocument(document.id)).saved, true);
+  assert.equal(prompts.length, 1);
+  assert.equal((await controller.saveAs(document.id, { path: "/notes/b.md" })).saved, true);
+  assert.equal(prompts.length, 2);
+  assert.equal(document.path, "/notes/b.md");
+  assert.ok(fixture.calls.manifestWrites.every(([, json]) => !json.includes("compatibilityPath")));
+});
+
+test("compatibility requests fail closed without a dialog and ordinary errors never request consent", async () => {
+  let calls = 0;
+  const fixture = makeDependencies({ io: { async saveDocument() {
+    calls += 1;
+    if (calls === 1) return { status: "compatibility-required", compatibilityPath: "/notes/a.md" };
+    throw new Error("access denied");
+  } } });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("/notes/a.md"));
+  await controller.restore();
+  controller.onEditorInput(document.id, "editor");
+  assert.equal((await controller.saveDocument(document.id)).canceled, true);
+  fixture.dependencies.view.showDialog = () => { throw new Error("must not prompt for access denial"); };
+  await assert.rejects(controller.saveDocument(document.id), /access denied/);
+  assert.equal(calls, 2);
+  assert.equal(document.dirty, true);
+});
+
+test("compatibility consent is not restored into a new controller", async () => {
+  let prompts = 0;
+  const fixture = makeDependencies({
+    io: { async saveDocument(input) { return input.compatibilityPath
+      ? { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` }
+      : { status: "compatibility-required", compatibilityPath: input.path }; } },
+    view: { async showDialog() { prompts += 1; return true; } },
+  });
+  for (let session = 0; session < 2; session += 1) {
+    const controller = new SessionController(fixture.dependencies);
+    const document = controller.openReadResult(readResult("/notes/a.md"));
+    await controller.restore();
+    controller.onEditorInput(document.id, "editor");
+    assert.equal((await controller.saveDocument(document.id)).saved, true);
+    await controller.dispose();
+  }
+  assert.equal(prompts, 2);
+});
+
+test("edits made during compatibility confirmation remain dirty after saving the capture", async () => {
+  const decision = deferred();
+  const inputs = [];
+  const fixture = makeDependencies({
+    io: { async saveDocument(input) {
+      inputs.push(input);
+      return input.compatibilityPath
+        ? { status: "saved", canonicalPath: input.path, sha256: `sha:${input.content}` }
+        : { status: "compatibility-required", compatibilityPath: input.path };
+    } },
+    view: { async showDialog() { return decision.promise; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("/notes/a.md"));
+  await controller.restore();
+  controller.onEditorInput(document.id, "captured");
+  const saving = controller.saveDocument(document.id);
+  await settle();
+  controller.onEditorInput(document.id, "newer");
+  decision.resolve(true);
+  assert.equal((await saving).saved, true);
+  assert.equal(inputs[1].content, "captured");
+  assert.equal(document.savedContentSha256, "sha:captured");
+  assert.equal(document.content, "newer");
+  assert.equal(document.dirty, true);
+});
+
+test("disposing during compatibility confirmation prevents retry", async () => {
+  const decision = deferred();
+  let calls = 0;
+  const fixture = makeDependencies({
+    io: { async saveDocument() { calls += 1; return { status: "compatibility-required", compatibilityPath: "/notes/a.md" }; } },
+    view: { async showDialog() { return decision.promise; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const document = controller.openReadResult(readResult("/notes/a.md"));
+  await controller.restore();
+  controller.onEditorInput(document.id, "editor");
+  const saving = controller.saveDocument(document.id);
+  await settle();
+  await controller.dispose();
+  decision.resolve(true);
+  const result = await saving;
+  assert.equal(result.saved, false);
+  assert.equal(result.stale, true);
+  assert.equal(calls, 1);
+});
+
+test("compatibility retry preserves conflicts and does not loop on a changed destination", async (t) => {
+  for (const retryResult of [
+    { status: "conflict", actualSha256: "sha:external" },
+    { status: "compatibility-required", compatibilityPath: "/different.md" },
+  ]) {
+    await t.test(retryResult.status, async () => {
+      let calls = 0;
+      const fixture = makeDependencies({
+        io: { async saveDocument() { calls += 1; return calls === 1
+          ? { status: "compatibility-required", compatibilityPath: "/notes/a.md" } : retryResult; } },
+        view: { async showDialog() { return true; } },
+        dialogs: { async showConflict() { return "keep-editing"; } },
+      });
+      const controller = new SessionController(fixture.dependencies);
+      const document = controller.openReadResult(readResult("/notes/a.md"));
+      await controller.restore();
+      controller.onEditorInput(document.id, "editor");
+      if (retryResult.status === "conflict") {
+        assert.equal((await controller.saveDocument(document.id)).saved, false);
+      } else {
+        await assert.rejects(controller.saveDocument(document.id), /changed.*compatibility|compatibility.*changed/i);
+      }
+      assert.equal(calls, 2);
+      assert.equal(document.dirty, true);
+    });
+  }
+});
+
+test("Save All stops when compatibility saving is canceled", async () => {
+  const paths = [];
+  const fixture = makeDependencies({
+    io: { async saveDocument(input) { paths.push(input.path); return { status: "compatibility-required", compatibilityPath: input.path }; } },
+    view: { async showDialog() { return false; } },
+  });
+  const controller = new SessionController(fixture.dependencies);
+  const a = controller.openReadResult(readResult("/notes/a.md"));
+  const b = controller.openReadResult(readResult("/notes/b.md"));
+  await controller.restore();
+  controller.onEditorInput(a.id, "edited a");
+  controller.onEditorInput(b.id, "edited b");
+  await controller.saveAll();
+  assert.deepEqual(paths, ["/notes/a.md"]);
+  assert.equal(a.dirty, true);
+  assert.equal(b.dirty, true);
+});
+
 test("saveAs uses the selected existing file fingerprint before overwriting", async () => {
   let savedInput;
   const fixture = makeDependencies({

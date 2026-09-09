@@ -319,6 +319,8 @@
       this._previewCache = new Map();
       this._previewCacheBytes = 0;
       this._reservedCanonicalPaths = new Map();
+      // Explicit per-resolved-path consent, intentionally never persisted.
+      this._compatibilitySavePaths = new Set();
       this._browserFileIdentities = new WeakMap();
       this._browserSourcesByDocument = new Map();
       this._browserSourceReservations = new Map();
@@ -1863,11 +1865,14 @@
       });
       try {
         const contentSha256 = await this.hashText(capture.content);
-        const result = await this.io.saveDocument({
+        const result = await this._saveNativeWithCompatibilityConsent(capture, {
           path: capture.path,
           expectedSha256: capture.expectedDiskSha256,
           content: capture.content,
         });
+        if (result && result.status === "canceled") {
+          return { saved: false, canceled: true, stale: Boolean(result.stale), documentId };
+        }
         if (result && result.status === "conflict") {
           return this._presentSaveConflict(capture, result, { showConflict });
         }
@@ -1909,6 +1914,55 @@
         }
         throw error;
       }
+    }
+
+    async _saveNativeWithCompatibilityConsent(capture, input) {
+      if (!this._ownsOperationCapture(capture)) return { status: "canceled", stale: true };
+      const result = await this.io.saveDocument(input);
+      if (!result || result.status !== "compatibility-required") return result;
+      if (!this._ownsOperationCapture(capture)) return { status: "canceled", stale: true };
+      const compatibilityPath = result.compatibilityPath;
+      if (typeof compatibilityPath !== "string" || !compatibilityPath
+        || typeof input.expectedSha256 !== "string" || !input.expectedSha256) {
+        throw new Error("document save returned an invalid compatibility request");
+      }
+
+      if (!this._compatibilitySavePaths.has(compatibilityPath)) {
+        const approved = typeof this.view.showDialog === "function"
+          ? await this.view.showDialog({
+            title: "Use compatibility saving?",
+            message: `This filesystem cannot preserve Windows security permissions for ${input.path}. `
+              + "Compatibility saving uses a temporary file with folder-default permissions, then renames it over the original. "
+              + "Permissions, ownership, and access ACLs may change, and the temporary or saved file may be readable by more people. "
+              + "Allow this for this file for the rest of this application session? "
+              + `Resolved destination: ${compatibilityPath}`,
+            documents: [capture.document],
+            actions: [
+              { id: "cancel", label: "Cancel", value: false, primary: true },
+              { id: "compatibility-save", label: "Use Compatibility Saving", value: true },
+            ],
+          })
+          : false;
+        if (!this._ownsOperationCapture(capture)) return { status: "canceled", stale: true };
+        if (approved !== true) {
+          this._setDocumentStatus(capture.documentId, {
+            status: "canceled",
+            message: `Save canceled for ${capture.displayName}`,
+            dirty: capture.document.dirty,
+            fileStatus: capture.document.fileStatus,
+            recoveryStatus: capture.document.recoveryStatus,
+          });
+          return { status: "canceled" };
+        }
+        this._compatibilitySavePaths.add(compatibilityPath);
+      }
+      // Retry the original capture and expected digest, not a newly read disk
+      // baseline. The backend also re-resolves and checks the consent path.
+      const retried = await this.io.saveDocument({ ...input, compatibilityPath });
+      if (retried && retried.status === "compatibility-required") {
+        throw new Error("Save destination or filesystem changed during compatibility approval; try Save again");
+      }
+      return retried;
     }
 
     async _saveBrowserDocumentNow(
@@ -2092,11 +2146,14 @@
           editRevision: capture.editRevision,
         });
         const contentSha256 = await this.hashText(capture.content);
-        const result = await this.io.saveDocument({
+        const result = await this._saveNativeWithCompatibilityConsent(capture, {
           path: chosenPath,
           expectedSha256,
           content: capture.content,
         });
+        if (result && result.status === "canceled") {
+          return { saved: false, canceled: true, stale: Boolean(result.stale), documentId };
+        }
         if (result && result.status === "conflict") {
           return this._presentSaveConflict(capture, result, { showConflict: true });
         }
@@ -3210,6 +3267,7 @@
       this._loadPriority = [];
       this._loadingIds.clear();
       this._browserSourcesByDocument.clear();
+      this._compatibilitySavePaths.clear();
       for (const reservation of this._browserSourceReservations.values()) {
         reservation.settle({ committed: false, disposed: true });
       }

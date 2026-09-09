@@ -1,129 +1,113 @@
-# Filesystem-aware saving: validation record
+# Filesystem-aware saving: compatibility mode and evidence
 
-## Execution checkpoint — 2026-09-08
+## Current behavior
 
-Approved design: `docs/superpowers/specs/2026-09-08-filesystem-aware-saving-design.md`.
-Approved plan: `docs/superpowers/plans/2026-09-08-filesystem-aware-saving.md`.
+The original design required preservation of native security before allowing any existing-file replacement. v0.3.8 implemented a conservative refusal and better diagnostics, but did not solve existing-file WSL saving. The user subsequently approved an explicit opt-in tradeoff: allow permission/ownership changes on non-ACL filesystems while retaining temporary-file saving and no direct-overwrite or delete-then-rename fallback.
 
-Implementation worktree: `.worktrees/filesystem-aware-saving`.
-Branch: `feat/filesystem-aware-saving`.
-Baseline commit: `eac961b`.
+Current design: `docs/superpowers/specs/2026-09-09-wsl-compatibility-mode.md`.
+The original design/plan and `docs/releases/v0.3.8.md` are historical records, not the current consent policy.
 
-At this baseline checkpoint, no application code had changed. See the implementation checkpoint below for subsequent changes; compatibility replacement remains unimplemented.
+### User interaction
 
-## Baseline checks
+1. Save an existing file on a filesystem without persistent Windows ACLs.
+2. Before creating any temporary, the native core returns `compatibility-required` with the exact, case-preserving resolved destination in `compatibilityPath`.
+3. The controller presents **Use compatibility saving?** with **Cancel** focused by default. The warning explains that temporary files use folder-default permissions and replacement can change permissions, ownership, or access ACLs and broaden access.
+4. Choosing **Use Compatibility Saving** retries the same captured content and expected disk digest with the returned `compatibilityPath`.
+5. The native core re-resolves the path, requires an exact consent-path match, and repeats conflict checks. Consent is remembered only for that resolved path in the current controller/application session and is never persisted.
 
-Commands run in the implementation worktree:
+Cancel leaves the file and saved baseline unchanged. Save All stops on cancellation. Save As over a different existing destination requires separate consent; creating a new destination does not. Disposing the controller while the dialog is open prevents a retry. Edits typed during confirmation remain dirty if only the earlier capture was saved.
+
+### Native strategies
+
+- Persistent Windows ACLs: existing descriptor preparation and `ReplaceFileW`/backup recovery, even when consent was supplied.
+- No Windows ACLs, no matching consent: request consent without creating a temporary file.
+- No Windows ACLs, matching consent: create a same-directory temporary with native defaults, write and flush it, run the final conflict guard, close its handle, then call `MoveFileExW(MOVEFILE_REPLACE_EXISTING)`. No copy-emulation flag, direct destination write, or destination deletion is allowed.
+- Capability-query, flush, access-denied, and sharing errors remain errors. A failed publication never switches strategy or triggers another destructive operation.
+- Compatibility publication has no backup. Classify the destination after the call; success requires both API success and editor bytes at the destination. Retain known recoverable temporaries on uncertain failures and keep the original API error in diagnostics.
+- Cleanup does not delete a temporary with unrecognized contents simply because editor bytes are present at the destination.
+
+Native Linux/macOS permission-preserving saves remain unchanged. Content guards are not atomic compare-and-swap; no provider crash-durability guarantee is claimed.
+
+## Local evidence
+
+### Regression checks
+
+Commands run in `.worktrees/wsl-compatibility`:
 
 ```bash
-npm ci
-bash tools/build-desktop.sh
-npm test
 cargo test --manifest-path src-tauri/Cargo.toml
+npm test
+npm run test:browser
+cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 ```
 
-Results:
+Observed results:
 
-- Dependency installation and frontend build succeeded; generated files have no tracked diff.
-- Frontend tests: 336 passed, 0 failed, 0 skipped.
-- Linux-native unit tests: 82 passed, 0 failed.
-- Native performance diagnostic: 1 ignored, as configured.
-- Native main/doc tests: no tests, successful exit.
+- 98 Linux-native Rust unit tests passed; one separate performance diagnostic remains ignored as configured.
+- 347 frontend/unit tests passed.
+- 64 Chromium browser tests passed, including the actual confirmation UI, default Cancel/Escape behavior, consent forwarding, and session reuse with a fake Tauri backend.
+- Policy, permission-error handling, publication outcome/retention, serialization, cancellation, stale captures, conflicts, Save As, and Save All are covered.
 
-These results establish the unchanged baseline only. Linux-native tests do not exercise Windows security or publication APIs.
+Test-first evidence includes missing native policy/outcome helpers, controller failures on an unhandled `compatibility-required` result, and a browser failure with the previous generated frontend lacking the dialog. The corresponding tests passed after implementation and frontend regeneration.
 
-## Windows execution environment
+### Windows-to-WSL primitive probe
 
-Read-only inspection through Windows PowerShell established:
+A Windows PowerShell probe invoked the actual `MoveFileExW` API on disposable WSL fixtures, using a .NET file stream opened with exclusive new-file creation, a content write, `Flush(true)`, and handle close before rename. This required no Windows Rust installation or elevation.
 
-- Windows: 10.0.26100.9168 (reported by `wsl.exe --version`).
-- WSL: 2.6.3.0.
-- WSL kernel: 6.6.87.2-1.
-- Ubuntu-24.04: running with WSL version 2.
-- Neither `cargo` nor `rustc` is available through the inspected Windows PATH.
-- Neither executable exists at its standard `%USERPROFILE%\.cargo\bin` location.
+| Path | Publication | Destination bytes | Temporary after rename | Linux mode before/after |
+| --- | --- | --- | --- | --- |
+| `\\wsl.localhost\Ubuntu-24.04\tmp\mdedit-compat-probe.lFmIMz\unc` | Success | `editor` | Absent | `0600` → `0644` |
+| `U:\tmp\mdedit-compat-probe.lFmIMz\mapped` | Success | `editor` | Absent | `0600` → `0644` |
 
-Task 1.3 is blocked pending access to a Windows Rust toolchain (and the Windows native build prerequisites). No toolchain was installed and no Windows build or Windows-native Rust test was attempted. A custom installation may exist elsewhere; its location must be supplied before use.
+Both fixtures retained numeric owner/group `1000:1000`; their parent directories were mode `0755`. Fixtures remain at `/tmp/mdedit-compat-probe.lFmIMz`; the one-off probe is `/tmp/mdedit-probe-compatibility.ps1` in this development environment. These temporary paths are evidence locations, not installed application dependencies.
 
-## Reproduction/evidence status
+This confirms that the chosen Windows rename primitive works through both UNC and mapped WSL paths and demonstrates the permission-widening risk disclosed by the dialog. It does **not** validate the compiled Windows Rust application, every Linux ACL/ownership configuration, or crash behavior. The reported real `usage.md` was not accessed or changed.
 
-The user reports failure when saving through `U:`, mapped to `\\wsl.localhost\Ubuntu-24.04`. The existing error combines security-descriptor preparation and temporary creation, so the precise failing API remains unverified.
+Environment previously inspected: Windows 10.0.26100.9168, WSL 2.6.3.0, kernel 6.6.87.2-1, Ubuntu-24.04 on WSL2. Windows Rust/MSVC setup remains unavailable locally after the earlier Build Tools installer stopped at UAC; no further installation was attempted.
 
-| Provider | Path form | Capability flags | Failing API/code | Content outcome | Security outcome | Retained artifacts | Validation status |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| WSL Ubuntu-24.04 | Mapped `U:` | Not queried | User reports OS error 1; exact API unknown | Not independently observed | Not tested | None created by this investigation | User report only |
-| WSL Ubuntu-24.04 | Direct UNC | Not queried | Not tested | Not tested | Not tested | None created | Blocked on Windows-native setup |
-| Local NTFS | Local Windows path | Not queried | Not tested | Not tested | Not tested | None created | Blocked on Windows-native setup |
-| FAT/exFAT | No fixture provisioned | Not queried | Not tested | Not tested | Not tested | None created | Not run |
+## GitHub Actions
 
-No disposable document fixture has been created yet. The real reported `usage.md` has not been accessed or modified.
+### Hosted native runner
 
-## Implementation checkpoint — Windows validation delegated to Actions
+Existing `.github/workflows/desktop.yml` runs Cargo tests on Windows, Linux, and macOS for pull requests, version tags, and manual dispatch, plus browser and release/performance gates as configured.
 
-The user authorized continuing without local Windows validation and running those tests in GitHub Actions. The attempted Visual Studio Build Tools installation ended with code 1602; its bootstrapper log reported that UAC may have been declined. No Windows Rust toolchain was installed. No additional installer or elevation attempts were made after validation was delegated.
+Normal Windows tests now cover:
 
-### Implemented subset
+- ACL-capable existing-file saving through the production save entry point.
+- The compatibility rename primitive plus outcome classification on disposable local files.
+- Rejection of cross-directory compatibility publication without modifying either candidate.
 
-- `document_io/windows_save.rs` queries the resolved directory with `GetVolumePathNameW` and `GetVolumeInformationW` for each save. A failed inspection is not treated as zero capability flags. Drive letters and provider names do not select policy.
-- Existing-file saves require advertised persistent Windows ACLs and retain security-descriptor preparation, `ReplaceFileW`, and existing recovery. Native permission/security failures are not suppressed.
-- New documents use native defaults, same-directory exclusive temporary creation, flushing, and exclusive publication. Unknown capability inspection still rejects the save.
-- Existing-file replacement without Windows ACL support is explicitly rejected before creating a temporary file, because native Linux permissions/ownership cannot yet be preserved through an implemented adapter. The message suggests Save As with a new filename or a filesystem-native editor.
-- Errors distinguish capability inspection, security reading/validation, temporary creation/preparation/writing/flushing, replacement, and new-file publication. Context preserves the error kind and displays the original OS error text/code. Raw error classification must occur before wrapping for display.
-- Added pure policy/diagnostic/regression tests, a normal Windows-native round-trip test, and opt-in provider tests.
+Pure policy/outcome tests also run on Linux/macOS. The WSL-provider tests remain ignored on ordinary hosted runners. Windows Rust execution for this compatibility change has not yet been run or observed in this development session.
 
-This is **partial implementation**, not a fix for replacing the reported existing WSL document. No non-ACL rename-replacement adapter, Linux metadata inspection/preparation, or compatibility recovery strategy has been enabled. Absence of Windows ACLs is not proof that a Linux file has no security metadata. The approved safety contract is unchanged.
+### Configured WSL provider runner
 
-### Checks actually run
-
-- Test-first missing-helper/policy compilation failures were observed before implementation.
-- Two diagnostic behavior tests then failed on the expected missing stage descriptions and passed after error context was added.
-- `cargo test --manifest-path src-tauri/Cargo.toml`: 90 Linux-native unit tests passed; 1 separate performance diagnostic ignored.
-- `npm test`: 336 frontend tests passed.
-- `cargo fmt --manifest-path src-tauri/Cargo.toml -- --check`: passed.
-- `git diff --check`: passed.
-- The new workflow parsed with PyYAML; dispatch-only trigger, read-only token permissions, protected-environment reference, WSL runner labels, and two path variants were checked.
-
-Windows compilation/execution and all provider/security integration tests remain unrun locally. No GitHub workflow run has been launched or observed by this implementation session. YAML checks are not Windows validation.
-
-## GitHub Actions coverage
-
-### Regular hosted runner
-
-Existing `.github/workflows/desktop.yml` runs Cargo tests on Windows, Linux, and macOS for pull requests, version tags, and manual dispatch. The Windows run includes `native_windows_existing_save_round_trip`, exercising capability inspection and the real existing-file save on the runner's ACL-capable temporary filesystem. Provider tests remain ignored there.
-
-### Explicit WSL runner
-
-New `.github/workflows/filesystem-save-providers.yml` is manual-dispatch only. It does not automatically run pull-request code on a persistent self-hosted machine.
+`.github/workflows/filesystem-save-providers.yml` is manual-dispatch only; it does not automatically run pull-request code on a persistent self-hosted machine.
 
 Before dispatch:
 
-1. Configure a trusted Windows x64 self-hosted runner with labels `self-hosted`, `Windows`, `X64`, and `wsl`.
-2. Install MSVC/C++ build prerequisites, Git Bash, PowerShell 7, and a working WSL distro. The workflow installs/selects Rust, Node, and Python.
-3. Configure the `wsl-save-validation` GitHub environment with required reviewers. Referencing an environment in YAML does not itself configure protection rules.
-4. Ensure the runner account can access the running distro and the mapped drive. A Windows service account may not see an interactive user's WSL distro or drive mappings.
-5. Create a disposable parent inside WSL and supply its UNC path as `unc_root` and its mapped-drive alias as `mapped_root` when dispatching the workflow. The tests create random child directories and leave them for inspection; they never remove the supplied parent.
+1. Configure a trusted Windows x64 runner with labels `self-hosted`, `Windows`, `X64`, and `wsl`.
+2. Install MSVC/C++ prerequisites, Git Bash, PowerShell 7, and a working WSL distro. The workflow installs/selects Rust, Node, and Python.
+3. Configure the `wsl-save-validation` GitHub environment with required reviewers; merely referencing the environment in YAML does not create protection rules.
+4. Ensure the runner account can access the distro and mapped drive. A service account may not see an interactive user's distro or mappings.
+5. Supply an existing disposable WSL parent as `unc_root`, and its mapped-drive alias as `mapped_root`. Tests create random child directories and retain them; they never remove the supplied parent.
 
-The two matrix entries run serially, enforce a Windows-native Rust host, fail on an inaccessible root, and upload test/toolchain logs. A runner without the required labels will leave the job queued; it is not validated or silently skipped.
+The two matrix entries run serially, enforce a Windows-native Rust host, fail on an inaccessible root, and upload test/toolchain logs. A runner without matching labels leaves the job queued, not validated.
 
-Provider tests exercise:
+The updated provider test now **requires successful existing-file saving after matching consent** on non-ACL filesystems. A refusal is no longer accepted as a passing outcome. It also checks no temporary exists before consent, rejects a mismatched consent path, and verifies that consent does not bypass a stale-content conflict. New-file tests cover save and no-clobber behavior.
 
-- New-file saving and rejection of a second create over that file.
-- Existing-file saving when persistent ACLs are advertised, or explicit safe rejection with original contents preserved when they are absent.
-
-**A passing safe-rejection test is not evidence that existing WSL files can be replaced.** Neither these tests nor the hosted NTFS test establish Linux mode, owner/group, access-ACL preservation, temporary-file exposure, or crash durability. The remaining security experiment from the approved plan is still required before compatibility replacement can be implemented.
-
-To run the provider tests manually in Windows PowerShell with the same setup:
+Manual equivalent in Windows PowerShell:
 
 ```powershell
 $env:MDEDIT_SAVE_TEST_ROOT = '\\wsl.localhost\Ubuntu-24.04\home\skanga\mdedit-save-tests'
 cargo test --manifest-path src-tauri/Cargo.toml --lib document_io::provider_tests::provider_ -- --ignored --nocapture --test-threads=1
 ```
 
-Repeat with the mapped-drive alias and, if available, a `\\wsl$` alias or a disposable FAT/exFAT root. Supplying no root fails explicitly. Delete only a printed random `mdedit-provider-*` child after inspecting it, never the supplied parent.
+Repeat with the mapped alias, an available `\\wsl$` alias, or a disposable FAT/exFAT root. Missing configuration fails explicitly. Inspect retained evidence before deleting only the printed random `mdedit-provider-*` child.
 
-## Remaining work
+## Remaining validation and limitations
 
-1. Observe the Windows CI results and run the configured WSL-provider workflow to identify actual capability/API behavior.
-2. Establish a Windows-accessible way to inspect and preserve native security before temporary content is exposed; validate restrictive-mode, ownership/group, executable-bit, and access-ACL fixtures from Linux.
-3. Only then implement and test a documented same-filesystem compatibility publication primitive and artifact-aware recovery, with no direct-overwrite or delete-then-rename fallback.
-4. Until then, do not mark the full feature complete or report the original WSL error fixed.
+- Run the compiled Windows Rust tests and app UI through CI/a Windows build; the local PowerShell probe is not a substitute for that integration test.
+- Check additional Linux ownership/access-ACL configurations and error cases using disposable fixtures. Compatibility mode intentionally does not promise preservation of those attributes.
+- Native filesystem capability inspection must succeed. Unexpected provider errors are still reported rather than bypassed.
+- Compatibility failures may leave an editor temporary for recovery. Error messages identify retained paths; no broad stale-file cleanup is performed.
+- The compatibility change has not been released by this implementation session.

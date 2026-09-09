@@ -52,7 +52,9 @@ On desktop, **Attach**, image paste, or dropping an image or other attachment co
 
 On Windows, saves inspect filesystem capabilities and preserve Windows security permissions on ACL-capable filesystems. Errors identify the failing operation instead of reporting every security failure as temporary-file creation. The editor never falls back to directly overwriting or deleting an existing document.
 
-**Limitation:** replacing existing files on WSL or other non-Windows-ACL filesystems is not yet supported when native permissions cannot be preserved. Use **Save As…** with a new filename where supported, save a copy to a local Windows folder, or use a filesystem-native editor. This release does not fix existing-file WSL replacement. See [the validation and CI guide](docs/testing/filesystem-aware-saving.md).
+For an existing file on WSL or another filesystem without Windows ACLs, saving asks **Use compatibility saving?** Choose **Use Compatibility Saving** to write a flushed temporary file and rename it over the original. **Cancel** is the default and leaves the original unchanged. Permission preservation remains enabled on ACL-capable filesystems.
+
+**Compatibility tradeoff:** the temporary uses folder-default permissions. The replacement may change Linux permissions, ownership, or access ACLs, potentially making the temporary or saved file readable by more people. Approval applies only to that resolved path for the current application session; restarting MDedit clears it, and saving over another path requires separate approval. Disk conflicts and genuine permission errors are not bypassed. See [the validation and CI guide](docs/testing/filesystem-aware-saving.md).
 
 ### External changes and tab actions
 

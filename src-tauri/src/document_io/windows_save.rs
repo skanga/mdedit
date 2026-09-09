@@ -1,8 +1,5 @@
-//! Windows filesystem inspection and fail-closed temporary-creation policy.
-//!
-//! Persistent Windows ACL support says nothing about native Linux modes or
-//! ownership. In particular, do not turn an unsupported security query into
-//! permission to replace a WSL file with a parent-default temporary file.
+//! Windows save policy. Native-permission changes on non-ACL filesystems
+//! require explicit consent; failed queries and ACL errors never downgrade.
 
 use std::io;
 
@@ -10,21 +7,20 @@ use std::io;
 pub(super) enum CreationPolicy {
     PreserveWindowsSecurity,
     NativeDefaults,
+    CompatibilityRequired,
+    NativeCompatibility,
 }
 
 pub(super) fn select_creation_policy(
     persistent_acls: io::Result<bool>,
     replacing: bool,
+    consented: bool,
 ) -> io::Result<CreationPolicy> {
-    match (persistent_acls?, replacing) {
-        (_, false) => Ok(CreationPolicy::NativeDefaults),
-        (true, true) => Ok(CreationPolicy::PreserveWindowsSecurity),
-        (false, true) => Err(io::Error::new(
-            io::ErrorKind::Unsupported,
-            "safe replacement is unavailable: this filesystem does not support Windows ACLs \
-             and preservation of native permissions cannot be established; \
-             use Save As with a new filename or a filesystem-native editor",
-        )),
+    match (persistent_acls?, replacing, consented) {
+        (_, false, _) => Ok(CreationPolicy::NativeDefaults),
+        (true, true, _) => Ok(CreationPolicy::PreserveWindowsSecurity),
+        (false, true, false) => Ok(CreationPolicy::CompatibilityRequired),
+        (false, true, true) => Ok(CreationPolicy::NativeCompatibility),
     }
 }
 
@@ -32,8 +28,9 @@ pub(super) fn select_creation_policy(
 pub(super) fn creation_policy(
     directory: &std::path::Path,
     replacing: bool,
+    consented: bool,
 ) -> io::Result<CreationPolicy> {
-    select_creation_policy(inspect_persistent_acls(directory), replacing)
+    select_creation_policy(inspect_persistent_acls(directory), replacing, consented)
 }
 
 /// Query the resolved directory for each save; never cache by drive letter or
@@ -83,6 +80,36 @@ pub(super) fn inspect_persistent_acls(directory: &std::path::Path) -> io::Result
     Ok(flags & FILE_PERSISTENT_ACLS != 0)
 }
 
+/// The caller has synced and closed a same-directory temporary file. No
+/// COPY_ALLOWED: this operation must never become a cross-volume copy/delete.
+#[cfg(windows)]
+pub(super) fn replace_compatible(
+    temporary: &std::path::Path,
+    destination: &std::path::Path,
+) -> io::Result<()> {
+    use super::{operation_error, windows_path};
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_REPLACE_EXISTING};
+    if temporary.parent() != destination.parent() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "compatibility replacement must stay in the same directory",
+        ));
+    }
+    let from = windows_path(temporary);
+    let to = windows_path(destination);
+    // SAFETY: both paths are live NUL-terminated UTF-16 buffers. No copy or
+    // delete fallback is enabled, and the temporary handle has been closed.
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_REPLACE_EXISTING) } == 0 {
+        Err(operation_error(
+            "compatibility replacement",
+            "MoveFileExW(replace)",
+            io::Error::last_os_error(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -91,7 +118,7 @@ mod tests {
     #[test]
     fn persistent_acls_keep_security_preserving_replacement() {
         assert_eq!(
-            select_creation_policy(Ok(true), true).unwrap(),
+            select_creation_policy(Ok(true), true, false).unwrap(),
             CreationPolicy::PreserveWindowsSecurity,
         );
     }
@@ -100,18 +127,30 @@ mod tests {
     fn new_documents_use_native_defaults_on_either_filesystem() {
         for persistent_acls in [true, false] {
             assert_eq!(
-                select_creation_policy(Ok(persistent_acls), false).unwrap(),
+                select_creation_policy(Ok(persistent_acls), false, false).unwrap(),
                 CreationPolicy::NativeDefaults,
             );
         }
     }
 
     #[test]
-    fn absent_windows_acls_do_not_prove_native_security_can_be_preserved() {
-        let error = select_creation_policy(Ok(false), true).unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
-        assert!(error.to_string().contains("native permissions"));
-        assert!(error.to_string().contains("Save As"));
+    fn absent_windows_acls_require_explicit_consent() {
+        assert_eq!(
+            select_creation_policy(Ok(false), true, false).unwrap(),
+            CreationPolicy::CompatibilityRequired,
+        );
+        assert_eq!(
+            select_creation_policy(Ok(false), true, true).unwrap(),
+            CreationPolicy::NativeCompatibility,
+        );
+    }
+
+    #[test]
+    fn consent_never_weakens_acl_capable_saves() {
+        assert_eq!(
+            select_creation_policy(Ok(true), true, true).unwrap(),
+            CreationPolicy::PreserveWindowsSecurity,
+        );
     }
 
     #[test]
@@ -120,10 +159,15 @@ mod tests {
         // network name deleted, disk full, unsupported operation.
         for code in [1, 5, 32, 64, 112, 50] {
             for replacing in [true, false] {
-                let error =
-                    select_creation_policy(Err(io::Error::from_raw_os_error(code)), replacing)
-                        .unwrap_err();
-                assert_eq!(error.raw_os_error(), Some(code));
+                for consented in [true, false] {
+                    let error = select_creation_policy(
+                        Err(io::Error::from_raw_os_error(code)),
+                        replacing,
+                        consented,
+                    )
+                    .unwrap_err();
+                    assert_eq!(error.raw_os_error(), Some(code));
+                }
             }
         }
     }

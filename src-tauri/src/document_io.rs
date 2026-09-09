@@ -32,6 +32,9 @@ pub struct ReadDocumentResult {
     rename_all_fields = "camelCase"
 )]
 pub enum SaveDocumentResult {
+    CompatibilityRequired {
+        compatibility_path: String,
+    },
     Saved {
         canonical_path: String,
         sha256: String,
@@ -364,6 +367,7 @@ where
     write_temporary_with_hooks(path, directory, permissions, None, |_, _| Ok(()), writer)
 }
 
+#[cfg(test)]
 fn write_temporary_with_hooks<P, W>(
     path: &Path,
     directory: &Path,
@@ -376,13 +380,45 @@ where
     P: FnOnce(&File, &Path) -> io::Result<()>,
     W: FnOnce(&mut File) -> io::Result<()>,
 {
-    let (temporary, mut file) = open_temporary_file(directory, permissions, security_source)
-        .map_err(|error| {
-            format!(
-                "failed to create temporary file for {}: {error}",
-                path.display()
-            )
-        })?;
+    write_temporary_with_policy_hooks(
+        path,
+        directory,
+        permissions,
+        security_source,
+        #[cfg(windows)]
+        windows_save::creation_policy(directory, security_source.is_some(), false)
+            .map_err(|error| error.to_string())?,
+        prepare,
+        writer,
+    )
+}
+
+fn write_temporary_with_policy_hooks<P, W>(
+    path: &Path,
+    directory: &Path,
+    permissions: Option<&fs::Permissions>,
+    security_source: Option<&Path>,
+    #[cfg(windows)] policy: windows_save::CreationPolicy,
+    prepare: P,
+    writer: W,
+) -> Result<(PathBuf, File), String>
+where
+    P: FnOnce(&File, &Path) -> io::Result<()>,
+    W: FnOnce(&mut File) -> io::Result<()>,
+{
+    let (temporary, mut file) = open_temporary_file(
+        directory,
+        permissions,
+        security_source,
+        #[cfg(windows)]
+        policy,
+    )
+    .map_err(|error| {
+        format!(
+            "failed to create temporary file for {}: {error}",
+            path.display()
+        )
+    })?;
 
     let write_result = (|| -> io::Result<()> {
         if let Some(permissions) = permissions {
@@ -536,13 +572,17 @@ fn retain_or_cleanup_failed_temporary(
     original: &DocumentIdentity,
     editor: &DocumentIdentity,
 ) -> bool {
-    if classify_destination(destination, original, editor).is_editor() {
+    if classify_destination(destination, original, editor).is_editor()
+        && fingerprint(temporary)
+            .map(|actual| actual.identity() == *editor)
+            .unwrap_or(false)
+    {
         remove_temporary(temporary, directory);
-        false
-    } else {
-        sync_directory(directory);
-        temporary.exists()
     }
+    sync_directory(directory);
+    fs::symlink_metadata(temporary)
+        .map(|_| true)
+        .unwrap_or_else(|error| error.kind() != io::ErrorKind::NotFound)
 }
 
 #[cfg(any(windows, test))]
@@ -781,6 +821,7 @@ fn apply_replacement_permissions(file: &File, permissions: fs::Permissions) -> i
 
     // ReplaceFileW preserves the destination's ACL and attributes. Changing
     // the replacement temp on Windows would not be an equivalent substitute.
+    // Compatibility saves explicitly consent to native metadata changes.
     #[cfg(windows)]
     let _ = permissions;
 
@@ -876,24 +917,25 @@ fn open_temporary_file(
     directory: &Path,
     _permissions: Option<&fs::Permissions>,
     security_source: Option<&Path>,
+    policy: windows_save::CreationPolicy,
 ) -> io::Result<(PathBuf, File)> {
     use std::os::windows::io::FromRawHandle;
     use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE};
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
 
-    let policy = windows_save::creation_policy(directory, security_source.is_some())?;
     with_prepared_security(
         || match (policy, security_source) {
             (windows_save::CreationPolicy::PreserveWindowsSecurity, Some(source)) => {
                 read_document_security_descriptor(source).map(Some)
             }
-            (windows_save::CreationPolicy::NativeDefaults, None) => Ok(None),
+            (windows_save::CreationPolicy::NativeDefaults, None)
+            | (windows_save::CreationPolicy::NativeCompatibility, Some(_)) => Ok(None),
             _ => Err(io::Error::other("inconsistent filesystem creation policy")),
         },
         |mut descriptor| {
-            // The security descriptor is obtained before this UUID path is
-            // created, so no visible file ever has the parent default DACL.
+            // ACL-preserving saves prepare security before creating this path.
+            // Compatibility saves deliberately use parent defaults after consent.
             let temporary = temporary_path(directory);
             let temporary_path = windows_path(&temporary);
             let mut security_attributes =
@@ -1038,6 +1080,48 @@ fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
     Ok(())
 }
 
+#[cfg(any(windows, test))]
+fn complete_compatibility_replacement(
+    result: io::Result<()>,
+    temporary: &Path,
+    destination: &Path,
+    directory: &Path,
+    original: &DocumentIdentity,
+    editor: &DocumentIdentity,
+) -> io::Result<()> {
+    // A rename replacement has no backup. An API error may have side effects;
+    // observe them and retain copies, but never try a second publication.
+    let (editor_present, state) = match classify_destination(destination, original, editor) {
+        DestinationIdentity::Editor => (true, "editor bytes present".to_owned()),
+        DestinationIdentity::Original => (false, "original bytes preserved".to_owned()),
+        DestinationIdentity::ThirdParty => (
+            false,
+            "third-party bytes present; left untouched".to_owned(),
+        ),
+        DestinationIdentity::Missing => (false, "destination missing".to_owned()),
+        DestinationIdentity::Unreadable(error) => {
+            (false, format!("destination unreadable: {error}"))
+        }
+    };
+    match result {
+        Ok(()) if editor_present => {
+            if retain_or_cleanup_failed_temporary(temporary, destination, directory, original, editor) {
+                Err(io::Error::other(format!(
+                    "editor bytes published, but an unrecognized temporary remains at {}", temporary.display(),
+                )))
+            } else {
+                Ok(())
+            }
+        }
+        Ok(()) => Err(io::Error::other(format!(
+            "compatibility replacement reported success but {state}; no further publication attempted",
+        ))),
+        Err(error) => Err(io::Error::new(error.kind(), format!(
+            "{error}; {state}; no further publication attempted",
+        ))),
+    }
+}
+
 fn sync_directory(directory: &Path) {
     #[cfg(unix)]
     let _ = File::open(directory).and_then(|file| file.sync_all());
@@ -1051,23 +1135,43 @@ pub fn save_document_path(
     content: &str,
     expected_sha256: Option<&str>,
 ) -> Result<SaveDocumentResult, String> {
-    match expected_sha256 {
-        Some(expected) => save_document_path_with_identity_hooks(
-            path,
-            content,
-            Some(expected),
-            |file, _destination| file.write_all(content.as_bytes()),
-            |temporary, destination, original, editor| {
-                let original = original.ok_or_else(|| {
-                    io::Error::other("existing replacement is missing its original identity")
-                })?;
-                replace_existing(temporary, destination, original, editor)
-            },
-        ),
-        None => save_document_path_with_installer(path, content, None, publish_new),
-    }
+    save_document_path_with_compatibility(path, content, expected_sha256, None)
 }
 
+pub fn save_document_path_with_compatibility(
+    path: &Path,
+    content: &str,
+    expected_sha256: Option<&str>,
+    compatibility_path: Option<&str>,
+) -> Result<SaveDocumentResult, String> {
+    save_document_path_with_policy_hooks(
+        path,
+        content,
+        expected_sha256,
+        compatibility_path,
+        |file, _| file.write_all(content.as_bytes()),
+        |temporary, destination, original, editor, _compatibility| match original {
+            Some(original) => {
+                #[cfg(windows)]
+                if _compatibility {
+                    let result = windows_save::replace_compatible(temporary, destination);
+                    return complete_compatibility_replacement(
+                        result,
+                        temporary,
+                        destination,
+                        parent_directory(destination),
+                        original,
+                        editor,
+                    );
+                }
+                replace_existing(temporary, destination, original, editor)
+            }
+            None => publish_new(temporary, destination),
+        },
+    )
+}
+
+#[cfg(test)]
 fn save_document_path_with_installer<I>(
     path: &Path,
     content: &str,
@@ -1086,6 +1190,7 @@ where
     )
 }
 
+#[cfg(test)]
 fn save_document_path_with_hooks<W, I>(
     path: &Path,
     content: &str,
@@ -1106,6 +1211,7 @@ where
     )
 }
 
+#[cfg(test)]
 fn save_document_path_with_identity_hooks<W, I>(
     path: &Path,
     content: &str,
@@ -1116,6 +1222,30 @@ fn save_document_path_with_identity_hooks<W, I>(
 where
     W: FnOnce(&mut File, &Path) -> io::Result<()>,
     I: FnOnce(&Path, &Path, Option<&DocumentIdentity>, &DocumentIdentity) -> io::Result<()>,
+{
+    save_document_path_with_policy_hooks(
+        path,
+        content,
+        expected_sha256,
+        None,
+        writer,
+        |temporary, destination, original, editor, _| {
+            install(temporary, destination, original, editor)
+        },
+    )
+}
+
+fn save_document_path_with_policy_hooks<W, I>(
+    path: &Path,
+    content: &str,
+    expected_sha256: Option<&str>,
+    _compatibility_path: Option<&str>,
+    writer: W,
+    install: I,
+) -> Result<SaveDocumentResult, String>
+where
+    W: FnOnce(&mut File, &Path) -> io::Result<()>,
+    I: FnOnce(&Path, &Path, Option<&DocumentIdentity>, &DocumentIdentity, bool) -> io::Result<()>,
 {
     let saved_sha256 = sha256(content.as_bytes());
     let saved_size = content.len() as u64;
@@ -1171,15 +1301,40 @@ where
         _ => {}
     }
 
+    #[cfg(windows)]
+    let policy = {
+        // Unlike comparison_string, this token preserves case. Consent for a
+        // case-sensitive WSL path must not authorize a different destination.
+        let resolved = path_string(&destination, "compatibility destination")?;
+        let policy = windows_save::creation_policy(
+            directory,
+            expected_sha256.is_some(),
+            _compatibility_path == Some(resolved.as_str()),
+        )
+        .map_err(|error| format!("failed to prepare save for {}: {error}", path.display()))?;
+        if policy == windows_save::CreationPolicy::CompatibilityRequired {
+            return Ok(SaveDocumentResult::CompatibilityRequired {
+                compatibility_path: resolved,
+            });
+        }
+        policy
+    };
+    #[cfg(windows)]
+    let compatibility = policy == windows_save::CreationPolicy::NativeCompatibility;
+    #[cfg(not(windows))]
+    let compatibility = false;
+
     let restrictive_permissions = expected_sha256
         .is_some()
         .then(restrictive_replacement_permissions)
         .flatten();
-    let (temporary, temporary_file) = write_temporary_with_hooks(
+    let (temporary, temporary_file) = write_temporary_with_policy_hooks(
         path,
         directory,
         restrictive_permissions.as_ref(),
         expected_sha256.is_some().then_some(destination.as_path()),
+        #[cfg(windows)]
+        policy,
         |_, _| Ok(()),
         |file| writer(file, &destination),
     )?;
@@ -1247,6 +1402,7 @@ where
                 &destination,
                 Some(&original_identity),
                 &saved_identity,
+                compatibility,
             ) {
                 let retained = retain_or_cleanup_failed_temporary(
                     &temporary,
@@ -1295,7 +1451,13 @@ where
                 .ok()
                 .and_then(|metadata| modified_ms(&metadata));
             drop(temporary_file);
-            if let Err(error) = install(&temporary, &destination, None, &saved_identity) {
+            if let Err(error) = install(
+                &temporary,
+                &destination,
+                None,
+                &saved_identity,
+                compatibility,
+            ) {
                 let conflict = fingerprint(&destination).ok();
                 remove_temporary(&temporary, directory);
                 if let Some(actual) = conflict {
@@ -1333,8 +1495,14 @@ pub(crate) fn save_document(
     path: String,
     content: String,
     expected_sha256: Option<String>,
+    compatibility_path: Option<String>,
 ) -> Result<SaveDocumentResult, String> {
-    save_document_path(Path::new(&path), &content, expected_sha256.as_deref())
+    save_document_path_with_compatibility(
+        Path::new(&path),
+        &content,
+        expected_sha256.as_deref(),
+        compatibility_path.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -1419,6 +1587,143 @@ mod tests {
         assert!(error.contains("prepare temporary file"));
         assert!(error.contains("denied"));
         assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn compatibility_publication_success_requires_editor_bytes_and_no_backup() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        fs::write(&temporary, "editor").unwrap();
+        fs::rename(&temporary, &destination).unwrap();
+        complete_compatibility_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            directory.path(),
+            &identity(b"original"),
+            &identity(b"editor"),
+        )
+        .unwrap();
+        assert_eq!(fs::read(&destination).unwrap(), b"editor");
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn compatibility_publication_error_keeps_original_and_editor_candidate() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        fs::write(&destination, "original").unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        let error = complete_compatibility_replacement(
+            Err(io::Error::from_raw_os_error(5)),
+            &temporary,
+            &destination,
+            directory.path(),
+            &identity(b"original"),
+            &identity(b"editor"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("os error 5"));
+        assert!(error.to_string().contains("original"));
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+        assert_eq!(fs::read(&temporary).unwrap(), b"editor");
+    }
+
+    #[test]
+    fn compatibility_publication_inconsistent_success_retains_editor_candidate() {
+        for contents in [None, Some("original"), Some("third party")] {
+            let directory = tempdir().unwrap();
+            let destination = directory.path().join("document.md");
+            let temporary = directory.path().join("temporary.md");
+            if let Some(contents) = contents {
+                fs::write(&destination, contents).unwrap();
+            }
+            fs::write(&temporary, "editor").unwrap();
+            assert!(complete_compatibility_replacement(
+                Ok(()),
+                &temporary,
+                &destination,
+                directory.path(),
+                &identity(b"original"),
+                &identity(b"editor"),
+            )
+            .is_err());
+            assert_eq!(fs::read(&temporary).unwrap(), b"editor");
+            assert_eq!(fs::read_to_string(&destination).ok().as_deref(), contents);
+        }
+    }
+
+    #[test]
+    fn compatibility_api_error_after_publication_is_not_reported_as_success() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        fs::write(&destination, "editor").unwrap();
+        let error = complete_compatibility_replacement(
+            Err(io::Error::from_raw_os_error(1)),
+            &temporary,
+            &destination,
+            directory.path(),
+            &identity(b"original"),
+            &identity(b"editor"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("os error 1"));
+        assert!(error.to_string().contains("editor bytes present"));
+        assert_eq!(fs::read(&destination).unwrap(), b"editor");
+    }
+
+    #[test]
+    fn compatibility_unreadable_destination_keeps_temporary() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("directory-not-document");
+        let temporary = directory.path().join("temporary.md");
+        fs::create_dir(&destination).unwrap();
+        fs::write(&temporary, "editor").unwrap();
+        assert!(complete_compatibility_replacement(
+            Ok(()),
+            &temporary,
+            &destination,
+            directory.path(),
+            &identity(b"original"),
+            &identity(b"editor"),
+        )
+        .is_err());
+        assert!(destination.is_dir());
+        assert_eq!(fs::read(&temporary).unwrap(), b"editor");
+    }
+
+    #[test]
+    fn compatibility_request_serializes_case_preserving_path() {
+        let value = serde_json::to_value(SaveDocumentResult::CompatibilityRequired {
+            compatibility_path: "/CaseSensitive/Usage.md".to_owned(),
+        })
+        .unwrap();
+        assert_eq!(
+            value,
+            serde_json::json!({
+                "status": "compatibility-required", "compatibilityPath": "/CaseSensitive/Usage.md",
+            })
+        );
+    }
+
+    #[test]
+    fn failed_publication_cleanup_never_deletes_a_third_party_temporary() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let temporary = directory.path().join("temporary.md");
+        fs::write(&destination, "editor").unwrap();
+        fs::write(&temporary, "third party").unwrap();
+        assert!(retain_or_cleanup_failed_temporary(
+            &temporary,
+            &destination,
+            directory.path(),
+            &identity(b"original"),
+            &identity(b"editor"),
+        ));
+        assert_eq!(fs::read(&temporary).unwrap(), b"third party");
     }
 
     struct ChunkedReader {

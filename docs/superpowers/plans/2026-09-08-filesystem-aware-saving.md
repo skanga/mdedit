@@ -12,6 +12,8 @@
 
 ## Approved input and execution boundary
 
+**Historical plan:** the user subsequently approved an explicit, session-scoped compatibility save option instead of blanket refusal. See `docs/superpowers/specs/2026-09-09-wsl-compatibility-mode.md` and the current validation guide. The original preservation gate below documents the v0.3.8 decision, not the current opt-in policy.
+
 Read `docs/superpowers/specs/2026-09-08-filesystem-aware-saving-design.md` completely before execution.
 
 This is a **gated implementation plan**, not a claim that a safe generic WSL replacement primitive has already been established. Tasks 1–3 produce diagnostic evidence and an explicit proceed/stop decision. Tasks 4–7 describe the implementation contracts and regression tests if that decision is positive. Their provider-specific adapter must be finalized against the experiment's documented API results before coding it. Do not invent a security adapter just to complete a checklist.

@@ -1,6 +1,43 @@
 const { test, expect } = require("@playwright/test");
 const { activeEditor, installFakeTauri, openEditor, setEditorContent } = require("./helpers.js");
 
+test('compatibility saving warns, defaults to cancel, and remembers explicit consent for the session', async ({ page }) => {
+  const required = { status: 'compatibility-required', compatibilityPath: '/resolved/Usage.md' };
+  await installFakeTauri(page, {
+    openPaths: ['/docs/usage.md'],
+    documents: { '/docs/usage.md': { content: 'original' } },
+    saveResults: { '/docs/usage.md': [required, required, null, required, null] },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(activeEditor(page)).toHaveValue('original');
+  await setEditorContent(page, 'editor version');
+  await activeEditor(page).press('ControlOrMeta+s');
+  const dialog = page.getByRole('dialog', { name: 'Use compatibility saving?' });
+  await expect(dialog).toBeVisible();
+  await expect(dialog).toContainText('folder-default permissions');
+  await expect(dialog).toContainText('ownership');
+  await expect(dialog.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await page.keyboard.press('Escape');
+  await expect(dialog).toBeHidden();
+  expect(await page.evaluate(() => window.__testBridge.calls.saves.length)).toBe(1);
+  expect(await page.evaluate(() => window.__testBridge.documents['/docs/usage.md'].content)).toBe('original');
+  await expect(activeEditor(page)).toHaveValue('editor version');
+
+  await activeEditor(page).press('ControlOrMeta+s');
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole('button', { name: 'Use Compatibility Saving', exact: true }).click();
+  await expect(dialog).toBeHidden();
+  await expect.poll(() => page.evaluate(() => window.__testBridge.documents['/docs/usage.md'].content)).toBe('editor version');
+  expect(await page.evaluate(() => window.__testBridge.calls.saves[2].compatibilityPath)).toBe('/resolved/Usage.md');
+
+  await setEditorContent(page, 'another edit');
+  await activeEditor(page).press('ControlOrMeta+s');
+  await expect.poll(() => page.evaluate(() => window.__testBridge.documents['/docs/usage.md'].content)).toBe('another edit');
+  await expect(dialog).toBeHidden();
+  expect(await page.evaluate(() => window.__testBridge.calls.saves.length)).toBe(5);
+});
+
 test('formatting toolbar preserves selection and undo, exposes menus, and follows view mode', async ({ page }) => {
   await installFakeTauri(page); await openEditor(page);
   const bar = page.getByRole('toolbar', { name: 'Formatting' });
