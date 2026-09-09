@@ -1,6 +1,165 @@
 const { test, expect } = require("@playwright/test");
 const { activeEditor, installFakeTauri, openEditor, setEditorContent } = require("./helpers.js");
 
+test('app-wide compatibility preference warns once, persists, saves multiple files, and can be disabled', async ({ page }) => {
+  const requiredA = { status: 'compatibility-required', compatibilityPath: '/Resolved/a.md' };
+  const requiredB = { status: 'compatibility-required', compatibilityPath: '/Resolved/b.md' };
+  await installFakeTauri(page, {
+    openPaths: ['/docs/a.md', '/docs/b.md'],
+    documents: { '/docs/a.md': { content: 'old a' }, '/docs/b.md': { content: 'old b' } },
+    saveResults: {
+      '/docs/a.md': [requiredA, null, requiredA, null],
+      '/docs/b.md': [requiredB, null, requiredB, null],
+    },
+  });
+  await openEditor(page);
+  const preference = page.getByLabel('Allow compatibility saving', { exact: true });
+  const warning = page.getByRole('dialog', { name: 'Allow compatibility saving for all files?' });
+  await page.locator('#btn-editor-options').click();
+  await expect(preference).not.toBeChecked();
+  await preference.click();
+  await expect(warning).toBeVisible();
+  await expect(preference).toBeDisabled();
+  await expect(warning).toContainText('folder-default permissions');
+  await expect(warning).toContainText('ownership');
+  await expect(warning).toContainText('across restarts');
+  await expect(warning.getByRole('button', { name: 'Cancel', exact: true })).toBeFocused();
+  await page.screenshot({ path: 'test-results/compatibility-preference-warning.png' });
+  await page.keyboard.press('Escape');
+  await expect(warning).toBeHidden();
+  await expect(preference).not.toBeChecked();
+  expect(await page.evaluate(() => localStorage.getItem('mdedit-allow-compatibility-saving-v1'))).toBeNull();
+
+  await page.locator('#btn-editor-options').click();
+  await preference.click();
+  await warning.getByRole('button', { name: 'Enable for All Files', exact: true }).click();
+  await expect(warning).toBeHidden();
+  expect(await page.evaluate(() => localStorage.getItem('mdedit-allow-compatibility-saving-v1'))).toBe('1');
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__MDEDIT_TEST_HOOK__.restored)).toBe(true);
+  await page.locator('#btn-editor-options').click();
+  await expect(preference).toBeChecked();
+  await page.screenshot({ path: 'test-results/compatibility-preference-enabled.png' });
+  await page.locator('#btn-editor-options').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  for (const name of ['a', 'b']) {
+    await page.getByRole('tab', { name: new RegExp(`${name}\\.md`) }).click();
+    await setEditorContent(page, `edited ${name}`);
+    await activeEditor(page).press('ControlOrMeta+s');
+    await expect.poll(() => page.evaluate(name => window.__testBridge.documents[`/docs/${name}.md`].content, name)).toBe(`edited ${name}`);
+    await expect(page.getByRole('dialog', { name: 'Use compatibility saving?' })).toBeHidden();
+  }
+  const saves = await page.evaluate(() => window.__testBridge.calls.saves);
+  expect(saves).toHaveLength(4);
+  expect(saves[0].compatibilityPath).toBeUndefined();
+  expect(saves[1].compatibilityPath).toBe('/Resolved/a.md');
+  expect(saves[2].compatibilityPath).toBeUndefined();
+  expect(saves[3].compatibilityPath).toBe('/Resolved/b.md');
+
+  await page.locator('#btn-editor-options').click();
+  await preference.click();
+  await expect(preference).not.toBeChecked();
+  expect(await page.evaluate(() => localStorage.getItem('mdedit-allow-compatibility-saving-v1'))).toBeNull();
+  await page.locator('#btn-editor-options').click();
+  await setEditorContent(page, 'still unsaved');
+  await activeEditor(page).press('ControlOrMeta+s');
+  const fileWarning = page.getByRole('dialog', { name: 'Use compatibility saving?' });
+  await expect(fileWarning).toBeVisible();
+  await page.keyboard.press('Escape');
+  expect(await page.evaluate(() => window.__testBridge.documents['/docs/b.md'].content)).toBe('edited b');
+  await page.reload();
+  await expect.poll(() => page.evaluate(() => window.__MDEDIT_TEST_HOOK__.restored)).toBe(true);
+  await page.locator('#btn-editor-options').click();
+  await expect(preference).not.toBeChecked();
+});
+
+for (const failure of ['malformed', 'unreadable']) {
+  test(`app-wide compatibility preference defaults off with ${failure} storage`, async ({ page }) => {
+    await page.addInitScript(failure => {
+      const key = 'mdedit-allow-compatibility-saving-v1';
+      localStorage.setItem(key, failure === 'malformed' ? 'true' : '1');
+      if (failure === 'unreadable') {
+        const getItem = Storage.prototype.getItem;
+        Storage.prototype.getItem = function(name) {
+          if (name === key) throw new Error('storage unavailable');
+          return getItem.call(this, name);
+        };
+      }
+    }, failure);
+    await installFakeTauri(page);
+    await openEditor(page);
+    await page.locator('#btn-editor-options').click();
+    await expect(page.getByLabel('Allow compatibility saving', { exact: true })).not.toBeChecked();
+  });
+}
+
+test('app-wide compatibility preference stays off if enabling cannot be persisted', async ({ page }) => {
+  await page.addInitScript(() => {
+    const setItem = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(key, value) {
+      if (key === 'mdedit-allow-compatibility-saving-v1') throw new Error('quota exceeded');
+      return setItem.call(this, key, value);
+    };
+  });
+  await installFakeTauri(page, {
+    openPaths: ['/docs/a.md'], documents: { '/docs/a.md': { content: 'original' } },
+    saveResults: { '/docs/a.md': { status: 'compatibility-required', compatibilityPath: '/docs/a.md' } },
+  });
+  await openEditor(page);
+  await page.locator('#btn-editor-options').click();
+  await page.getByLabel('Allow compatibility saving', { exact: true }).click();
+  await page.getByRole('dialog', { name: 'Allow compatibility saving for all files?' })
+    .getByRole('button', { name: 'Enable for All Files', exact: true }).click();
+  await expect(page.getByRole('status')).toContainText('Compatibility saving remains off');
+  expect(await page.evaluate(() => localStorage.getItem('mdedit-allow-compatibility-saving-v1'))).toBeNull();
+  await page.locator('#btn-editor-options').click();
+  await expect(page.getByLabel('Allow compatibility saving', { exact: true })).not.toBeChecked();
+  await page.locator('#btn-editor-options').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await setEditorContent(page, 'editor');
+  await activeEditor(page).press('ControlOrMeta+s');
+  await expect(page.getByRole('dialog', { name: 'Use compatibility saving?' })).toBeVisible();
+});
+
+test('app-wide compatibility preference disables immediately and reports failed persistence', async ({ page }) => {
+  await page.addInitScript(() => {
+    const key = 'mdedit-allow-compatibility-saving-v1';
+    localStorage.setItem(key, '1');
+    const removeItem = Storage.prototype.removeItem;
+    Storage.prototype.removeItem = function(name) {
+      if (name === key) throw new Error('storage unavailable');
+      return removeItem.call(this, name);
+    };
+  });
+  await installFakeTauri(page, {
+    openPaths: ['/docs/a.md'], documents: { '/docs/a.md': { content: 'original' } },
+    saveResults: { '/docs/a.md': { status: 'compatibility-required', compatibilityPath: '/docs/a.md' } },
+  });
+  await openEditor(page);
+  await page.locator('#btn-editor-options').click();
+  const preference = page.getByLabel('Allow compatibility saving', { exact: true });
+  await expect(preference).toBeChecked();
+  await preference.click();
+  await expect(preference).not.toBeChecked();
+  await expect(page.getByRole('status')).toContainText('off for this session');
+  await expect(page.getByRole('status')).toContainText('restart');
+  await page.locator('#btn-editor-options').click();
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await setEditorContent(page, 'editor');
+  await activeEditor(page).press('ControlOrMeta+s');
+  await expect(page.getByRole('dialog', { name: 'Use compatibility saving?' })).toBeVisible();
+});
+
+test('app-wide compatibility preference is not offered in the plain-browser editor', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__MDEDIT_TEST_HOOK__ = { restored: false };
+    localStorage.setItem('mdedit-allow-compatibility-saving-v1', '1');
+  });
+  await openEditor(page);
+  await page.locator('#btn-editor-options').click();
+  await expect(page.getByLabel('Allow compatibility saving', { exact: true })).toHaveCount(0);
+});
+
 test('compatibility saving warns, defaults to cancel, and remembers explicit consent for the session', async ({ page }) => {
   const required = { status: 'compatibility-required', compatibilityPath: '/resolved/Usage.md' };
   await installFakeTauri(page, {

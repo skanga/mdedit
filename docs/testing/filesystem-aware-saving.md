@@ -4,18 +4,27 @@
 
 The original design required preservation of native security before allowing any existing-file replacement. v0.3.8 implemented a conservative refusal and better diagnostics, but did not solve existing-file WSL saving. The user subsequently approved an explicit opt-in tradeoff: allow permission/ownership changes on non-ACL filesystems while retaining temporary-file saving and no direct-overwrite or delete-then-rename fallback.
 
-Current design: `docs/superpowers/specs/2026-09-09-wsl-compatibility-mode.md`.
+Compatibility save design: `docs/superpowers/specs/2026-09-09-wsl-compatibility-mode.md`.
+Persistent setting design: `docs/superpowers/specs/2026-09-09-persistent-compatibility-setting.md`.
 The original design/plan and `docs/releases/v0.3.8.md` are historical records, not the current consent policy.
+
+### Persistent app-wide setting
+
+Desktop **Editor → Allow compatibility saving** is off by default. Enabling it requires a warning with Cancel focused by default, explaining that it applies to all eligible files across restarts and may change permissions/ownership/access ACLs or broaden readability. With it enabled, the controller still waits for a native `compatibility-required` result and sends only the returned exact path with the original captured content and digest. Normal saves and errors are unchanged.
+
+The opt-in is stored separately from ordinary editor preferences under localStorage key `mdedit-allow-compatibility-saving-v1`. Only the exact value `1` enables it; missing, malformed, or unreadable storage defaults off. This is app-profile storage, not data embedded in the portable executable or document recovery snapshots. The plain-browser editor does not offer the setting.
+
+Enabling persists the preference before authorizing saves; cancellation or a failed write leaves the previous state unchanged and reports failure when necessary. Disabling revokes app-wide and cached per-file consent immediately and invalidates pending per-file approvals, then removes the stored opt-in. A removal failure is reported explicitly: it is off for the current session but may return on restart. An already-submitted native write cannot be canceled by changing the preference.
 
 ### User interaction
 
 1. Save an existing file on a filesystem without persistent Windows ACLs.
 2. Before creating any temporary, the native core returns `compatibility-required` with the exact, case-preserving resolved destination in `compatibilityPath`.
-3. The controller presents **Use compatibility saving?** with **Cancel** focused by default. The warning explains that temporary files use folder-default permissions and replacement can change permissions, ownership, or access ACLs and broaden access.
+3. Unless app-wide compatibility saving is enabled or that path has session approval, the controller presents **Use compatibility saving?** with **Cancel** focused by default. The warning explains that temporary files use folder-default permissions and replacement can change permissions, ownership, or access ACLs and broaden access.
 4. Choosing **Use Compatibility Saving** retries the same captured content and expected disk digest with the returned `compatibilityPath`.
-5. The native core re-resolves the path, requires an exact consent-path match, and repeats conflict checks. Consent is remembered only for that resolved path in the current controller/application session and is never persisted.
+5. The native core re-resolves the path, requires an exact consent-path match, and repeats conflict checks. Per-file approval is remembered only for that resolved path in the current controller/application session; only the separate app-wide opt-in can persist.
 
-Cancel leaves the file and saved baseline unchanged. Save All stops on cancellation. Save As over a different existing destination requires separate consent; creating a new destination does not. Disposing the controller while the dialog is open prevents a retry. Edits typed during confirmation remain dirty if only the earlier capture was saved.
+Cancel leaves the file and saved baseline unchanged. Save All stops on cancellation. With the app-wide setting off, Save As over a different existing destination requires separate consent; creating a new destination does not. Disposing the controller while the dialog is open prevents a retry. Edits typed during confirmation remain dirty if only the earlier capture was saved.
 
 ### Native strategies
 
@@ -32,7 +41,7 @@ Native Linux/macOS permission-preserving saves remain unchanged. Content guards 
 
 ### Regression checks
 
-Commands run in `.worktrees/wsl-compatibility`:
+Latest regression commands run in `.worktrees/persistent-compatibility`:
 
 ```bash
 cargo test --manifest-path src-tauri/Cargo.toml
@@ -44,11 +53,12 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 Observed results:
 
 - 98 Linux-native Rust unit tests passed; one separate performance diagnostic remains ignored as configured.
-- 347 frontend/unit tests passed.
-- 64 Chromium browser tests passed, including the actual confirmation UI, default Cancel/Escape behavior, consent forwarding, and session reuse with a fake Tauri backend.
+- 353 frontend/unit tests passed.
+- 70 Chromium browser tests passed, including the actual confirmation UI, app-wide preference persistence across reloads, multiple-file saving, default Cancel/Escape behavior, consent forwarding, session reuse, storage failures, and the absence of this preference in plain-browser mode. Native calls use a fake Tauri backend in browser tests.
+- Preference and warning screenshots were visually inspected at `test-results/compatibility-preference-enabled.png` and `test-results/compatibility-preference-warning.png`.
 - Policy, permission-error handling, publication outcome/retention, serialization, cancellation, stale captures, conflicts, Save As, and Save All are covered.
 
-Test-first evidence includes missing native policy/outcome helpers, controller failures on an unhandled `compatibility-required` result, and a browser failure with the previous generated frontend lacking the dialog. The corresponding tests passed after implementation and frontend regeneration.
+Test-first evidence for compatibility mode includes missing native policy/outcome helpers, controller failures on an unhandled `compatibility-required` result, and a browser failure with the previous generated frontend lacking the dialog. The persistent-setting tests first failed on the missing controller setter and missing checkbox; they passed after implementation and frontend regeneration.
 
 ### Windows-to-WSL primitive probe
 
@@ -77,7 +87,7 @@ Normal Windows tests now cover:
 - The compatibility rename primitive plus outcome classification on disposable local files.
 - Rejection of cross-directory compatibility publication without modifying either candidate.
 
-Pure policy/outcome tests also run on Linux/macOS. The WSL-provider tests remain ignored on ordinary hosted runners. Windows Rust execution for this compatibility change has not yet been run or observed in this development session.
+Pure policy/outcome tests also run on Linux/macOS. The WSL-provider tests remain ignored on ordinary hosted runners. The compiled Windows tests and package build passed in the [v0.3.9 release pipeline](https://github.com/skanga/mdedit/actions/runs/34372889230). The persistent-setting change does not modify native code; its new UI wiring has been tested locally but has not yet run in release CI.
 
 ### Configured WSL provider runner
 
@@ -106,8 +116,8 @@ Repeat with the mapped alias, an available `\\wsl$` alias, or a disposable FAT/e
 
 ## Remaining validation and limitations
 
-- Run the compiled Windows Rust tests and app UI through CI/a Windows build; the local PowerShell probe is not a substitute for that integration test.
+- Run the persistent-setting UI through release CI/a new Windows build. The v0.3.9 Windows Rust tests passed, but the local PowerShell probe is not a substitute for full compiled-app WSL integration.
 - Check additional Linux ownership/access-ACL configurations and error cases using disposable fixtures. Compatibility mode intentionally does not promise preservation of those attributes.
 - Native filesystem capability inspection must succeed. Unexpected provider errors are still reported rather than bypassed.
 - Compatibility failures may leave an editor temporary for recovery. Error messages identify retained paths; no broad stale-file cleanup is performed.
-- The compatibility change has not been released by this implementation session.
+- v0.3.9 contains session-scoped compatibility saving. The persistent app-wide setting has not been pushed or released by this implementation session.

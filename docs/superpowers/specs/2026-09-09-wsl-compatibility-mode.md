@@ -6,6 +6,8 @@ The user approved replacing v0.3.8's blanket refusal with an explicit compatibil
 
 ## Interaction
 
+The default per-file interaction below remains available. The user subsequently approved a separate [persistent app-wide setting](2026-09-09-persistent-compatibility-setting.md); only that explicit opt-in can persist, while per-path approvals remain session-scoped.
+
 A save that passes its initial content guard but would replace an existing file on a filesystem without Windows ACLs returns `compatibility-required` before creating a temporary file. The result carries the exact resolved destination as `compatibilityPath` (case preserved).
 
 The controller asks whether to use compatibility saving for that file for this application session. The warning explicitly says temporary files use folder-default permissions, and the replacement may change permissions, ownership, or access ACLs and expose the file more broadly. Cancel is the default; confirmation is explicit. No choice is persisted to recovery or browser storage.

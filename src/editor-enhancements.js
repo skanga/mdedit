@@ -4,7 +4,7 @@
   if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
 })(typeof window !== 'undefined' ? window : null, () => {
   'use strict';
-  function installEditorEnhancements({document, activeEditor, replaceRange, onChange}) {
+  function installEditorEnhancements({document, activeEditor, replaceRange, onChange, compatibilitySaving = null}) {
     const win = document.defaultView;
     const key = 'mdedit-editor-preferences-v1';
     let stored = {};
@@ -23,13 +23,55 @@
       '<label>Tab width <select id="editor-tab-width"><option>2</option><option>4</option><option>8</option></select></label>' +
       '<label><input id="editor-wrap" type="checkbox"> Wrap long lines</label>' +
       '<label><input id="editor-line-numbers" type="checkbox"> Line numbers</label>' +
-      '<label><input id="editor-formatting-toolbar" type="checkbox"> Show formatting toolbar</label>';
+      '<label><input id="editor-formatting-toolbar" type="checkbox"> Show formatting toolbar</label>' +
+      (compatibilitySaving
+        ? '<label><input id="editor-compatibility-saving" type="checkbox" aria-describedby="editor-compatibility-help"> Allow compatibility saving</label>' +
+          '<p id="editor-compatibility-help" class="editor-preference-help">For all eligible files, across restarts. May change permissions and ownership.</p>'
+        : '');
     const size = document.getElementById('editor-font-size'), tabs = document.getElementById('editor-tab-width');
     const wrap = document.getElementById('editor-wrap'), numbers = document.getElementById('editor-line-numbers');
     const toolbarToggle = document.getElementById('editor-formatting-toolbar');
     toolbarToggle.checked = prefs.formattingToolbar;
     size.value = prefs.fontSize; tabs.value = prefs.tabWidth; wrap.checked = prefs.wrap; numbers.checked = prefs.lineNumbers;
     function close(focus = false) { panel.hidden = true; trigger.setAttribute('aria-expanded','false'); if (focus) trigger.focus(); }
+    if (compatibilitySaving) {
+      // Keep explicit app-wide permission separate from ordinary editor prefs.
+      const permissionKey = 'mdedit-allow-compatibility-saving-v1';
+      const toggle = document.getElementById('editor-compatibility-saving');
+      let allowed = false;
+      try { allowed = win.localStorage.getItem(permissionKey) === '1'; } catch (_) {}
+      compatibilitySaving.setAllowed(allowed);
+      toggle.checked = allowed;
+      toggle.addEventListener('change', async () => {
+        const requested = toggle.checked;
+        toggle.checked = allowed;
+        if (toggle.disabled || requested === allowed) return;
+        toggle.disabled = true;
+        try {
+          if (requested) {
+            close(true);
+            if (await compatibilitySaving.confirmEnable() !== true) return;
+            // Do not activate a persistent opt-in if it could not be saved.
+            win.localStorage.setItem(permissionKey, '1');
+            allowed = true;
+            compatibilitySaving.setAllowed(true);
+          } else {
+            // Revocation takes effect even when persistence is unavailable.
+            allowed = false;
+            compatibilitySaving.setAllowed(false);
+            win.localStorage.removeItem(permissionKey);
+          }
+        } catch (error) {
+          const detail = error && error.message ? error.message : String(error);
+          compatibilitySaving.onError(requested
+            ? `Compatibility saving remains off — could not confirm or save the preference: ${detail}`
+            : `Compatibility saving is off for this session, but could not remember the change; it may return after restart: ${detail}`);
+        } finally {
+          toggle.checked = allowed;
+          toggle.disabled = false;
+        }
+      });
+    }
     trigger.addEventListener('click', () => {
       if (!panel.hidden) return close(true);
       panel.hidden = false; trigger.setAttribute('aria-expanded','true'); size.focus();

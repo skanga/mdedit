@@ -54,7 +54,9 @@ On Windows, saves inspect filesystem capabilities and preserve Windows security 
 
 For an existing file on WSL or another filesystem without Windows ACLs, saving asks **Use compatibility saving?** Choose **Use Compatibility Saving** to write a flushed temporary file and rename it over the original. **Cancel** is the default and leaves the original unchanged. Permission preservation remains enabled on ACL-capable filesystems.
 
-**Compatibility tradeoff:** the temporary uses folder-default permissions. The replacement may change Linux permissions, ownership, or access ACLs, potentially making the temporary or saved file readable by more people. Approval applies only to that resolved path for the current application session; restarting MDedit clears it, and saving over another path requires separate approval. Disk conflicts and genuine permission errors are not bypassed. See [the validation and CI guide](docs/testing/filesystem-aware-saving.md).
+**Compatibility tradeoff:** the temporary uses folder-default permissions. The replacement may change Linux permissions, ownership, or access ACLs, potentially making the temporary or saved file readable by more people. By default, approval applies only to that resolved path for the current application session; restarting MDedit clears it, and saving over another path requires separate approval.
+
+For a persistent app-wide choice, open **Editor → Allow compatibility saving** on desktop. It is off by default and shows the permission warning before enabling. Once enabled, it skips per-file confirmations for eligible files and is remembered in the app's local profile across restarts. Turning it off clears session approvals and restores prompts. It does not weaken ACL-preserving saves on supported filesystems or bypass disk conflicts and genuine permission errors. See [the validation and CI guide](docs/testing/filesystem-aware-saving.md).
 
 ### External changes and tab actions
 

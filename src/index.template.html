@@ -705,6 +705,7 @@
   .editor-panel label { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
   .editor-panel input, .editor-panel select { background: var(--bg); color: var(--text); border: 1px solid var(--border); padding: 4px; border-radius: 4px; }
   .editor-panel input[type=number] { width: 64px; }
+  .editor-preference-help { margin: 5px 0 0 24px; font-size: 11px; line-height: 1.4; color: var(--text-soft); }
   #formatting-toolbar { display:flex; align-items:center; gap:3px; flex:none; height:35px; padding:0 14px; border-bottom:1px solid var(--border-soft); background:var(--panel); color:var(--text-soft); position:relative; z-index:5; }
   #formatting-toolbar[hidden], .format-menu[hidden] { display:none; }
   #formatting-toolbar button { display:inline-flex; align-items:center; justify-content:center; gap:3px; min-width:29px; height:28px; padding:0 5px; border:0; border-radius:4px; background:transparent; color:inherit; font:13px var(--sans); cursor:pointer; }
@@ -2998,7 +2999,26 @@
   if (window.__MDEDIT_TEST_HOOK__) window.__MDEDIT_TEST_HOOK__.controller = controller;
   resolveControllerReady(controller);
   MDEdit.installRecentDocuments({ document, controller, nativeApp });
-  editorEnhancements = MDEdit.installEditorEnhancements({ document, activeEditor, replaceRange, onChange: afterEdit });
+  editorEnhancements = MDEdit.installEditorEnhancements({
+    document, activeEditor, replaceRange, onChange: afterEdit,
+    compatibilitySaving: nativeApp ? {
+      setAllowed(enabled) { controller.setAllowCompatibilitySaving(enabled); },
+      confirmEnable() {
+        return workspaceView.showDialog({
+          title: "Allow compatibility saving for all files?",
+          message: "This enables compatibility saving for all eligible files across restarts. "
+            + "On filesystems without Windows ACL support, temporary files use folder-default permissions. "
+            + "Replacement may change permissions, ownership, or access ACLs, and the temporary or saved file may be readable by more people. "
+            + "Normal ACL-preserving saves and disk-conflict checks stay enabled. You can turn this setting off under Editor.",
+          actions: [
+            { id: "cancel", label: "Cancel", value: false, primary: true },
+            { id: "enable-compatibility", label: "Enable for All Files", value: true },
+          ],
+        });
+      },
+      onError(message) { setStatus(message); },
+    } : null,
+  });
   MDEdit.installFormattingToolbar({ document, format: editorEnhancements.format });
 
   desktopAssets = MDEdit.createDesktopAssets({ document, nativeApp, controller, activeEditor, replaceRange, onChange: afterEdit, setStatus });

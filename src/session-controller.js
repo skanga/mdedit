@@ -319,8 +319,11 @@
       this._previewCache = new Map();
       this._previewCacheBytes = 0;
       this._reservedCanonicalPaths = new Map();
-      // Explicit per-resolved-path consent, intentionally never persisted.
+      // Per-path approvals stay session-only; the UI separately restores the
+      // explicit app-wide preference before user saves can begin.
       this._compatibilitySavePaths = new Set();
+      this._allowCompatibilitySaving = false;
+      this._compatibilityConsentRevision = 0;
       this._browserFileIdentities = new WeakMap();
       this._browserSourcesByDocument = new Map();
       this._browserSourceReservations = new Map();
@@ -1916,6 +1919,18 @@
       }
     }
 
+    // Revocation clears cached/pending consent, but cannot cancel a native
+    // write that was already submitted before the preference changed.
+    setAllowCompatibilitySaving(enabled) {
+      if (typeof enabled !== "boolean") throw new TypeError("compatibility saving preference must be a boolean");
+      if (this._disposed) return;
+      this._allowCompatibilitySaving = enabled;
+      if (!enabled) {
+        this._compatibilitySavePaths.clear();
+        this._compatibilityConsentRevision += 1;
+      }
+    }
+
     async _saveNativeWithCompatibilityConsent(capture, input) {
       if (!this._ownsOperationCapture(capture)) return { status: "canceled", stale: true };
       const result = await this.io.saveDocument(input);
@@ -1927,7 +1942,8 @@
         throw new Error("document save returned an invalid compatibility request");
       }
 
-      if (!this._compatibilitySavePaths.has(compatibilityPath)) {
+      if (!this._allowCompatibilitySaving && !this._compatibilitySavePaths.has(compatibilityPath)) {
+        const consentRevision = this._compatibilityConsentRevision;
         const approved = typeof this.view.showDialog === "function"
           ? await this.view.showDialog({
             title: "Use compatibility saving?",
@@ -1944,7 +1960,7 @@
           })
           : false;
         if (!this._ownsOperationCapture(capture)) return { status: "canceled", stale: true };
-        if (approved !== true) {
+        if (approved !== true || consentRevision !== this._compatibilityConsentRevision) {
           this._setDocumentStatus(capture.documentId, {
             status: "canceled",
             message: `Save canceled for ${capture.displayName}`,
@@ -3268,6 +3284,7 @@
       this._loadingIds.clear();
       this._browserSourcesByDocument.clear();
       this._compatibilitySavePaths.clear();
+      this._allowCompatibilitySaving = false;
       for (const reservation of this._browserSourceReservations.values()) {
         reservation.settle({ committed: false, disposed: true });
       }
