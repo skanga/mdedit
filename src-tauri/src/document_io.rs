@@ -8,6 +8,12 @@ use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 use uuid::Uuid;
 
+#[cfg(any(windows, test))]
+mod windows_save;
+
+#[cfg(all(windows, test))]
+mod provider_tests;
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReadDocumentResult {
@@ -79,6 +85,12 @@ fn path_string(path: &Path, description: &str) -> Result<String, String> {
     path.to_str()
         .map(str::to_owned)
         .ok_or_else(|| format!("{description} is not valid UTF-8: {}", path.display()))
+}
+
+// This is a display boundary: classify raw OS errors before adding context.
+// The original error text retains its OS code; the wrapper preserves its kind.
+fn operation_error(stage: &str, api: &str, error: io::Error) -> io::Error {
+    io::Error::new(error.kind(), format!("{stage}: {api}: {error}"))
 }
 
 fn parent_directory(path: &Path) -> &Path {
@@ -374,11 +386,16 @@ where
 
     let write_result = (|| -> io::Result<()> {
         if let Some(permissions) = permissions {
-            file.set_permissions(permissions.clone())?;
+            file.set_permissions(permissions.clone()).map_err(|error| {
+                operation_error("prepare permissions", "File::set_permissions", error)
+            })?;
         }
-        prepare(&file, &temporary)?;
-        writer(&mut file)?;
+        prepare(&file, &temporary)
+            .map_err(|error| operation_error("prepare temporary file", "prepare hook", error))?;
+        writer(&mut file)
+            .map_err(|error| operation_error("write temporary content", "writer", error))?;
         file.sync_all()
+            .map_err(|error| operation_error("flush temporary content", "File::sync_all", error))
     })();
     if let Err(error) = write_result {
         drop(file);
@@ -800,12 +817,16 @@ fn read_document_security_descriptor(source: &Path) -> io::Result<Vec<usize>> {
     if query_result == 0 {
         let error = io::Error::last_os_error();
         if error.raw_os_error() != Some(ERROR_INSUFFICIENT_BUFFER as i32) {
-            return Err(error);
+            return Err(operation_error(
+                "read security",
+                "GetFileSecurityW(size query)",
+                error,
+            ));
         }
     }
     if bytes_needed == 0 {
         return Err(io::Error::other(
-            "GetFileSecurityW returned an empty DACL security descriptor",
+            "read security: GetFileSecurityW returned an empty DACL security descriptor",
         ));
     }
 
@@ -825,7 +846,11 @@ fn read_document_security_descriptor(source: &Path) -> io::Result<Vec<usize>> {
         )
     } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(operation_error(
+            "read security",
+            "GetFileSecurityW(descriptor)",
+            io::Error::last_os_error(),
+        ));
     }
     let mut control = 0_u16;
     let mut revision = 0_u32;
@@ -833,7 +858,11 @@ fn read_document_security_descriptor(source: &Path) -> io::Result<Vec<usize>> {
     // returned above, and both output pointers are live.
     if unsafe { GetSecurityDescriptorControl(descriptor_pointer, &mut control, &mut revision) } == 0
     {
-        return Err(io::Error::last_os_error());
+        return Err(operation_error(
+            "validate security",
+            "GetSecurityDescriptorControl",
+            io::Error::last_os_error(),
+        ));
     }
     // The self-relative descriptor carries both its DACL and the protected or
     // inherited control state. Keeping the buffer intact preserves that state
@@ -853,11 +882,14 @@ fn open_temporary_file(
     use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
     use windows_sys::Win32::Storage::FileSystem::{CreateFileW, CREATE_NEW, FILE_ATTRIBUTE_NORMAL};
 
+    let policy = windows_save::creation_policy(directory, security_source.is_some())?;
     with_prepared_security(
-        || {
-            security_source
-                .map(read_document_security_descriptor)
-                .transpose()
+        || match (policy, security_source) {
+            (windows_save::CreationPolicy::PreserveWindowsSecurity, Some(source)) => {
+                read_document_security_descriptor(source).map(Some)
+            }
+            (windows_save::CreationPolicy::NativeDefaults, None) => Ok(None),
+            _ => Err(io::Error::other("inconsistent filesystem creation policy")),
         },
         |mut descriptor| {
             // The security descriptor is obtained before this UUID path is
@@ -890,7 +922,11 @@ fn open_temporary_file(
                 )
             };
             if handle == INVALID_HANDLE_VALUE {
-                return Err(io::Error::last_os_error());
+                return Err(operation_error(
+                    "create temporary file",
+                    "CreateFileW",
+                    io::Error::last_os_error(),
+                ));
             }
             // SAFETY: CreateFileW returned a unique owned handle, and File takes
             // sole responsibility for closing it on all subsequent paths.
@@ -939,7 +975,11 @@ fn replace_existing(
         )
     };
     let replacement_result = if result == 0 {
-        Err(io::Error::last_os_error())
+        Err(operation_error(
+            "replace document",
+            "ReplaceFileW",
+            io::Error::last_os_error(),
+        ))
     } else {
         Ok(())
     };
@@ -978,7 +1018,11 @@ fn publish_new(temporary: &Path, destination: &Path) -> io::Result<()> {
         )
     };
     if result == 0 {
-        Err(io::Error::last_os_error())
+        Err(operation_error(
+            "publish new document",
+            "MoveFileExW",
+            io::Error::last_os_error(),
+        ))
     } else {
         Ok(())
     }
@@ -1314,6 +1358,67 @@ mod tests {
             sha256: sha256(bytes),
             size: bytes.len() as u64,
         }
+    }
+
+    #[test]
+    fn operation_error_preserves_stage_api_and_os_code() {
+        let source = io::Error::from_raw_os_error(1);
+        let kind = source.kind();
+        let error = operation_error("read security", "GetFileSecurityW", source);
+        assert_eq!(error.kind(), kind);
+        let message = error.to_string();
+        assert!(message.contains("read security"));
+        assert!(message.contains("GetFileSecurityW"));
+        assert!(message.contains("os error 1"));
+    }
+
+    #[test]
+    fn temporary_writer_error_identifies_stage_and_cleans_up() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let error = write_temporary_with_writer(&destination, directory.path(), None, |_| {
+            Err(io::Error::other("injected write failure"))
+        })
+        .unwrap_err();
+        assert!(error.contains("write temporary content"));
+        assert!(error.contains("injected write failure"));
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
+
+    #[test]
+    fn unsupported_publication_does_not_overwrite_original() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        fs::write(&destination, "original").unwrap();
+        let expected = sha256(b"original");
+        let error = save_document_path_with_identity_hooks(
+            &destination,
+            "editor",
+            Some(&expected),
+            |file, _| file.write_all(b"editor"),
+            |_, _, _, _| Err(io::Error::from_raw_os_error(1)),
+        )
+        .unwrap_err();
+        assert!(error.contains("os error 1"));
+        assert_eq!(fs::read(&destination).unwrap(), b"original");
+    }
+
+    #[test]
+    fn temporary_preparation_error_identifies_stage_and_never_writes() {
+        let directory = tempdir().unwrap();
+        let destination = directory.path().join("document.md");
+        let error = write_temporary_with_hooks(
+            &destination,
+            directory.path(),
+            None,
+            None,
+            |_, _| Err(io::Error::new(io::ErrorKind::PermissionDenied, "denied")),
+            |_| panic!("content must not be written after security preparation fails"),
+        )
+        .unwrap_err();
+        assert!(error.contains("prepare temporary file"));
+        assert!(error.contains("denied"));
+        assert_eq!(fs::read_dir(directory.path()).unwrap().count(), 0);
     }
 
     struct ChunkedReader {

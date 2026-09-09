@@ -59,7 +59,9 @@ cargo test --manifest-path src-tauri/Cargo.toml
 
 Expected: both exit 0. Record failures before any implementation. Linux requires the system dependencies already listed in `desktop.yml`. Do not treat Linux tests or Windows cross-compilation as execution of the Windows path.
 
-**Checkpoint (2026-09-08):** Steps 1.1–1.2 completed. Frontend: 336 tests passed; Linux native: 82 tests passed, with 1 separate performance diagnostic ignored. Step 1.3 is blocked: Windows cargo/rustc are absent from PATH and their standard installation location. See `docs/testing/filesystem-aware-saving.md`. No application code changed.
+**Initial checkpoint (2026-09-08):** Steps 1.1–1.2 completed. Frontend: 336 tests passed; Linux native: 82 tests passed, with 1 separate performance diagnostic ignored. Windows cargo/rustc were absent; the Build Tools installer subsequently stopped at UAC.
+
+**User-authorized execution update:** Proceed without local Windows validation; Windows tests may run in GitHub Actions. Local Linux tests remain enabled. Implemented diagnostics, conservative capability-based creation admission, a hosted-Windows round-trip test, and a dispatch-only WSL-provider workflow. Current local results: 90 Rust tests and 336 frontend tests pass; formatting and diff checks pass. Existing-file non-ACL replacement remains safely rejected: no runtime adapter exists to preserve native Linux permissions. This is partial implementation, not completion of Tasks 5–6 or a fix for the original WSL save. The policy intentionally has no speculative `NativeCompatible` branch or caller-supplied validation boolean. See `docs/testing/filesystem-aware-saving.md` for code scope, CI setup, and remaining work.
 
 - [ ] **1.3 Prepare Windows-native execution.** In Windows PowerShell verify `cargo --version`, `rustc -vV`, and `wsl.exe -l -v`. Use a Windows Rust toolchain and a Windows checkout/worktree containing this branch. Record Windows build, Rust target, WSL version and distro. Never test saves on the reported real `usage.md`.
 
@@ -93,7 +95,7 @@ git commit -m "docs: record filesystem save reproduction and test matrix"
 
 **Files:** modify `src-tauri/src/document_io.rs` and its test module.
 
-- [ ] **2.1 Add a failing contextual-error test.** Place this in the existing `tests` module:
+- [x] **2.1 Add a failing contextual-error test.** Place this in the existing `tests` module:
 
 ```rust
 #[test]
@@ -111,7 +113,7 @@ fn operation_error_preserves_stage_api_and_os_code() {
 
 Run `cargo test --manifest-path src-tauri/Cargo.toml operation_error_preserves_stage_api_and_os_code`. Expected initially: compilation failure for the missing helper.
 
-- [ ] **2.2 Add the minimal context helper.** It preserves the original kind and renders the raw code before wrapping; do not use the wrapper's `raw_os_error()` for later capability classification.
+- [x] **2.2 Add the minimal context helper.** It preserves the original kind and renders the raw code before wrapping; do not use the wrapper's `raw_os_error()` for later capability classification.
 
 ```rust
 fn operation_error(stage: &str, api: &str, error: io::Error) -> io::Error {
@@ -124,7 +126,7 @@ fn operation_error(stage: &str, api: &str, error: io::Error) -> io::Error {
 
 Capability policy must consume raw errors before this display boundary. A custom typed error is unnecessary unless integration requires machine-readable codes beyond it.
 
-- [ ] **2.3 Add context at each native boundary.** Keep existing success/error conditions exactly as they are. Replace each bare `last_os_error()` return with the corresponding stage/API wrapper; for example, after the first `GetFileSecurityW` query has rejected all codes except `ERROR_INSUFFICIENT_BUFFER`:
+- [x] **2.3 Add context at each native boundary.** Keep existing success/error conditions exactly as they are. Replace each bare `last_os_error()` return with the corresponding stage/API wrapper; for example, after the first `GetFileSecurityW` query has rejected all codes except `ERROR_INSUFFICIENT_BUFFER`:
 
 ```rust
 return Err(operation_error("read security", "GetFileSecurityW(size query)", error));
@@ -140,7 +142,7 @@ return Err(operation_error(
 
 Use distinct labels for `GetFileSecurityW(descriptor)`, `GetSecurityDescriptorControl`, `ReplaceFileW`, and `MoveFileExW`. Capture the error immediately after the failed API; do not call another Windows function first.
 
-- [ ] **2.4 Split temporary write/flush context while retaining one cleanup path.** In the existing `write_result` closure preserve order and use:
+- [x] **2.4 Split temporary write/flush context while retaining one cleanup path.** In the existing `write_result` closure preserve order and use:
 
 ```rust
 if let Some(permissions) = permissions {

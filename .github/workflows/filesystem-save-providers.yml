@@ -1,0 +1,72 @@
+name: Filesystem save providers
+
+# Do not run pull-request code automatically on a persistent self-hosted runner.
+on:
+  workflow_dispatch:
+    inputs:
+      unc_root:
+        description: "Existing disposable WSL parent via UNC (Windows-visible path)"
+        required: true
+        type: string
+      mapped_root:
+        description: "The same disposable WSL parent via its mapped drive"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  provider-tests:
+    runs-on: [self-hosted, Windows, X64, wsl]
+    environment: wsl-save-validation
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        include:
+          - name: unc
+            root: ${{ inputs.unc_root }}
+          - name: mapped
+            root: ${{ inputs.mapped_root }}
+    env:
+      MDEDIT_SAVE_TEST_ROOT: ${{ matrix.root }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+      - name: Install frontend dependencies
+        run: npm ci
+      - name: Build frontend
+        shell: bash
+        run: bash tools/build-desktop.sh
+      - name: Run explicit Windows-native provider tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $toolchain = (& rustc -vV) -join "`n"
+          if ($LASTEXITCODE -ne 0 -or $toolchain -notmatch '(?m)^host: .*windows') {
+            throw 'Provider validation requires a Windows-native Rust toolchain'
+          }
+          if (-not (Test-Path -LiteralPath $env:MDEDIT_SAVE_TEST_ROOT -PathType Container)) {
+            throw 'MDEDIT_SAVE_TEST_ROOT must be an existing Windows-accessible directory'
+          }
+          New-Item -ItemType Directory -Force -Path test-results | Out-Null
+          $toolchain | Set-Content test-results/provider-toolchain.txt
+          & cargo test --manifest-path src-tauri/Cargo.toml --lib document_io::provider_tests::provider_ -- --ignored --nocapture --test-threads=1 2>&1 |
+            Tee-Object -FilePath test-results/provider-tests.txt
+          if ($LASTEXITCODE -ne 0) { throw 'Provider tests failed; inspect retained fixture paths in the log' }
+      - name: Upload provider evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: filesystem-save-${{ matrix.name }}
+          path: test-results/provider-*.txt
+          if-no-files-found: warn
