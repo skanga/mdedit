@@ -48,6 +48,12 @@ Find searches only the active document. **Match case**, **Whole word**, and **Re
 
 On desktop, **Attach**, image paste, or dropping an image or other attachment copies it into an `assets` folder beside the Markdown document and inserts a relative link. Untitled documents prompt for Save As first. Each imported asset gets a unique filename, and files are limited to 20 MiB each. Relative images resolve from the document folder, including `../` references. HTML exports embed local images and attachments; PNG and PDF include local images. Remote images retain the existing export limitations. Keep the Markdown file and its relative assets together when moving or copying a document to another folder.
 
+### Filesystem-aware desktop saving
+
+On Windows, saves inspect filesystem capabilities and preserve Windows security permissions on ACL-capable filesystems. Errors identify the failing operation instead of reporting every security failure as temporary-file creation. The editor never falls back to directly overwriting or deleting an existing document.
+
+**Limitation:** replacing existing files on WSL or other non-Windows-ACL filesystems is not yet supported when native permissions cannot be preserved. Use **Save As…** with a new filename where supported, save a copy to a local Windows folder, or use a filesystem-native editor. This release does not fix existing-file WSL replacement. See [the validation and CI guide](docs/testing/filesystem-aware-saving.md).
+
 ### External changes and tab actions
 
 The desktop app checks named files every three seconds while visible and when the window regains focus. A clean document reloads when its disk contents change. Unsaved edits remain intact, with **Compare changes** showing the editor and disk versions side by side. Choose **Keep editing**, **Save As…**, or **Reload from disk…**; discarding unsaved edits requires confirmation. A missing file remains open so its contents can be saved elsewhere.
