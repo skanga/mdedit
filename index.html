@@ -13386,7 +13386,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (findInput.value) runFind(true);
   };
   workspaceView.beforeReloadDocument = () => desktopAssets?.clearCache();
-  workspaceView.clearPreview = () => {
+  workspaceView.clearPreview = (capture) => {
+    // Keep the current document visible during the debounced edit render.
+    // Clearing it collapses the scroll range and jumps the reader to the top.
+    if (previewOwner?.documentId === capture?.documentId && document.body.dataset.view !== "edit") return;
     previewOwner = null;
     preview.replaceChildren();
     tocEl.replaceChildren();
@@ -13455,8 +13458,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
             // this work until Preview or Split is requested keeps large-tab
             // activation independent from Markdown/DOM construction.
             if (document.body.dataset.view === "edit" && !renderWhenHidden) return null;
+            const scrollTop = previewPane.scrollTop;
             previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
             mermaidPending = render(capture.content, isCurrent, preview, true, capture.path);
+            // Restore after synchronous DOM replacement, not after async diagrams,
+            // so a user's subsequent scrolling is never overwritten.
+            previewPane.scrollTop = scrollTop;
             await mermaidPending;
             return isCurrent() ? preview.innerHTML : null;
           },

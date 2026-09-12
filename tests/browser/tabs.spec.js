@@ -1,6 +1,37 @@
 const { test, expect } = require("@playwright/test");
 const { activeEditor, installFakeTauri, openEditor, setEditorContent } = require("./helpers.js");
 
+test('editing preserves preview position while waiting for and replacing the render', async ({ page }) => {
+  await installFakeTauri(page);
+  await openEditor(page);
+  const content = Array.from({ length: 100 }, (_, i) => `## Section ${i}\n\nParagraph ${i}.`).join('\n\n');
+  await setEditorContent(page, content);
+  await expect(page.locator('#preview')).toContainText('Paragraph 99.');
+  const pane = page.locator('#preview-pane');
+  await pane.evaluate(el => { el.scrollTop = 1200; });
+  await expect.poll(() => pane.evaluate(el => el.scrollTop)).toBe(1200);
+
+  for (const suffix of [' first edit', ' second edit']) {
+    const immediate = await activeEditor(page).evaluate((editor, value) => {
+      editor.value = value;
+      editor.dispatchEvent(new Event('input', { bubbles: true }));
+      return {
+        scrollTop: document.querySelector('#preview-pane').scrollTop,
+        text: document.querySelector('#preview').textContent,
+      };
+    }, content + suffix);
+    expect(immediate.text).toContain('Paragraph 99.');
+    expect(immediate.scrollTop).toBe(1200);
+    await expect(page.locator('#preview')).toContainText('Paragraph 99.' + suffix);
+    await expect.poll(() => pane.evaluate(el => el.scrollTop)).toBe(1200);
+  }
+
+  // A shorter document must clamp naturally rather than retain blank space.
+  await setEditorContent(page, '# Short document');
+  await expect(page.locator('#preview')).toHaveText('Short document');
+  await expect.poll(() => pane.evaluate(el => el.scrollTop)).toBe(0);
+});
+
 test('app-wide compatibility preference warns once, persists, saves multiple files, and can be disabled', async ({ page }) => {
   const requiredA = { status: 'compatibility-required', compatibilityPath: '/Resolved/a.md' };
   const requiredB = { status: 'compatibility-required', compatibilityPath: '/Resolved/b.md' };
