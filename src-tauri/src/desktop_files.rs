@@ -134,7 +134,7 @@ fn import_asset(document: &Path, name: &str, bytes: &[u8]) -> Result<ImportedAss
     })
 }
 
-fn decode_reference(reference: &str) -> Result<String, String> {
+fn decode_uri_path(reference: &str) -> Result<String, String> {
     let mut decoded = Vec::new();
     let mut input = reference.bytes();
     while let Some(byte) = input.next() {
@@ -149,7 +149,11 @@ fn decode_reference(reference: &str) -> Result<String, String> {
             decoded.push(byte);
         }
     }
-    let decoded = String::from_utf8(decoded).map_err(|e| e.to_string())?;
+    String::from_utf8(decoded).map_err(|e| e.to_string())
+}
+
+fn decode_reference(reference: &str) -> Result<String, String> {
+    let decoded = decode_uri_path(reference)?;
     if decoded.is_empty()
         || decoded.contains([':', '\\', '\0'])
         || Path::new(&decoded).is_absolute()
@@ -158,6 +162,47 @@ fn decode_reference(reference: &str) -> Result<String, String> {
         return Err("Only relative local asset references are supported".into());
     }
     Ok(decoded)
+}
+
+/// Resolve local Markdown references without loading every linked document
+/// into memory. Reading the selected target still goes through read_document.
+#[tauri::command(async)]
+pub fn resolve_markdown_link(document_path: String, reference: String) -> Option<String> {
+    let decoded = decode_uri_path(reference.split(['?', '#']).next()?).ok()?;
+    let windows_drive = decoded
+        .as_bytes()
+        .first()
+        .is_some_and(u8::is_ascii_alphabetic)
+        && decoded.as_bytes().get(1) == Some(&b':')
+        && matches!(decoded.as_bytes().get(2), Some(b'/' | b'\\'));
+    if decoded.is_empty()
+        || decoded.contains('\0')
+        || decoded.starts_with("//")
+        || decoded.starts_with("\\\\")
+        || (decoded.contains(':') && !windows_drive)
+    {
+        return None;
+    }
+    let reference_path = Path::new(&decoded);
+    let extension = reference_path.extension()?.to_str()?.to_ascii_lowercase();
+    if !matches!(extension.as_str(), "md" | "markdown" | "mdown" | "mkd") {
+        return None;
+    }
+    let path = if reference_path.is_absolute() {
+        reference_path.to_path_buf()
+    } else {
+        let source = Path::new(&document_path);
+        if document_path.is_empty() || windows_drive {
+            return None;
+        }
+        source.parent()?.join(reference_path)
+    };
+    // Check the file type before opening: opening a FIFO could block forever.
+    let path = path.canonicalize().ok()?;
+    if !path.is_file() || !File::open(&path).ok()?.metadata().ok()?.is_file() {
+        return None;
+    }
+    path.to_str().map(str::to_owned)
 }
 
 fn read_asset(document: &Path, reference: &str) -> Result<AssetContents, String> {
@@ -393,6 +438,78 @@ mod tests {
         let path = dir.path().join("document.md");
         fs::write(&path, "original").unwrap();
         (dir, path)
+    }
+
+    #[test]
+    fn markdown_links_resolve_encoded_parent_and_absolute_paths() {
+        let (dir, source) = document();
+        let target = dir.path().join("My # Guide.MD");
+        fs::write(&target, "# Guide").unwrap();
+        fs::create_dir(dir.path().join("nested")).unwrap();
+        let nested = dir.path().join("nested/source.md");
+        fs::write(&nested, "source").unwrap();
+        let expected = target.canonicalize().unwrap().to_str().unwrap().to_owned();
+        for (document, reference) in [
+            (&source, "My%20%23%20Guide.MD?view=1#intro".to_owned()),
+            (&nested, "../My%20%23%20Guide.MD".to_owned()),
+            (&source, target.to_str().unwrap().replace('#', "%23")),
+        ] {
+            assert_eq!(
+                resolve_markdown_link(document.to_str().unwrap().into(), reference),
+                Some(expected.clone())
+            );
+        }
+        // Absolute references do not require a saved source document.
+        assert_eq!(
+            resolve_markdown_link(String::new(), target.to_str().unwrap().replace('#', "%23")),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn markdown_links_reject_missing_files_directories_and_nonlocal_references() {
+        let (dir, source) = document();
+        fs::create_dir(dir.path().join("folder.md")).unwrap();
+        fs::write(dir.path().join("image.png"), "image").unwrap();
+        for reference in [
+            "missing.md",
+            "folder.md",
+            "image.png",
+            "#intro",
+            "",
+            "%zz.md",
+            "%00.md",
+            "https://example.com/a.md",
+            "//example.com/a.md",
+            "data:text/markdown,hello.md",
+            "file:///tmp/a.md",
+        ] {
+            assert_eq!(
+                resolve_markdown_link(source.to_str().unwrap().into(), reference.into()),
+                None,
+                "{reference}"
+            );
+        }
+        assert_eq!(
+            resolve_markdown_link(String::new(), "document.md".into()),
+            None
+        );
+    }
+
+    #[test]
+    fn markdown_links_resolve_from_a_relative_command_line_document_path() {
+        let directory = tempfile::tempdir_in(".").unwrap();
+        let source = directory.path().join("source.md");
+        let target = directory.path().join("next.md");
+        fs::write(&source, "[Next](next.md)").unwrap();
+        fs::write(&target, "next").unwrap();
+        let relative_source = source
+            .strip_prefix(std::env::current_dir().unwrap())
+            .unwrap();
+        assert_eq!(
+            resolve_markdown_link(relative_source.to_str().unwrap().into(), "next.md".into()),
+            Some(target.canonicalize().unwrap().to_str().unwrap().to_owned())
+        );
     }
 
     #[test]

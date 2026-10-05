@@ -5,7 +5,7 @@ pub mod recovery;
 
 use desktop_files::{
     import_document_asset, import_document_attachment, probe_document, read_document_asset,
-    reveal_document, DocumentProbeCache,
+    resolve_markdown_link, reveal_document, DocumentProbeCache,
 };
 use document_io::{canonicalize_document_path, read_document, save_document};
 use recent_documents::{
@@ -72,6 +72,7 @@ pub fn run() {
             import_document_asset,
             import_document_attachment,
             read_document_asset,
+            resolve_markdown_link,
             probe_document,
             reveal_document,
             list_recent_documents,

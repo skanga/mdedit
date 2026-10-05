@@ -26,6 +26,10 @@ MDedit is a fast, private, cross-platform Markdown editor built with Tauri. It c
 
 Select **+** to create a new tab, or select **Open** to choose one or several files. Select a tab to make it active; the editor, preview, view mode, selection, scroll position, find state, exports, and Save commands follow the active document. You can also switch tabs with `Ctrl+Tab` and `Ctrl+Shift+Tab`.
 
+Hover over a tab to see the file's full path. The window title also shows the active file's full path, followed by ` - MDedit`, with `*` for unsaved changes. MDedit does not shorten these paths; the operating system controls how much of the title bar is visible.
+
+In the desktop preview, links to existing, readable local Markdown files open in a new editor tab. Relative links resolve from the source file's folder. If the destination is already open, MDedit selects its tab and preserves any unsaved edits. Missing or inaccessible targets remain inactive. This supports `.md`, `.markdown`, `.mdown`, and `.mkd` files; query strings and fragments are ignored when resolving the file path. Browser-only sessions cannot resolve files on disk.
+
 In the desktop app, select **Recent** in the toolbar to reopen a file or return to its existing tab. Each entry shows its folder. Use **×** to remove an entry or **Clear recent documents** to clear the history; neither action deletes files or changes open tabs. History stays on your device, separately from session recovery. Untitled documents enter the list only after they are saved.
 
 An unsaved change shows a dirty indicator on that document's tab and an asterisk in the window title. **Save** writes the active document, while **Save As** writes it to a new location. **Save All** writes every dirty document in tab order without closing MDedit. **Save All & Quit** in the close-application prompt performs the same ordered saves, then closes the application. Both commands ask for a destination for each untitled document and stop if a save is canceled or fails, leaving the remaining documents open and unchanged.

@@ -30,7 +30,10 @@
       for (const el of root.querySelectorAll('img[src],a[href]')) {
         const image = el.tagName === 'IMG', attr = image?'src':'href', reference=el.getAttribute(attr);
         if (!relative(reference)) continue;
-        if (!image && !forExport) { el.dataset.localReference=reference; continue; }
+        if (!image && !forExport) {
+          if (!win.MDEdit.isLocalMarkdownLink(reference)) el.dataset.localReference=reference;
+          continue;
+        }
         try {
           const asset=await dataUrl(path,reference,forExport); if (!isCurrent()) return;
           if (image && !asset.mime.startsWith('image/')) throw new Error('This file is not a supported image');
@@ -99,6 +102,7 @@
     },true);
     document.getElementById('preview').addEventListener('click',async event=>{
       const anchor=event.target.closest('a[data-local-reference]');if(!anchor)return;
+      if(win.MDEdit.isLocalMarkdownLink(anchor.getAttribute('href')))return;
       event.preventDefault();const model=controller.activeDocument();if(!model?.path)return;
       try {
         const asset=await dataUrl(model.path,anchor.dataset.localReference);

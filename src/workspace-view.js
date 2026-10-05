@@ -38,6 +38,12 @@
     return { statusText: "", statusKind: "clean" };
   }
 
+  function documentPathLabel(document) {
+    const path = document.path;
+    if (!path) return document.displayName || "Untitled";
+    return /^(?:[/\\]|[a-z]:[/\\])/i.test(path) ? path : (document.canonicalPath || path);
+  }
+
   function tabDescriptor(document, { activeId = null, index = 0, size = 1 } = {}) {
     if (!document || typeof document !== "object") throw new TypeError("document is required");
     const documentId = String(document.id);
@@ -48,6 +54,7 @@
     return {
       documentId,
       displayName,
+      tooltip: documentPathLabel(document),
       selected: documentId === activeId,
       position: normalizedInteger(index) + 1,
       setSize: Math.max(1, normalizedInteger(size, 1)),
@@ -62,9 +69,7 @@
 
   function windowTitle(document) {
     if (!document || typeof document !== "object") return "MDedit";
-    const displayName = typeof document.displayName === "string" && document.displayName
-      ? document.displayName : "Untitled";
-    return `${displayName}${document.dirty ? " *" : ""} — MDedit`;
+    return `${documentPathLabel(document)}${document.dirty ? " *" : ""} - MDedit`;
   }
 
   function captureEditorState(editor) {
@@ -296,6 +301,7 @@
         const metadataUnchanged = descriptors.every(({ document, descriptor }) => {
           const record = this._tabs.get(descriptor.documentId);
           return record.displayName === descriptor.displayName
+            && record.tooltip === descriptor.tooltip
             && record.fileStatus === (document.fileStatus || "normal")
             && record.baseStatusText === descriptor.statusText
             && record.dirty === Boolean(document.dirty)
@@ -315,6 +321,8 @@
           descriptors.forEach(({ document, descriptor }) => {
             const record = this._tabs.get(descriptor.documentId);
             record.displayName = descriptor.displayName;
+            record.tooltip = descriptor.tooltip;
+            record.tab.setAttribute("title", descriptor.tooltip);
             record.fileStatus = document.fileStatus || "normal";
             record.baseStatusText = descriptor.statusText;
             record.dirty = Boolean(document.dirty);
@@ -381,6 +389,7 @@
         tab.setAttribute("aria-setsize", String(descriptor.setSize));
         tab.setAttribute("tabindex", descriptor.selected ? "0" : "-1");
         tab.setAttribute("draggable", "true");
+        tab.setAttribute("title", descriptor.tooltip);
 
         const name = this.document.createElement("span");
         name.className = "document-tab-name";
@@ -410,6 +419,7 @@
           close,
           name,
           displayName: descriptor.displayName,
+          tooltip: descriptor.tooltip,
           fileStatus: document.fileStatus || "normal",
           baseStatusText: descriptor.statusText,
           dirty: Boolean(document.dirty),

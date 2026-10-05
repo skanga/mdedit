@@ -94,6 +94,7 @@
   .comparison-columns textarea { display:block;width:100%;height:45vh;margin-top:6px;box-sizing:border-box;resize:vertical;background:var(--bg);color:var(--text);border:1px solid var(--border);padding:10px;font:12px/1.6 monospace; }
   .comparison-actions { display:flex;justify-content:flex-end;gap:8px; }
   .asset-unavailable { outline:1px dashed var(--text-soft); }
+  #preview a[aria-disabled="true"] { color:inherit; cursor:default; text-decoration:none; }
 
   /* ── Top bar ─────────────────────────────────── */
   header {
@@ -9717,6 +9718,12 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     return { statusText: "", statusKind: "clean" };
   }
 
+  function documentPathLabel(document) {
+    const path = document.path;
+    if (!path) return document.displayName || "Untitled";
+    return /^(?:[/\\]|[a-z]:[/\\])/i.test(path) ? path : (document.canonicalPath || path);
+  }
+
   function tabDescriptor(document, { activeId = null, index = 0, size = 1 } = {}) {
     if (!document || typeof document !== "object") throw new TypeError("document is required");
     const documentId = String(document.id);
@@ -9727,6 +9734,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     return {
       documentId,
       displayName,
+      tooltip: documentPathLabel(document),
       selected: documentId === activeId,
       position: normalizedInteger(index) + 1,
       setSize: Math.max(1, normalizedInteger(size, 1)),
@@ -9741,9 +9749,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
   function windowTitle(document) {
     if (!document || typeof document !== "object") return "MDedit";
-    const displayName = typeof document.displayName === "string" && document.displayName
-      ? document.displayName : "Untitled";
-    return `${displayName}${document.dirty ? " *" : ""} — MDedit`;
+    return `${documentPathLabel(document)}${document.dirty ? " *" : ""} - MDedit`;
   }
 
   function captureEditorState(editor) {
@@ -9975,6 +9981,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         const metadataUnchanged = descriptors.every(({ document, descriptor }) => {
           const record = this._tabs.get(descriptor.documentId);
           return record.displayName === descriptor.displayName
+            && record.tooltip === descriptor.tooltip
             && record.fileStatus === (document.fileStatus || "normal")
             && record.baseStatusText === descriptor.statusText
             && record.dirty === Boolean(document.dirty)
@@ -9994,6 +10001,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
           descriptors.forEach(({ document, descriptor }) => {
             const record = this._tabs.get(descriptor.documentId);
             record.displayName = descriptor.displayName;
+            record.tooltip = descriptor.tooltip;
+            record.tab.setAttribute("title", descriptor.tooltip);
             record.fileStatus = document.fileStatus || "normal";
             record.baseStatusText = descriptor.statusText;
             record.dirty = Boolean(document.dirty);
@@ -10060,6 +10069,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         tab.setAttribute("aria-setsize", String(descriptor.setSize));
         tab.setAttribute("tabindex", descriptor.selected ? "0" : "-1");
         tab.setAttribute("draggable", "true");
+        tab.setAttribute("title", descriptor.tooltip);
 
         const name = this.document.createElement("span");
         name.className = "document-tab-name";
@@ -10089,6 +10099,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
           close,
           name,
           displayName: descriptor.displayName,
+          tooltip: descriptor.tooltip,
           fileStatus: document.fileStatus || "normal",
           baseStatusText: descriptor.statusText,
           dirty: Boolean(document.dirty),
@@ -10758,6 +10769,9 @@ function makeNativeApp(tauri) {
     readDocumentAsset(documentPath, reference) {
       return tauri.core.invoke("read_document_asset", { documentPath, reference });
     },
+    resolveMarkdownLink(documentPath, reference) {
+      return tauri.core.invoke("resolve_markdown_link", { documentPath, reference });
+    },
     probeDocument(path, expectedSha256) {
       return tauri.core.invoke("probe_document", { path, expectedSha256 });
     },
@@ -11418,7 +11432,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       for (const el of root.querySelectorAll('img[src],a[href]')) {
         const image = el.tagName === 'IMG', attr = image?'src':'href', reference=el.getAttribute(attr);
         if (!relative(reference)) continue;
-        if (!image && !forExport) { el.dataset.localReference=reference; continue; }
+        if (!image && !forExport) {
+          if (!win.MDEdit.isLocalMarkdownLink(reference)) el.dataset.localReference=reference;
+          continue;
+        }
         try {
           const asset=await dataUrl(path,reference,forExport); if (!isCurrent()) return;
           if (image && !asset.mime.startsWith('image/')) throw new Error('This file is not a supported image');
@@ -11487,6 +11504,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     },true);
     document.getElementById('preview').addEventListener('click',async event=>{
       const anchor=event.target.closest('a[data-local-reference]');if(!anchor)return;
+      if(win.MDEdit.isLocalMarkdownLink(anchor.getAttribute('href')))return;
       event.preventDefault();const model=controller.activeDocument();if(!model?.path)return;
       try {
         const asset=await dataUrl(model.path,anchor.dataset.localReference);
@@ -11508,6 +11526,77 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     return {hydrate,importFiles,clearCache(){cache.clear();cacheBytes=0;}};
   }
   return {createDesktopAssets};
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+
+  function isLocalMarkdownLink(reference) {
+    if (!reference || reference.startsWith('#') || reference.startsWith('//')) return false;
+    if (/^[a-z][a-z\d+.-]*:/i.test(reference) && !/^[a-z]:[/\\]/i.test(reference)) return false;
+    try { return /\.(md|markdown|mdown|mkd)$/i.test(decodeURIComponent(reference.split(/[?#]/)[0])); }
+    catch (_) { return /\.(md|markdown|mdown|mkd)$/i.test(reference.split(/[?#]/)[0]); }
+  }
+
+  function createMarkdownLinks({ preview, nativeApp, controller, setStatus }) {
+    const links = new WeakMap();
+
+    function disable(anchor) {
+      anchor.setAttribute('aria-disabled', 'true');
+      anchor.setAttribute('tabindex', '-1');
+      anchor.title = 'Markdown file could not be resolved';
+    }
+
+    async function hydrate(root, documentPath, isCurrent) {
+      // Disable all candidates synchronously, before the first filesystem call.
+      const candidates = [...root.querySelectorAll('a[href]')].filter(anchor => isLocalMarkdownLink(anchor.getAttribute('href')));
+      for (const anchor of candidates) {
+        disable(anchor);
+        links.delete(anchor);
+        anchor.removeAttribute('target');
+      }
+      if (!nativeApp) return;
+      for (const anchor of candidates) {
+        if (!isCurrent()) return;
+        const reference = anchor.getAttribute('href');
+        try {
+          const path = await nativeApp.resolveMarkdownLink(documentPath || '', reference);
+          if (!isCurrent()) return;
+          if (!path) continue;
+          links.set(anchor, { documentPath, reference, isCurrent });
+          anchor.setAttribute('aria-disabled', 'false');
+          anchor.removeAttribute('tabindex');
+          anchor.title = path;
+        } catch (_) { /* Missing or inaccessible targets remain inactive. */ }
+      }
+    }
+
+    preview.addEventListener('click', async event => {
+      const anchor = event.target.closest('a[href]');
+      if (!anchor || !isLocalMarkdownLink(anchor.getAttribute('href'))) return;
+      event.preventDefault();
+      const link = links.get(anchor);
+      if (!link || !link.isCurrent()) return;
+      try {
+        // A target may have disappeared since the preview was rendered.
+        const path = await nativeApp.resolveMarkdownLink(link.documentPath || '', link.reference);
+        if (!link.isCurrent() || !preview.contains(anchor)) return;
+        if (!path) { links.delete(anchor); disable(anchor); return; }
+        await controller.openPaths([path]);
+      } catch (error) { setStatus(error.message || String(error)); }
+    });
+    preview.addEventListener('auxclick', event => {
+      const anchor = event.target.closest('a[href]');
+      if (anchor && isLocalMarkdownLink(anchor.getAttribute('href'))) event.preventDefault();
+    });
+    return { hydrate };
+  }
+
+  return { isLocalMarkdownLink, createMarkdownLinks };
 });
 </script>
 <script>(function(root, factory) {
@@ -11691,6 +11780,14 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   const HAS_DIAGRAMS = typeof mermaid !== "undefined";
 
   marked.use({ gfm: true, breaks: false });
+  DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
+    if (node.tagName === "A" && data.attrName === "href"
+      && /^[a-z]:[/\\]/i.test(data.attrValue) && MDEdit.isLocalMarkdownLink(data.attrValue)) {
+      // Encode the drive colon so it is a safe relative URI, not an unknown
+      // scheme. The native resolver decodes it back to the absolute path.
+      data.attrValue = data.attrValue.replace(":", "%3A");
+    }
+  });
   DOMPurify.addHook("afterSanitizeAttributes", (node) => {
     if (node.tagName === "A") {
       // in-document jumps (footnotes) must stay in this page
@@ -12057,6 +12154,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
     rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
+    const links = interactive && markdownLinks ? markdownLinks.hydrate(rootElement, documentPath, isCurrent) : Promise.resolve();
     if (HAS_MATH) injectMath(math, rootElement);
     transformCallouts(rootElement);
     const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive);
@@ -12070,7 +12168,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       buildToc(rootElement);
       updateStats(content);
     }
-    return Promise.resolve(diagrams).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive));
+    return Promise.all([diagrams, links]).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive));
   }
 
   async function renderForExport(capture) {
@@ -12581,7 +12679,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
      Everything goes through execCommand("insertText") rather than setRangeText:
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
-  let desktopAssets = null, desktopWorkspace = null;
+  let desktopAssets = null, desktopWorkspace = null, markdownLinks = null;
   let editorEnhancements = null;
   const indentText = () => " ".repeat(editorEnhancements ? editorEnhancements.tabWidth() : 2);
   function keyboardEvent(event) {
@@ -13397,6 +13495,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   workspaceView.setPreview = (html, capture) => {
     previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
     preview.innerHTML = html;
+    const owner = previewOwner;
+    markdownLinks?.hydrate(preview, capture.path, () => previewOwner === owner
+      && controller.activeDocument()?.id === capture.documentId
+      && controller.activeDocument()?.path === capture.path
+      && controller.activeDocument()?.editRevision === capture.editRevision);
     wireCachedPreviewTools();
     buildToc();
     updateStats(capture.content);
@@ -13503,6 +13606,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   MDEdit.installFormattingToolbar({ document, format: editorEnhancements.format });
 
   desktopAssets = MDEdit.createDesktopAssets({ document, nativeApp, controller, activeEditor, replaceRange, onChange: afterEdit, setStatus });
+  markdownLinks = MDEdit.createMarkdownLinks({ preview, nativeApp, controller, setStatus });
   desktopWorkspace = MDEdit.installDesktopWorkspace({ document, nativeApp, controller, setStatus, onReload: () => desktopAssets?.clearCache() });
 
   async function installNativeCloseGuard() {

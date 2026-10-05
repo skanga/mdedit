@@ -51,6 +51,7 @@ LIBS = {
     "/*__EDITOR_ENHANCEMENTS__*/": "src/editor-enhancements.js",
     "/*__FORMATTING_TOOLBAR__*/": "src/formatting-toolbar.js",
     "/*__DESKTOP_ASSETS__*/": "src/desktop-assets.js",
+    "/*__MARKDOWN_LINKS__*/": "src/markdown-links.js",
     "/*__DESKTOP_WORKSPACE__*/": "src/desktop-workspace.js",
 }
 HEAVY = {"/*__KATEX__*/", "/*__MERMAID__*/"}

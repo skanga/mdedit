@@ -382,6 +382,7 @@ test("tabDescriptor exposes stable tab semantics and document status", () => {
   assert.deepEqual(dirty, {
     documentId: "a/b",
     displayName: "Draft <one>",
+    tooltip: "Draft <one>",
     selected: true,
     position: 1,
     setSize: 3,
@@ -481,9 +482,35 @@ test("dragging a tab delegates a reorder without activating it", () => {
 });
 
 test("windowTitle identifies the active document and dirty state", () => {
-  assert.equal(windowTitle(doc("one", { displayName: "notes.md" })), "notes.md — MDedit");
-  assert.equal(windowTitle(doc("one", { displayName: "notes.md", dirty: true })), "notes.md * — MDedit");
+  assert.equal(windowTitle(doc("one", { displayName: "notes.md" })), "notes.md - MDedit");
+  assert.equal(windowTitle(doc("one", { displayName: "notes.md", dirty: true })), "notes.md * - MDedit");
   assert.equal(windowTitle(null), "MDedit");
+});
+
+test("saved documents expose full paths in titles and tooltips after path-only changes", () => {
+  const { elements, view } = makeFixture();
+  const first = doc("one", { displayName: "README.md", path: "/first/README.md" });
+  const second = doc("two", { displayName: "README.md", path: "C:\\second\\README.md", dirty: true });
+  view.renderTabs([first, second], first.id);
+  const tabs = elements.tabList.children.map(shell => find(shell, el => el.getAttribute("role") === "tab"));
+  assert.equal(tabs[0].getAttribute("title"), "/first/README.md");
+  assert.equal(tabs[1].getAttribute("title"), "C:\\second\\README.md");
+  assert.equal(windowTitle(first), "/first/README.md - MDedit");
+  assert.equal(windowTitle(second), "C:\\second\\README.md * - MDedit");
+  first.path = "/moved/README.md";
+  view.renderTabs([first, second], first.id);
+  assert.equal(tabs[0].getAttribute("title"), "/moved/README.md");
+  assert.equal(windowTitle(first), "/moved/README.md - MDedit");
+});
+
+test("path labels keep long paths intact and expand relative native-open paths", () => {
+  const longPath = '/projects/' + 'nested-folder/'.repeat(40) + 'README.md';
+  const named = doc('long', { displayName: 'README.md', path: longPath });
+  assert.equal(tabDescriptor(named).tooltip, longPath);
+  assert.equal(windowTitle(named), longPath + ' - MDedit');
+  const relative = doc('relative', { displayName: 'README.md', path: 'README.md', canonicalPath: '/project/README.md' });
+  assert.equal(tabDescriptor(relative).tooltip, '/project/README.md');
+  assert.equal(windowTitle(relative), '/project/README.md - MDedit');
 });
 
 test("editors stay independently mounted while activation only changes visibility", () => {

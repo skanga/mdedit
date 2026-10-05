@@ -664,17 +664,17 @@ test("window title follows active document, dirty state, and save", async ({ pag
     },
   });
   await openEditor(page);
-  await expect(page).toHaveTitle("Untitled 1 — MDedit");
+  await expect(page).toHaveTitle("Untitled 1 - MDedit");
   await page.getByRole("button", { name: "Open", exact: true }).click();
-  await expect(page).toHaveTitle("two.md — MDedit");
+  await expect(page).toHaveTitle("/notes/two.md - MDedit");
   await activeEditor(page).fill("two edited");
-  await expect(page).toHaveTitle("two.md * — MDedit");
+  await expect(page).toHaveTitle("/notes/two.md * - MDedit");
   await page.getByRole("tab", { name: /one\.md/ }).click();
-  await expect(page).toHaveTitle("one.md — MDedit");
+  await expect(page).toHaveTitle("/notes/one.md - MDedit");
   await page.getByRole("tab", { name: /two\.md/ }).click();
   await page.locator("#btn-save").click();
-  await expect(page).toHaveTitle("two.md — MDedit");
-  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.titles.at(-1))).toBe("two.md — MDedit");
+  await expect(page).toHaveTitle("/notes/two.md - MDedit");
+  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.titles.at(-1))).toBe("/notes/two.md - MDedit");
 });
 
 test("native title writes serialize so a delayed old title cannot finish last", async ({ page }) => {
@@ -682,13 +682,136 @@ test("native title writes serialize so a delayed old title cannot finish last", 
   await openEditor(page);
   await activeEditor(page).fill("dirty first");
   await page.getByRole("button", { name: "New document" }).click();
-  await expect(page).toHaveTitle("Untitled 2 — MDedit");
+  await expect(page).toHaveTitle("Untitled 2 - MDedit");
 
   await page.evaluate(() => window.__testBridge.releaseFirstTitle());
 
-  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.nativeTitle)).toBe("Untitled 2 — MDedit");
-  expect(await page.evaluate(() => window.__testBridge.calls.titleRequests.at(0))).toBe("Untitled 1 — MDedit");
-  expect(await page.evaluate(() => window.__testBridge.calls.titles.at(-1))).toBe("Untitled 2 — MDedit");
+  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.nativeTitle)).toBe("Untitled 2 - MDedit");
+  expect(await page.evaluate(() => window.__testBridge.calls.titleRequests.at(0))).toBe("Untitled 1 - MDedit");
+  expect(await page.evaluate(() => window.__testBridge.calls.titles.at(-1))).toBe("Untitled 2 - MDedit");
+});
+
+test('Markdown links open resolved files in tabs and preserve existing edits', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/project/README.md'],
+    documents: {
+      '/project/README.md': { content: '[Guide](docs/My%20Guide.MD#intro)\n\n[Missing](missing.md)\n\n[External](https://example.com/README.md)' },
+      '/project/docs/My Guide.MD': { content: '# Intro\n\nGuide text' },
+    },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  const source = page.getByRole('tab', { name: /README.md/ });
+  await expect(source).toHaveAttribute('title', '/project/README.md');
+  const guide = page.locator('#preview a', { hasText: 'Guide' });
+  await expect(guide).toHaveAttribute('aria-disabled', 'false');
+  await expect(page.locator('#preview a', { hasText: 'Missing' })).toHaveAttribute('aria-disabled', 'true');
+  await expect(page.locator('#preview a', { hasText: 'External' })).toHaveAttribute('href', 'https://example.com/README.md');
+  await guide.click();
+  await expect(activeEditor(page)).toHaveValue('# Intro\n\nGuide text');
+  await expect(page).toHaveTitle('/project/docs/My Guide.MD - MDedit');
+  const count = await page.getByRole('tab').count();
+  await setEditorContent(page, 'unsaved guide');
+  await source.click();
+  // Tab activation restores workspace focus and cached HTML on the next frame.
+  await page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+  await expect(guide).toHaveAttribute('aria-disabled', 'false');
+  await guide.focus();
+  await expect(guide).toBeFocused();
+  await page.keyboard.press('Enter');
+  await expect(activeEditor(page)).toHaveValue('unsaved guide');
+  await expect(page.getByRole('tab')).toHaveCount(count);
+  await source.click();
+  await page.locator('#preview a', { hasText: 'Missing' }).evaluate(a => a.click());
+  await expect(source).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByRole('tab')).toHaveCount(count);
+  expect(await page.evaluate(() => window.__testBridge.calls.invokes.filter(c => c.command === 'read_document_asset'))).toEqual([]);
+});
+
+test('same-name Save As updates tooltip, title and relative Markdown link resolution', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/old/README.md'], savePath: '/new/README.md',
+    documents: {
+      '/old/README.md': { content: '[Next](next.md)' },
+      '/old/next.md': { content: 'old next' },
+      '/new/next.md': { content: 'new next' },
+    },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('#preview a')).toHaveAttribute('aria-disabled', 'false');
+  await page.evaluate(() => {
+    const c = window.__MDEDIT_TEST_HOOK__.controller;
+    return c.saveAs(c.activeDocument().id);
+  });
+  await expect(page.getByRole('tab', { name: /README.md/ })).toHaveAttribute('title', '/new/README.md');
+  await expect(page).toHaveTitle('/new/README.md - MDedit');
+  await expect(page.locator('#preview a')).toHaveAttribute('title', '/new/next.md');
+  await page.locator('#preview a').click();
+  await expect(activeEditor(page)).toHaveValue('new next');
+});
+
+test('Markdown links are inactive without a saved source and late resolution cannot switch tabs', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/source.md'], linkDelayMs: 250,
+    documents: { '/source.md': { content: '[Next](next.md)' }, '/next.md': { content: 'next' } },
+  });
+  await openEditor(page);
+  await setEditorContent(page, '[Next](next.md)');
+  await expect(page.locator('#preview a')).toHaveAttribute('aria-disabled', 'true');
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  await expect(page.locator('#preview a')).toHaveAttribute('aria-disabled', 'false');
+  await page.locator('#preview a').click();
+  await page.getByRole('tab', { name: /Untitled 1/ }).click();
+  await expect.poll(() => page.evaluate(() => window.__testBridge.calls.invokes.filter(c => c.command === 'resolve_markdown_link').length)).toBeGreaterThanOrEqual(2);
+  await page.waitForTimeout(400);
+  await expect(page.getByRole('tab', { name: /Untitled 1/ })).toHaveAttribute('aria-selected', 'true');
+  expect(await page.evaluate(() => window.__testBridge.calls.invokes.some(c => c.command === 'read_document' && c.args.path === '/next.md'))).toBe(false);
+});
+
+test('a deleted Markdown target is disabled on click without creating a tab', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/source.md'],
+    documents: { '/source.md': { content: '[Next](next.md)' }, '/next.md': { content: 'next' } },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  const link = page.locator('#preview a');
+  await expect(link).toHaveAttribute('aria-disabled', 'false');
+  const count = await page.getByRole('tab').count();
+  await page.evaluate(() => { delete window.__testBridge.documents['/next.md']; });
+  await link.click();
+  await expect(link).toHaveAttribute('aria-disabled', 'true');
+  await expect(page.getByRole('tab')).toHaveCount(count);
+  await expect(page).toHaveTitle('/source.md - MDedit');
+});
+
+test('browser-only Markdown links cannot navigate away from the editor', async ({ page }) => {
+  await page.goto('/');
+  await setEditorContent(page, '[Next](next.md)');
+  const link = page.locator('#preview a');
+  await expect(link).toHaveAttribute('aria-disabled', 'true');
+  await link.evaluate(a => a.click());
+  await expect(page).toHaveURL('http://127.0.0.1:4173/');
+  await expect(activeEditor(page)).toHaveValue('[Next](next.md)');
+});
+
+test('Windows absolute Markdown links survive sanitization without enabling unsafe schemes', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/source.md'],
+    documents: {
+      '/source.md': { content: '[Windows guide](C:/notes/guide.md)\n\n[Unsafe](javascript:alert%281%29)' },
+      'C:/notes/guide.md': { content: 'Windows guide content' },
+    },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  const guide = page.locator('#preview a', { hasText: 'Windows guide' });
+  await expect(guide).toHaveAttribute('aria-disabled', 'false');
+  await expect(page.locator('#preview a', { hasText: 'Unsafe' })).not.toHaveAttribute('href');
+  await guide.click();
+  await expect(activeEditor(page)).toHaveValue('Windows guide content');
+  await expect(page).toHaveTitle('C:/notes/guide.md - MDedit');
 });
 
 test("status announcements identify their document", async ({ page }) => {

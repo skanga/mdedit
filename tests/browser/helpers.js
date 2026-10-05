@@ -52,6 +52,14 @@ async function installFakeTauri(page, options = {}) {
         invoke: async (command, args = {}) => {
           calls.invokes.push({ command, args });
           if (command === "canonicalize_document_path") return documents[args.path]?.canonicalPath || args.path;
+          if (command === "resolve_markdown_link") {
+            if (configuration.linkDelayMs) await new Promise(resolve => setTimeout(resolve, configuration.linkDelayMs));
+            const decoded = decodeURIComponent(args.reference.split(/[?#]/)[0]);
+            const path = /^[a-z]:[/\\]/i.test(decoded) ? decoded
+              : decodeURIComponent(new URL(args.reference, 'file://' + (args.documentPath || '/')).pathname);
+            const entry = documents[path];
+            return entry && !entry.error && !entry.missing ? path : null;
+          }
           if (command === "probe_document") {
             const entry = documents[args.path];
             if (!entry || entry.missing) return { status: "missing" };
