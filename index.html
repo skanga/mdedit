@@ -13178,7 +13178,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (!surface) return;
     if (matchIdx < 0 || !matches.length) return;
     const { start, end } = matches[matchIdx];
-    surface.focus();
+    // Selecting a match must not steal subsequent typing from the find bar.
     surface.setSelectionRange(start, end);
     // approximate, but enough to bring a match on screen in a wrapped textarea
     const line = surface.value.slice(0, start).split("\n").length - 1;
@@ -13202,10 +13202,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     runFind(true);
     if (matchIdx < 0 || !matches.length) return;
     const { start, end } = matches[matchIdx];
+    const focused = document.activeElement;
     replaceRange(surface, start, end, MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex));
     afterEdit();
     runFind(true);
     revealMatch();
+    if (findBar.contains(focused)) focused.focus();
   }
   function replaceAll() {
     const surface = activeEditor();

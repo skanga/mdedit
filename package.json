@@ -6,7 +6,7 @@
     "build:desktop": "./tools/build-desktop.sh",
     "tauri": "tauri",
     "test": "node --test",
-    "test:browser": "playwright test tests/browser/tabs.spec.js",
+    "test:browser": "playwright test tests/browser/tabs.spec.js tests/browser/find.spec.js",
     "test:performance": "playwright test tests/browser/performance.spec.js --workers=1"
   },
   "devDependencies": {
