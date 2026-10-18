@@ -25,14 +25,18 @@
       }
       return result;
     }
-    async function hydrate(root,path,isCurrent,forExport=false) {
+    async function hydrate(root,path,isCurrent,forExport=false,embedAttachments=forExport) {
       if (!path) return;
       for (const el of root.querySelectorAll('img[src],a[href]')) {
         const image = el.tagName === 'IMG', attr = image?'src':'href', reference=el.getAttribute(attr);
         if (!relative(reference)) continue;
-        if (!image && !forExport) {
-          if (!win.MDEdit.isLocalMarkdownLink(reference)) el.dataset.localReference=reference;
-          continue;
+        if (!image) {
+          const markdownLink = win.MDEdit.isLocalMarkdownLink(reference);
+          if (!forExport) {
+            if (!markdownLink) el.dataset.localReference=reference;
+            continue;
+          }
+          if (!embedAttachments || markdownLink) continue;
         }
         try {
           const asset=await dataUrl(path,reference,forExport); if (!isCurrent()) return;

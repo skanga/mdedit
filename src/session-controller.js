@@ -2545,11 +2545,11 @@
           (options) => this.isDocumentCaptureCurrent(capture, options),
         );
         if (this.isDocumentCaptureCurrent(capture)) {
-          const message = result && typeof result.message === "string"
-            ? result.message
-            : `Exported ${label}`;
+          const canceled = Boolean(result && result.canceled);
+          const message = canceled ? `Export canceled for ${label}`
+            : result && typeof result.message === "string" ? result.message : `Exported ${label}`;
           this._setDocumentStatus(capture.documentId, {
-            status: "exported",
+            status: canceled ? "canceled" : "exported",
             message,
             editRevision: capture.editRevision,
           });

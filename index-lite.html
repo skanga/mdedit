@@ -6073,11 +6073,11 @@ return Pe}()
           (options) => this.isDocumentCaptureCurrent(capture, options),
         );
         if (this.isDocumentCaptureCurrent(capture)) {
-          const message = result && typeof result.message === "string"
-            ? result.message
-            : `Exported ${label}`;
+          const canceled = Boolean(result && result.canceled);
+          const message = canceled ? `Export canceled for ${label}`
+            : result && typeof result.message === "string" ? result.message : `Exported ${label}`;
           this._setDocumentStatus(capture.documentId, {
-            status: "exported",
+            status: canceled ? "canceled" : "exported",
             message,
             editRevision: capture.editRevision,
           });
@@ -8608,14 +8608,18 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       }
       return result;
     }
-    async function hydrate(root,path,isCurrent,forExport=false) {
+    async function hydrate(root,path,isCurrent,forExport=false,embedAttachments=forExport) {
       if (!path) return;
       for (const el of root.querySelectorAll('img[src],a[href]')) {
         const image = el.tagName === 'IMG', attr = image?'src':'href', reference=el.getAttribute(attr);
         if (!relative(reference)) continue;
-        if (!image && !forExport) {
-          if (!win.MDEdit.isLocalMarkdownLink(reference)) el.dataset.localReference=reference;
-          continue;
+        if (!image) {
+          const markdownLink = win.MDEdit.isLocalMarkdownLink(reference);
+          if (!forExport) {
+            if (!markdownLink) el.dataset.localReference=reference;
+            continue;
+          }
+          if (!embedAttachments || markdownLink) continue;
         }
         try {
           const asset=await dataUrl(path,reference,forExport); if (!isCurrent()) return;
@@ -9246,7 +9250,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       const text = '<?xml version="1.0" encoding="UTF-8"?>\n' + new XMLSerializer().serializeToString(clone);
       if (!isCurrent()) throw new Error("the document changed before its diagram could be saved");
       const name = baseName(capture) + "-diagram-" + n + ".svg";
-      await saveBlob(new Blob([text], { type: "image/svg+xml;charset=utf-8" }), name, capture, isCurrent);
+      if (!await saveBlob(new Blob([text], { type: "image/svg+xml;charset=utf-8" }), name, capture, isCurrent)) return { canceled: true };
       return { message: "Exported " + name };
     });
     exporting.catch(() => {});
@@ -9262,7 +9266,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       if (!isCurrent()) throw new Error("the document changed before its table could be saved");
       const name = baseName(capture) + "-table-" + n + ".csv";
       // the BOM makes Excel read it as UTF-8 rather than mangling accents
-      await saveBlob(new Blob(["﻿" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" }), name, capture, isCurrent);
+      if (!await saveBlob(new Blob(["﻿" + rows.join("\r\n")], { type: "text/csv;charset=utf-8" }), name, capture, isCurrent)) return { canceled: true };
       return { message: "Exported " + name + " (" + rows.length + " rows)" };
     });
     exporting.catch(() => {});
@@ -9332,7 +9336,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null) {
+  function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null, exportFormat = null) {
     const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
     rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
     const links = interactive && markdownLinks ? markdownLinks.hydrate(rootElement, documentPath, isCurrent) : Promise.resolve();
@@ -9349,13 +9353,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       buildToc(rootElement);
       updateStats(content);
     }
-    return Promise.all([diagrams, links]).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive));
+    return Promise.all([diagrams, links]).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive, exportFormat === "html"));
   }
 
   async function renderForExport(capture) {
     const isolated = document.createElement("article");
     const owned = () => controller.isDocumentCaptureCurrent(capture);
-    await render(capture.content, owned, isolated, false, capture.path);
+    await render(capture.content, owned, isolated, false, capture.path, capture.format);
     if (!owned()) throw new Error("the document changed before its export could be rendered");
     return isolated.innerHTML;
   }
@@ -9662,12 +9666,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   async function download(capture) {
     capture = capture || captureActiveDocument("md");
     const name = capture.displayName || "untitled.md";
-    await saveBlob(new Blob([capture.content], { type: "text/markdown;charset=utf-8" }), name, capture);
+    if (!await saveBlob(new Blob([capture.content], { type: "text/markdown;charset=utf-8" }), name, capture)) return { canceled: true };
     return { message: (nativeApp ? "Saved " : "Downloaded ") + name };
   }
 
   async function downloadAsSave(capture) {
-    await download(capture);
+    const result = await download(capture);
+    if (result.canceled) return { saved: false, canceled: true, documentId: capture.documentId };
     const contentSha256 = await hashText(capture.content);
     controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
     syncActiveSurface();
@@ -9708,7 +9713,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       clone.innerHTML +
       "\n</article>\n</body>\n</html>\n";
     const name = baseName(capture) + ".html";
-    await saveBlob(new Blob([doc], { type: "text/html;charset=utf-8" }), name, capture);
+    if (!await saveBlob(new Blob([doc], { type: "text/html;charset=utf-8" }), name, capture)) return { canceled: true };
     return { message: "Exported " + name + " — self-contained, opens anywhere" };
   }
 
@@ -9766,7 +9771,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       const blob = await new Promise((res) => canvas.toBlob(res, "image/png"));
       if (!blob) throw new Error("the image could not be encoded");
       const name = baseName(capture) + ".png";
-      await saveBlob(blob, name, capture);
+      if (!await saveBlob(blob, name, capture)) return { canceled: true };
       return { message: "Exported " + name + " (" + canvas.width + "×" + canvas.height + ")" };
     } catch (e) {
       throw new Error("PNG export failed — " + (e.message || "unknown error") + ". Try Print / Save as PDF.");
@@ -9788,7 +9793,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       if (wasDark) setTheme("light", false);
       desktopAssets?.clearCache();
       await controller.renderDocument(capture.documentId, { renderWhenHidden: true, force: true });
-      if (desktopAssets) await desktopAssets.hydrate(preview, capture.path, () => controller.canPrintCapture(capture, previewOwner), true);
+      if (desktopAssets) await desktopAssets.hydrate(preview, capture.path, () => controller.canPrintCapture(capture, previewOwner), true, false);
       if (!controller.canPrintCapture(capture, previewOwner)) {
         throw new Error("PDF export canceled because the active document changed before printing");
       }
@@ -9920,8 +9925,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   // the full lines touched by the current selection
   function selectedLines(surface) {
     const v = surface.value;
-    const start = v.lastIndexOf("\n", surface.selectionStart - 1) + 1;
-    let end = v.indexOf("\n", surface.selectionEnd);
+    const from = surface.selectionStart, to = surface.selectionEnd;
+    const start = from === 0 ? 0 : v.lastIndexOf("\n", from - 1) + 1;
+    const last = to > from && v[to - 1] === "\n" ? to - 1 : to;
+    let end = v.indexOf("\n", last);
     if (end === -1) end = v.length;
     return { start, end, text: v.slice(start, end) };
   }
@@ -10384,9 +10391,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (matchIdx < 0 || !matches.length) return;
     const { start, end } = matches[matchIdx];
     const focused = document.activeElement;
-    replaceRange(surface, start, end, MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex));
+    const replacement = MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex);
+    replaceRange(surface, start, end, replacement);
     afterEdit();
-    runFind(true);
+    runFind(false);
+    const nextStart = start + replacement.length + (start === end ? 1 : 0);
+    const nextIndex = matches.findIndex(match => match.start >= nextStart);
+    if (nextIndex >= 0) matchIdx = nextIndex;
     revealMatch();
     if (findBar.contains(focused)) focused.focus();
   }

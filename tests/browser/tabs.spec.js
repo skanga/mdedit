@@ -1680,6 +1680,83 @@ test('editor essentials: Save As resolves visible images from the new document f
   await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:image\/svg\+xml/);
 });
 
+for (const key of ['Tab', 'Shift+Tab']) {
+  test(`indentation excludes the next line when selection ends at its start (${key})`, async ({ page }) => {
+    await installFakeTauri(page);
+    await openEditor(page);
+    await setEditorContent(page, '  one\n  two');
+    await activeEditor(page).evaluate(editor => editor.setSelectionRange(0, 6));
+    await activeEditor(page).press(key);
+    await expect(activeEditor(page)).toHaveValue(key === 'Tab' ? '    one\n  two' : 'one\n  two');
+  });
+}
+
+for (const format of ['png', 'pdf']) {
+  test(`${format} export ignores local hyperlinks rather than loading them as assets`, async ({ page }) => {
+    await installFakeTauri(page, {
+      openPaths: ['/notes/main.md'],
+      documents: { '/notes/main.md': { content: '# Main\n[Next](next.md)\n[Attachment](missing.zip)' } },
+      savePath: `/out/main.${format}`,
+    });
+    await openEditor(page);
+    await page.locator('#btn-open').click();
+    await expect(activeEditor(page)).toHaveValue('# Main\n[Next](next.md)\n[Attachment](missing.zip)');
+    await expect(page.locator('#preview')).toContainText('Main');
+    const result = await page.evaluate(async format => {
+      window.__printed = false;
+      window.print = () => { window.__printed = true; };
+      try { await window.__MDEDIT_TEST_HOOK__.controller.exportActive(format); return { ok: true }; }
+      catch (error) { return { error: error.message }; }
+    }, format);
+    expect(result).toEqual({ ok: true });
+    expect(await page.evaluate(() => window.__testBridge.calls.invokes.filter(call => call.command === 'read_document_asset'))).toEqual([]);
+    if (format === 'png') expect(await page.evaluate(() => window.__testBridge.calls.writes.length)).toBe(1);
+    else expect(await page.evaluate(() => window.__printed)).toBe(true);
+  });
+}
+
+test('HTML export embeds attachments but preserves Markdown navigation links', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/notes/main.md'],
+    documents: { '/notes/main.md': { content: '[Next](next.md)\n[Attachment](assets/a.zip)' } },
+    assets: { 'assets/a.zip': { bytes: [65], mime: 'application/octet-stream' } },
+    savePath: '/out/main.html',
+  });
+  await openEditor(page);
+  await page.locator('#btn-open').click();
+  await expect(activeEditor(page)).toHaveValue('[Next](next.md)\n[Attachment](assets/a.zip)');
+  await page.evaluate(() => window.__MDEDIT_TEST_HOOK__.controller.exportActive('html'));
+  const html = await page.evaluate(() => new TextDecoder().decode(new Uint8Array(window.__testBridge.calls.writes[0].data)));
+  expect(html).toContain('href="next.md"');
+  expect(html).toContain('data:application/octet-stream;base64,QQ==');
+});
+
+for (const kind of ['CSV', 'SVG']) {
+  test(`canceling ${kind} export does not report success`, async ({ page }) => {
+    await installFakeTauri(page);
+    await openEditor(page);
+    await setEditorContent(page, kind === 'CSV' ? '| A |\n| --- |\n| B |' : '```mermaid\ngraph TD\nA-->B\n```');
+    await page.locator('#preview').getByRole('button', { name: kind, exact: true }).click();
+    await expect(page.locator('#status')).toContainText('canceled');
+    await expect(page.locator('#status')).not.toContainText('Exported');
+    expect(await page.evaluate(() => window.__testBridge.calls.writes)).toEqual([]);
+  });
+}
+
+for (const format of ['html', 'png', 'md']) {
+  test(`canceling ${format} export does not report success or change dirty state`, async ({ page }) => {
+    await installFakeTauri(page);
+    await openEditor(page);
+    await setEditorContent(page, '# Unsaved');
+    const result = await page.evaluate(format => window.__MDEDIT_TEST_HOOK__.controller.exportActive(format), format);
+    expect(result.canceled).toBe(true);
+    await expect(page.locator('#status')).toContainText('canceled');
+    await expect(page.locator('#status')).not.toContainText('Exported');
+    expect(await page.evaluate(() => window.__testBridge.calls.writes)).toEqual([]);
+    expect(await page.evaluate(() => window.__MDEDIT_TEST_HOOK__.controller.activeDocument().dirty)).toBe(true);
+  });
+}
+
 test('editor essentials: PNG and PDF exports include decoded local images', async ({page}) => {
   await installFakeTauri(page,{openPaths:['/a.md'],documents:{'/a.md':{content:'![x](assets/x.png)'}},assets:{'assets/x.png':{bytes:pixelBytes,mime:'image/png'}},savePath:'/out/a.png'});
   await openEditor(page);await page.locator('#btn-open').click();await expect(page.locator('#preview img')).toHaveAttribute('src',/^data:image\/png/);

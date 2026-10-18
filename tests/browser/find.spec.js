@@ -45,6 +45,18 @@ test('replace Enter can replace consecutive matches without leaving the replacem
   await expect(page.locator('#find-count')).toHaveText('0/0');
 });
 
+for (const regex of [false, true]) {
+  test(`Replace advances past its own output (regex=${regex})`, async ({ page }) => {
+    await setupFind(page, 'cat cat');
+    if (regex) await page.locator('#find-regex').check();
+    await page.locator('#find-input').fill(regex ? '(cat)' : 'cat');
+    await page.locator('#replace-input').fill(regex ? '$1fish' : 'catfish');
+    await page.locator('#replace-input').press('Enter');
+    await page.keyboard.press('Enter');
+    await expect(activeEditor(page)).toHaveValue('catfish catfish');
+  });
+}
+
 test('find options, invalid regex, capture replacement, replace all and undo', async ({ page }) => {
   await setupFind(page, 'Cat cat scatter cat12');
   await page.locator('#find-input').fill('cat');
