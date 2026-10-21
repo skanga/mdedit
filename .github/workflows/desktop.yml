@@ -53,7 +53,9 @@ jobs:
         run: cargo install tauri-driver --locked
       - name: Smoke-test real Linux release WebView
         if: runner.os == 'Linux'
-        run: xvfb-run -a python3 tools/smoke-desktop.py src-tauri/target/release/mdedit
+        run: |
+          python3 tools/test_smoke_desktop.py
+          xvfb-run -a python3 tools/smoke-desktop.py src-tauri/target/release/mdedit
       - name: Stage portable Windows executable
         if: runner.os == 'Windows'
         shell: pwsh

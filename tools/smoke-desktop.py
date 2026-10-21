@@ -38,6 +38,30 @@ def wait_until(check, timeout=20):
     raise RuntimeError(f"Timed out waiting for desktop smoke condition: {last_error}")
 
 
+def collect_diagnostics(script):
+    try:
+        return script("""
+            return {
+              url: location.href,
+              visibility: document.visibilityState,
+              focused: document.hasFocus(),
+              editors: [...document.querySelectorAll('textarea')].map(editor => ({
+                value: editor.value.slice(0, 500), length: editor.value.length,
+                connected: editor.isConnected, hidden: !editor.getClientRects().length,
+                surface: editor.closest('.editor-surface')?.className
+              })),
+              activeTab: document.querySelector('[role=tab][aria-selected=true]')?.outerHTML,
+              mode: document.querySelector('[data-mode].active')?.dataset.mode,
+              preview: document.querySelector('#preview')?.innerHTML.slice(0, 2000),
+              status: document.querySelector('#status')?.textContent,
+              events: window.__smokeDiagnostics || [],
+              eventTypes: ['error', 'unhandledrejection', 'securitypolicyviolation', 'worker-error']
+            };
+        """)
+    except Exception as error:
+        return {"diagnosticsError": str(error)}
+
+
 def smoke(application, port):
     base = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryDirectory(prefix="mdedit-smoke-") as directory:
@@ -45,6 +69,7 @@ def smoke(application, port):
         env = {**os.environ, "XDG_DATA_HOME": str(root / "data"),
                "XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache")}
         session = None
+        script = None
         with (root / "driver.log").open("w+") as log:
             driver = subprocess.Popen(["tauri-driver", "--port", str(port)], env=env,
                                       stdout=log, stderr=subprocess.STDOUT)
@@ -71,6 +96,28 @@ def smoke(application, port):
                         raise RuntimeError(result["failure"])
                     return result.get("value")
 
+                script("""
+                    window.__smokeDiagnostics = [];
+                    const record = (type, detail) => {
+                      window.__smokeDiagnostics.push({type, detail: String(detail).slice(0, 1000)});
+                      if (window.__smokeDiagnostics.length > 40) window.__smokeDiagnostics.shift();
+                    };
+                    window.addEventListener('error', event => record('error', event.message), true);
+                    window.addEventListener('unhandledrejection', event => record('unhandledrejection', event.reason));
+                    document.addEventListener('securitypolicyviolation', event =>
+                      record('securitypolicyviolation', event.effectiveDirective + ': ' + event.blockedURI));
+                    window.Worker = new Proxy(window.Worker, {
+                      construct(target, args) {
+                        const worker = Reflect.construct(target, args);
+                        record('worker-start', args[0]);
+                        worker.addEventListener('error', event => record('worker-error', event.message));
+                        worker.addEventListener('message', event => {
+                          if (event.data?.error) record('worker-response-error', event.data.error);
+                        });
+                        return worker;
+                      }
+                    });
+                """)
                 wait_until(lambda: script("return !!document.querySelector('[role=tab][aria-selected=true]') && !!document.querySelector('#preview h1')"))
                 script("hljs.highlight=()=>{throw new Error('UI highlighting forbidden');};"
                        "const editor=document.querySelector('.editor-surface:not(.is-inactive) textarea');"
@@ -140,6 +187,8 @@ def smoke(application, port):
                     raise RuntimeError("Packaged CSP allowed an injected inline script")
                 print("Desktop smoke passed: real WebView, Markdown/highlighting/search/snapshot encoding and parsing workers, native read/save/conflict, large recovery, CSP")
             except Exception:
+                if script:
+                    print("Desktop smoke diagnostics: " + json.dumps(collect_diagnostics(script), indent=2), flush=True)
                 log.flush()
                 log.seek(0)
                 print(log.read())
