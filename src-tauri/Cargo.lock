@@ -2002,7 +2002,7 @@ dependencies = [
 
 [[package]]
 name = "mdedit"
-version = "0.3.14"
+version = "0.3.15"
 dependencies = [
  "rustix",
  "serde",
