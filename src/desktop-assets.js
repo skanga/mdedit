@@ -33,7 +33,7 @@
         if (!image) {
           const markdownLink = win.MDEdit.isLocalMarkdownLink(reference);
           if (!forExport) {
-            if (!markdownLink) el.dataset.localReference=reference;
+            if (!markdownLink && !win.MDEdit.isBrowserLink(reference)) el.dataset.localReference=reference;
             continue;
           }
           if (!embedAttachments || markdownLink) continue;
@@ -106,7 +106,7 @@
     },true);
     document.getElementById('preview').addEventListener('click',async event=>{
       const anchor=event.target.closest('a[data-local-reference]');if(!anchor)return;
-      if(win.MDEdit.isLocalMarkdownLink(anchor.getAttribute('href')))return;
+      if(win.MDEdit.isLocalMarkdownLink(anchor.getAttribute('href')) || win.MDEdit.isBrowserLink(anchor.getAttribute('href')))return;
       event.preventDefault();const model=controller.activeDocument();if(!model?.path)return;
       try {
         const asset=await dataUrl(model.path,anchor.dataset.localReference);

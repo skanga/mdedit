@@ -80,8 +80,18 @@ def smoke(application, port):
     base = f"http://127.0.0.1:{port}"
     with tempfile.TemporaryDirectory(prefix="mdedit-smoke-") as directory:
         root = Path(directory)
+        # Exercise the packaged OS-launch command without opening a real browser
+        # on the headless runner. The stub records its single URL argument.
+        browser_bin = root / "bin"
+        browser_bin.mkdir()
+        browser_log = root / "browser.log"
+        opener = browser_bin / "xdg-open"
+        opener.write_text('#!/bin/sh\nprintf "%s\\n" "$1" >> "$MDEDIT_SMOKE_BROWSER_LOG"\n', encoding="utf-8")
+        opener.chmod(0o755)
         env = {**os.environ, "XDG_DATA_HOME": str(root / "data"),
-               "XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache")}
+               "XDG_CONFIG_HOME": str(root / "config"), "XDG_CACHE_HOME": str(root / "cache"),
+               "PATH": str(browser_bin) + os.pathsep + os.environ.get("PATH", ""),
+               "MDEDIT_SMOKE_BROWSER_LOG": str(browser_log)}
         session = None
         script = None
         with (root / "driver.log").open("w+") as log:
@@ -158,6 +168,18 @@ def smoke(application, port):
                                                        "expectedSha256": opened["sha256"]})
                 if conflict["status"] != "conflict" or note.read_text(encoding="utf-8") != "updated":
                     raise RuntimeError("Native conflict protection failed")
+                html = root / "browser page.html"
+                html.write_text("<h1>External page</h1>", encoding="utf-8")
+                invoke("open_browser_link", {"documentPath": str(note), "reference": "browser%20page.html?q=1#intro"})
+                invoke("open_browser_link", {"documentPath": "", "reference": "https://example.com/page"})
+                if browser_log.read_text(encoding="utf-8").splitlines() != [html.as_uri() + "?q=1#intro", "https://example.com/page"]:
+                    raise RuntimeError("Default-browser launcher received incorrect targets")
+                try:
+                    invoke("open_browser_link", {"documentPath": str(note), "reference": "javascript:alert(1)"})
+                except RuntimeError:
+                    pass
+                else:
+                    raise RuntimeError("Default-browser launcher accepted an unsafe scheme")
                 script("document.querySelector('[data-mode=edit]').click();"
                        "const stringify=JSON.stringify;"
                        "JSON.stringify=function(value,...args){"
@@ -195,7 +217,7 @@ def smoke(application, port):
                        "script.textContent='window.__smokeInjection=true';document.body.append(script);")
                 if script("return window.__smokeInjection===true"):
                     raise RuntimeError("Packaged CSP allowed an injected inline script")
-                print("Desktop smoke passed: real WebView, Markdown/highlighting/search/snapshot encoding and parsing workers, native read/save/conflict, large recovery, CSP")
+                print("Desktop smoke passed: real WebView, Markdown/highlighting/search/snapshot encoding and parsing workers, native read/save/conflict, large recovery, browser launcher (stubbed OS opener), CSP")
             except Exception:
                 if script:
                     print("Desktop smoke diagnostics: " + json.dumps(collect_diagnostics(script), indent=2), flush=True)

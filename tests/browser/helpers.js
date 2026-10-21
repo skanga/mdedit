@@ -51,6 +51,10 @@ async function installFakeTauri(page, options = {}) {
       core: {
         invoke: async (command, args = {}) => {
           calls.invokes.push({ command, args });
+          if (command === "open_browser_link") {
+            if (configuration.browserLinkError) throw new Error(configuration.browserLinkError);
+            return;
+          }
           if (command === "canonicalize_document_path") return documents[args.path]?.canonicalPath || args.path;
           if (command === "resolve_markdown_link") {
             if (configuration.linkDelayMs) await new Promise(resolve => setTimeout(resolve, configuration.linkDelayMs));

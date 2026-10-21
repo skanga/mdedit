@@ -225,6 +225,15 @@ test("recent history commands serialize and a rejected write does not block late
   ]);
 });
 
+test('browser opener forwards original references and propagates native rejection', async () => {
+  const { tauri, calls } = fakeTauri();
+  const app = makeNativeApp(tauri);
+  await app.openBrowserLink('/notes/a.md', '../site/page.html?q=1#intro');
+  assert.deepEqual(calls.invoke, [['open_browser_link', { documentPath: '/notes/a.md', reference: '../site/page.html?q=1#intro' }]]);
+  tauri.core.invoke = async () => { throw new Error('Invalid HTML target'); };
+  await assert.rejects(app.openBrowserLink('', 'relative.html'), /Invalid HTML target/);
+});
+
 test('desktop asset, probe and reveal bridge commands preserve byte arrays and paths', async () => {
   const {tauri,calls}=fakeTauri();const app=makeNativeApp(tauri);
   await app.importDocumentAsset('/a.md','pic.png',new Uint8Array([0,128,255]));

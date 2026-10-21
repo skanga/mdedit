@@ -134,7 +134,7 @@ fn import_asset(document: &Path, name: &str, bytes: &[u8]) -> Result<ImportedAss
     })
 }
 
-fn decode_uri_path(reference: &str) -> Result<String, String> {
+pub(crate) fn decode_uri_path(reference: &str) -> Result<String, String> {
     let mut decoded = Vec::new();
     let mut input = reference.bytes();
     while let Some(byte) = input.next() {

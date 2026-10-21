@@ -66,6 +66,12 @@ For an existing file on WSL or another filesystem without Windows ACLs, saving a
 
 For a persistent app-wide choice, open **Editor → Allow compatibility saving** on desktop. It is off by default and shows the permission warning before enabling. Once enabled, it skips per-file confirmations for eligible files and is remembered in the app's local profile across restarts. Turning it off clears session approvals and restores prompts. It does not weaken ACL-preserving saves on supported filesystems or bypass disk conflicts and genuine permission errors. See [the validation and CI guide](docs/testing/filesystem-aware-saving.md).
 
+### Clicking links
+
+In the desktop preview, local Markdown links open in an MDedit tab (or activate an existing tab). Web links (`http://`, `https://`, and protocol-relative URLs) open through your default browser. Relative and absolute `.html`/`.htm` links, including local `file:///` URLs, also open through the default browser; relative paths resolve beside the saved Markdown document. Query strings and fragments are preserved. Save untitled documents before opening relative HTML links. Missing files, directories, network file URLs, and non-HTML local files cannot be launched through the browser opener.
+
+The browser decides whether to use a new tab or window. In the browser-only editor, web links retain normal browser new-tab behavior; local filesystem links require the desktop app.
+
 ### External changes and tab actions
 
 The desktop app checks named files every three seconds while visible and when the window regains focus. A clean document reloads when its disk contents change. Unsaved edits remain intact, with **Compare changes** showing the editor and disk versions side by side. Choose **Keep editing**, **Save As…**, or **Reload from disk…**; discarding unsaved edits requires confirmation. A missing file remains open so its contents can be saved elsewhere.

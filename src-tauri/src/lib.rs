@@ -1,4 +1,5 @@
 mod blocking;
+mod browser_links;
 pub mod desktop_files;
 pub mod document_io;
 pub mod recent_documents;
@@ -8,6 +9,7 @@ use desktop_files::{
     import_document_asset, import_document_attachment, probe_document, read_document_asset,
     resolve_markdown_link, reveal_document, DocumentProbeCache,
 };
+use browser_links::open_browser_link;
 use document_io::{canonicalize_document_path, read_document, save_document};
 use recent_documents::{
     clear_recent_documents, list_recent_documents, remember_recent_document,
@@ -74,6 +76,7 @@ pub fn run() {
             import_document_attachment,
             read_document_asset,
             resolve_markdown_link,
+            open_browser_link,
             probe_document,
             reveal_document,
             list_recent_documents,

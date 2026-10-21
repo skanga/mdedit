@@ -60,6 +60,7 @@ LIBS = {
     "/*__FORMATTING_TOOLBAR__*/": "src/formatting-toolbar.js",
     "/*__DESKTOP_ASSETS__*/": "src/desktop-assets.js",
     "/*__MARKDOWN_LINKS__*/": "src/markdown-links.js",
+    "/*__BROWSER_LINKS__*/": "src/browser-links.js",
     "/*__DESKTOP_WORKSPACE__*/": "src/desktop-workspace.js",
 }
 HEAVY = {"/*__KATEX__*/", "/*__MERMAID__*/"}

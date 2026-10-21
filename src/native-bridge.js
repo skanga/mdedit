@@ -60,6 +60,9 @@ function makeNativeApp(tauri) {
     readDocumentAsset(documentPath, reference) {
       return tauri.core.invoke("read_document_asset", { documentPath, reference });
     },
+    openBrowserLink(documentPath, reference) {
+      return tauri.core.invoke("open_browser_link", { documentPath, reference });
+    },
     resolveMarkdownLink(documentPath, reference) {
       return tauri.core.invoke("resolve_markdown_link", { documentPath, reference });
     },

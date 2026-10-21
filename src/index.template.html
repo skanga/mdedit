@@ -1164,6 +1164,7 @@
 <script>/*__FORMATTING_TOOLBAR__*/</script>
 <script>/*__DESKTOP_ASSETS__*/</script>
 <script>/*__MARKDOWN_LINKS__*/</script>
+<script>/*__BROWSER_LINKS__*/</script>
 <script>/*__DESKTOP_WORKSPACE__*/</script>
 <script>
 (() => {
@@ -1233,11 +1234,15 @@
   window.addEventListener("pagehide", () => { previewParser.cancel(); previewHighlighter.cancel(); });
   DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     if (node.tagName === "A" && data.attrName === "href"
-      && /^[a-z]:[/\\]/i.test(data.attrValue) && MDEdit.isLocalMarkdownLink(data.attrValue)) {
+      && /^[a-z]:[/\\]/i.test(data.attrValue)
+      && (MDEdit.isLocalMarkdownLink(data.attrValue) || MDEdit.isBrowserLink(data.attrValue))) {
       // Encode the drive colon so it is a safe relative URI, not an unknown
       // scheme. The native resolver decodes it back to the absolute path.
       data.attrValue = data.attrValue.replace(":", "%3A");
     }
+    // Desktop-only HTML file URLs are intercepted and validated natively.
+    if (nativeApp && node.tagName === "A" && data.attrName === "href"
+      && /^file:\/\/\//i.test(data.attrValue) && /\.html?([?#]|$)/i.test(data.attrValue)) data.forceKeepAttr = true;
   });
   DOMPurify.addHook("afterSanitizeAttributes", (node) => {
     if (node.tagName === "A") {
@@ -1500,7 +1505,7 @@
     onCommit();
     rootElement.innerHTML = DOMPurify.sanitize(result.html);
     const { math } = result;
-    const links = interactive && markdownLinks ? markdownLinks.hydrate(rootElement, documentPath, isCurrent) : Promise.resolve();
+    const links = interactive ? hydrateDocumentLinks(rootElement, documentPath, isCurrent) : Promise.resolve();
     if (HAS_MATH) injectMath(math, rootElement);
     transformCallouts(rootElement);
     const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive, highlighter);
@@ -2064,7 +2069,11 @@
      Everything goes through execCommand("insertText") rather than setRangeText:
      it is deprecated, but it is the only way to write into a textarea that the
      browser records on its own undo stack, so Ctrl/Cmd+Z still works. */
-  let desktopAssets = null, desktopWorkspace = null, markdownLinks = null;
+  let desktopAssets = null, desktopWorkspace = null, markdownLinks = null, browserLinks = null;
+  function hydrateDocumentLinks(root, documentPath, isCurrent) {
+    browserLinks?.hydrate(root, documentPath, isCurrent);
+    return markdownLinks?.hydrate(root, documentPath, isCurrent) || Promise.resolve();
+  }
   let editorEnhancements = null;
   const indentText = () => " ".repeat(editorEnhancements ? editorEnhancements.tabWidth() : 2);
   function keyboardEvent(event) {
@@ -2767,7 +2776,7 @@
     previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
     preview.innerHTML = html;
     const owner = previewOwner;
-    markdownLinks?.hydrate(preview, capture.path, () => previewOwner === owner
+    hydrateDocumentLinks(preview, capture.path, () => previewOwner === owner
       && controller.activeDocument()?.id === capture.documentId
       && controller.activeDocument()?.path === capture.path
       && controller.activeDocument()?.editRevision === capture.editRevision);
@@ -2878,6 +2887,7 @@
 
   desktopAssets = MDEdit.createDesktopAssets({ document, nativeApp, controller, activeEditor, replaceRange, onChange: afterEdit, setStatus });
   markdownLinks = MDEdit.createMarkdownLinks({ preview, nativeApp, controller, setStatus });
+  browserLinks = MDEdit.createBrowserLinks({ preview, nativeApp, setStatus });
   desktopWorkspace = MDEdit.installDesktopWorkspace({ document, nativeApp, controller, setStatus, onReload: () => desktopAssets?.clearCache() });
 
   async function installNativeCloseGuard() {
