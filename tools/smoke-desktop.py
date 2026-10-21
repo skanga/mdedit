@@ -38,6 +38,20 @@ def wait_until(check, timeout=20):
     raise RuntimeError(f"Timed out waiting for desktop smoke condition: {last_error}")
 
 
+def set_editor_content(script, content):
+    # The hidden bootstrap surface also lacks is-inactive: resolve the managed
+    # editor through the selected tab instead of selecting the first surface.
+    script("""
+        const tab = document.querySelector('[role=tab][aria-selected=true]');
+        const editor = document.getElementById(tab.getAttribute('aria-controls'))
+          .querySelector('textarea.document-editor');
+        if (!editor || !editor.getClientRects().length) throw new Error('Active editor is not visible');
+        editor.focus();
+        editor.value = arguments[0];
+        editor.dispatchEvent(new Event('input', {bubbles: true}));
+    """, content)
+
+
 def collect_diagnostics(script):
     try:
         return script("""
@@ -119,10 +133,8 @@ def smoke(application, port):
                     });
                 """)
                 wait_until(lambda: script("return !!document.querySelector('[role=tab][aria-selected=true]') && !!document.querySelector('#preview h1')"))
-                script("hljs.highlight=()=>{throw new Error('UI highlighting forbidden');};"
-                       "const editor=document.querySelector('.editor-surface:not(.is-inactive) textarea');"
-                       "editor.value='# Native smoke\\n\\nneedle\\n\\n```js\\nconst worker=1;\\n```';"
-                       "editor.dispatchEvent(new Event('input',{bubbles:true}));")
+                script("hljs.highlight=()=>{throw new Error('UI highlighting forbidden');};")
+                set_editor_content(script, '# Native smoke\n\nneedle\n\n```js\nconst worker=1;\n```')
                 wait_until(lambda: script("return document.querySelector('#preview h1')?.textContent==='Native smoke'"))
                 wait_until(lambda: script("return document.querySelector('#preview code .hljs-keyword')?.textContent==='const'"))
                 script("window.dispatchEvent(new KeyboardEvent('keydown',{key:'f',ctrlKey:true,bubbles:true}));"
@@ -151,10 +163,8 @@ def smoke(application, port):
                        "JSON.stringify=function(value,...args){"
                        "if(value?.schemaVersion===1 && typeof value.content==='string' && value.content.length>=262144)"
                        "throw new Error('Large snapshot encoded on UI thread');"
-                       "return stringify.call(this,value,...args);};"
-                       "const editor=document.querySelector('.editor-surface:not(.is-inactive) textarea');"
-                       "editor.value='Worker recovery\\n'+'x'.repeat(300*1024);"
-                       "editor.dispatchEvent(new Event('input',{bubbles:true}));")
+                       "return stringify.call(this,value,...args);};")
+                set_editor_content(script, 'Worker recovery\n' + 'x' * (300 * 1024))
 
                 def large_recovery_saved():
                     raw = invoke("load_recovery_manifest", {})
