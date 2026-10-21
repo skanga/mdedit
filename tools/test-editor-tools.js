@@ -29,6 +29,15 @@ test('smart lists continue numbers and unchecked tasks and exit empty items', ()
   assert.equal(apply('- one\n- ', tools.listEdit('- one\n- ', 8, 8)), '- one\n');
   assert.equal(tools.listEdit('```\n- code', 10, 10), null);
 });
+test('search bounds match allocation and never exposes partial replacements', () => {
+  for (const options of [{}, { regex: true }]) {
+    const result = tools.searchMatches('x'.repeat(10001), 'x', options);
+    assert.match(result.error || '', /Too many matches/);
+    assert.deepEqual(result.matches, []);
+    assert.equal(result.errorKind, 'limit');
+  }
+});
+
 test('search supports case, Unicode whole words, regex groups, zero-width and invalid patterns', () => {
   assert.equal(tools.searchMatches('Cat cat scatter', 'cat', {wholeWord:true}).matches.length, 2);
   assert.equal(tools.searchMatches('Cat cat', 'cat', {caseSensitive:true}).matches.length, 1);

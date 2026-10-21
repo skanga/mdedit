@@ -273,6 +273,7 @@ function makeDependencies(overrides = {}) {
     previewCacheMaxBytes: overrides.previewCacheMaxBytes,
     onRecoveryPerformance: overrides.onRecoveryPerformance,
     saveDocumentStrategy: overrides.saveDocumentStrategy,
+    snapshotSerializer: overrides.snapshotSerializer,
   };
 
   return {
@@ -285,6 +286,316 @@ function makeDependencies(overrides = {}) {
     },
   };
 }
+
+async function encodingFixture(snapshotSerializer) {
+  let controller;
+  const writes = [];
+  const env = makeDependencies({
+    snapshotSerializer,
+    io: { async writeRecoveryDocument(id, revision, json) { writes.push(JSON.parse(json)); } },
+    scheduler: {
+      async flush(id, revision) {
+        const encoded = controller.recoverySnapshotForWrite(id, revision);
+        if (encoded) await env.dependencies.io.writeRecoveryDocument(id, revision, await encoded);
+      },
+      async flushAll() { await controller._checkpointWrites; },
+    },
+  });
+  controller = new SessionController(env.dependencies);
+  await controller.restore();
+  await controller.persistManifest();
+  await settle();
+  writes.length = 0;
+  env.calls.manifestWrites.length = 0;
+  return { controller, writes, calls: env.calls };
+}
+
+test('manifest publication waits for asynchronous encoding and preserves its captured revision', async () => {
+  const gate = deferred();
+  let captured;
+  const { controller, writes, calls } = await encodingFixture({ serialize(value) {
+    if (value.content === 'captured') { captured = value; return gate.promise.then(() => JSON.stringify(value)); }
+    return JSON.stringify(value);
+  } });
+  const document = controller.activeDocument(), oldName = document.displayName;
+  controller.onEditorInput(document.id, 'captured');
+  const revision = document.snapshotRevision;
+  const pending = controller.persistManifest();
+  await settle();
+  assert.ok(captured, 'the injected encoder must receive the snapshot');
+  assert.equal(calls.manifestWrites.length, 0);
+  assert.equal(writes.length, 0);
+  controller.onEditorInput(document.id, 'later');
+  document.updateMetadata({ displayName: 'later.md' });
+  document.updateWorkspace({ ...document.workspace, find: { ...document.workspace.find, query: 'later' } });
+  gate.resolve();
+  await pending;
+  await settle();
+  await controller.persistManifest();
+  assert.equal(writes[0].content, 'captured');
+  assert.equal(writes[0].displayName, oldName);
+  assert.equal(writes[0].workspace.find.query, '');
+  assert.equal(writes[0].snapshotRevision, revision);
+  assert.equal(JSON.parse(calls.manifestWrites[0][1]).tabs[0].snapshotRevision, revision);
+  assert.equal(writes.at(-1).content, 'later');
+  assert.equal(writes.at(-1).displayName, 'later.md');
+  assert.equal(writes.at(-1).workspace.find.query, 'later');
+});
+
+test('checkpoint encoding holds the recovery barrier while later edits are deferred', async () => {
+  const gate = deferred();
+  let encoded = false;
+  const { controller, writes, calls } = await encodingFixture({ serialize(value) {
+    if (value.content === 'checkpoint') { encoded = true; return gate.promise.then(() => JSON.stringify(value)); }
+    return JSON.stringify(value);
+  } });
+  const document = controller.activeDocument();
+  controller.onEditorInput(document.id, 'checkpoint');
+  const revision = document.snapshotRevision;
+  const pending = controller.writeRecoveryCheckpoint(document.id, revision);
+  await settle();
+  assert.equal(encoded, true);
+  assert.ok(controller._manifestBarrier);
+  assert.equal(writes.length, 0);
+  assert.equal(calls.manifestWrites.length, 0);
+  controller.onEditorInput(document.id, 'newer checkpoint');
+  gate.resolve();
+  await pending;
+  assert.equal(writes[0].content, 'checkpoint');
+  assert.equal(writes[0].snapshotRevision, revision);
+  assert.equal(document.persistedRevision, revision);
+  assert.ok(document.snapshotRevision > document.persistedRevision);
+});
+
+test('encoding failure blocks publication and an explicit retry persists the latest content', async () => {
+  let fail = true;
+  const { controller, writes, calls } = await encodingFixture({ serialize(value) {
+    if (fail && value.content === 'failure') return Promise.reject(new Error('encoding failed'));
+    return JSON.stringify(value);
+  } });
+  const document = controller.activeDocument();
+  controller.onEditorInput(document.id, 'failure');
+  await assert.rejects(controller.persistManifest(), /encoding failed/);
+  assert.equal(writes.length, 0);
+  assert.equal(calls.manifestWrites.length, 0);
+  assert.equal(document.recoveryStatus, 'failed');
+  controller.onEditorInput(document.id, 'retry content');
+  fail = false;
+  await controller.retryRecovery(document.id);
+  assert.equal(writes.at(-1).content, 'retry content');
+  assert.equal(controller._sessionRecoveryFailure, null);
+});
+
+test('disposing during encoding releases the encoder and prevents late recovery writes', async () => {
+  const gate = deferred();
+  let disposals = 0;
+  const { controller, writes, calls } = await encodingFixture({
+    serialize(value) { return value.content === 'dispose' ? gate.promise.then(() => JSON.stringify(value)) : JSON.stringify(value); },
+    dispose() { disposals++; gate.reject(new Error('encoder disposed')); },
+  });
+  const document = controller.activeDocument();
+  controller.onEditorInput(document.id, 'dispose');
+  const pending = controller.writeRecoveryCheckpoint(document.id, document.snapshotRevision).catch(error => error);
+  await controller.dispose();
+  await pending;
+  assert.equal(disposals, 1);
+  assert.equal(writes.length, 0);
+  assert.equal(calls.manifestWrites.length, 0);
+});
+
+test('Quit and Restore waits for snapshot encoding before authorizing close', async () => {
+  const gate = deferred();
+  let encoded = false;
+  const { controller } = await encodingFixture({ serialize(value) {
+    if (value.content === 'quit') { encoded = true; return gate.promise.then(() => JSON.stringify(value)); }
+    return JSON.stringify(value);
+  } });
+  controller.dialogs.showQuit = async () => 'restore';
+  controller.onEditorInput(controller.activeDocument().id, 'quit');
+  const pending = controller.requestQuit();
+  await settle();
+  assert.equal(encoded, true);
+  assert.deepEqual(await outcomeByImmediate(pending), { status: 'unsettled' });
+  assert.equal(controller._nativeCloseAllowed, false);
+  gate.resolve();
+  assert.equal((await pending).allowClose, true);
+});
+
+test('edits made during quit encoding are checkpointed before close is authorized', async () => {
+  const gate = deferred();
+  let started = false;
+  const { controller, writes } = await encodingFixture({ serialize(value) {
+    if (value.content === 'quit old') { started = true; return gate.promise.then(() => JSON.stringify(value)); }
+    return JSON.stringify(value);
+  } });
+  controller.dialogs.showQuit = async () => 'restore';
+  const document = controller.activeDocument();
+  controller.onEditorInput(document.id, 'quit old');
+  const pending = controller.requestQuit();
+  await settle();
+  assert.equal(started, true);
+  controller.onEditorInput(document.id, 'quit latest');
+  gate.resolve();
+  assert.equal((await pending).allowClose, true);
+  assert.equal(writes.at(-1).content, 'quit latest');
+  assert.equal(document.persistedRevision, document.snapshotRevision);
+});
+
+test('a failed quit encoding never authorizes native close', async () => {
+  const { controller, writes } = await encodingFixture({ serialize(value) {
+    return value.content === 'quit failure' ? Promise.reject(new Error('quit encoding failed')) : JSON.stringify(value);
+  } });
+  controller.dialogs.showQuit = async () => 'restore';
+  controller.onEditorInput(controller.activeDocument().id, 'quit failure');
+  const outcome = await controller.requestQuit();
+  assert.equal(outcome.allowClose, false);
+  assert.match(outcome.error.message, /quit encoding failed/);
+  assert.equal(controller._nativeCloseAllowed, false);
+  assert.equal(writes.length, 0);
+});
+
+test('disposing a manifest encoder cannot publish a late transaction', async () => {
+  const gate = deferred();
+  const { controller, writes, calls } = await encodingFixture({
+    serialize(value) { return value.content === 'pending manifest' ? gate.promise.then(() => JSON.stringify(value)) : JSON.stringify(value); },
+    dispose() { gate.reject(new Error('disposed manifest encoder')); },
+  });
+  controller.onEditorInput(controller.activeDocument().id, 'pending manifest');
+  const pending = controller.persistManifest();
+  await settle();
+  assert.equal(calls.manifestWrites.length, 0);
+  await controller.dispose();
+  await assert.rejects(pending, /disposed/);
+  await controller._manifestWrites.catch(() => {});
+  assert.equal(writes.length, 0);
+  assert.equal(calls.manifestWrites.length, 0);
+  assert.equal(controller._manifestBarrier, null);
+});
+
+test('asynchronous checkpoint diagnostics report encode latency rather than worker CPU time', async () => {
+  const { controller } = await encodingFixture({ async serialize(value) { return JSON.stringify(value); } });
+  const metrics = [];
+  controller.onRecoveryPerformance = metric => metrics.push(metric);
+  controller.io.writeRecoveryDocument = async () => ({ bytes: 10, ipcAndNativeDurationMs: 2 });
+  const document = controller.activeDocument();
+  controller.onEditorInput(document.id, 'metrics');
+  await controller.writeRecoveryCheckpoint(document.id, document.snapshotRevision);
+  assert.equal(metrics[0].serializationMode, 'asynchronous-latency');
+  assert.ok(metrics[0].serializationDurationMs >= 0);
+  assert.equal(metrics[0].endToEndDurationMs, metrics[0].serializationDurationMs + 2);
+});
+
+test('worker preparation finishes before bulk recovery loading begins', async () => {
+  const gate = deferred(), { dependencies, calls } = makeDependencies();
+  let prepares = 0;
+  dependencies.snapshotSerializer = { prepare() { prepares += 1; return gate.promise; }, serialize: JSON.stringify };
+  const controller = new SessionController(dependencies), restoring = controller.restore();
+  await settle();
+  assert.equal(prepares, 1);
+  assert.equal(calls.sequence.includes('load-manifest'), false);
+  gate.resolve();
+  await restoring;
+  assert.equal(calls.sequence.includes('load-manifest'), true);
+  await controller.dispose();
+});
+
+test('failed worker preparation does not prevent source restoration or small snapshot encoding', async () => {
+  const { dependencies } = makeDependencies();
+  let prepares = 0;
+  dependencies.snapshotSerializer = {
+    async prepare() { prepares += 1; throw new Error('worker unavailable'); }, serialize: JSON.stringify,
+  };
+  const controller = new SessionController(dependencies);
+  await controller.restore();
+  assert.equal(prepares, 1);
+  assert.ok(controller.activeDocument());
+  await controller.persistManifest();
+  assert.equal(controller._sessionRecoveryFailure, null);
+  await controller.dispose();
+});
+
+test('disposal during worker preparation cannot start late recovery loading', async () => {
+  const gate = deferred(), { dependencies, calls } = makeDependencies();
+  let prepares = 0;
+  dependencies.snapshotSerializer = {
+    prepare() { prepares += 1; return gate.promise; }, serialize: JSON.stringify,
+    dispose() { gate.reject(new Error('disposed')); },
+  };
+  const controller = new SessionController(dependencies), restoring = controller.restore();
+  const stopped = assert.rejects(restoring, /disposed/i);
+  await settle();
+  assert.equal(prepares, 1);
+  await controller.dispose();
+  await stopped;
+  await settle();
+  assert.equal(calls.sequence.includes('load-manifest'), false);
+});
+
+test('late scheduler status after disposal cannot update recovery state or view observers', async () => {
+  const { dependencies, calls } = makeDependencies();
+  const controller = new SessionController(dependencies);
+  await controller.restore();
+  const document = controller.activeDocument(), previous = document.recoveryStatus;
+  await controller.dispose();
+  const count = calls.statuses.length;
+  controller.onRecoveryStatus(document.id, 'failed', new Error('late worker failure'));
+  assert.equal(calls.statuses.length, count);
+  assert.equal(document.recoveryStatus, previous);
+});
+
+test('browser recovery preserves storage isolation for document IDs with shared prefixes', async () => {
+  const storage = memoryStorage();
+  const io = createBrowserRecoveryIo(storage);
+  for (const id of ['a', 'a/b', 'ab']) {
+    await io.writeRecoveryDocument(id, 1, JSON.stringify(snapshot(id, 1)));
+  }
+  await io.deleteRecoveryDocument('a');
+  assert.equal(await io.loadRecoveryDocument('a', 1), null);
+  assert.equal(JSON.parse(await io.loadRecoveryDocument('a/b', 1)).documentId, 'a/b');
+  assert.equal(JSON.parse(await io.loadRecoveryDocument('ab', 1)).documentId, 'ab');
+});
+
+test('browser recovery environment shares its working storage without leaving probe keys', () => {
+  const storage = memoryStorage();
+  const environment = createBrowserRecoveryEnvironment({ localStorage: storage });
+  assert.equal(environment.persistent, true);
+  assert.equal(environment.error, null);
+  assert.equal(environment.legacyStorage, storage);
+  assert.equal(storage.length, 0);
+});
+
+test('isolated export preserves renderer/exporter receivers and freezes its render capture', async () => {
+  let renderedCapture, exportedCapture;
+  const renderer = { marker: 'renderer', async renderForExport(capture) {
+    assert.equal(this, renderer);
+    renderedCapture = capture;
+    return '<p>isolated</p>';
+  } };
+  const exporter = { marker: 'exporter', async export(capture) {
+    assert.equal(this, exporter);
+    exportedCapture = capture;
+    return { canceled: true };
+  } };
+  const { dependencies, calls } = makeDependencies({ renderer, exporter });
+  const controller = new SessionController(dependencies);
+  await controller.restore();
+  await controller.exportActive('html');
+  assert.ok(Object.isFrozen(renderedCapture));
+  assert.ok(Object.isFrozen(exportedCapture));
+  assert.equal(exportedCapture.renderedHtml, '<p>isolated</p>');
+  assert.equal(renderedCapture.renderedHtml, undefined);
+  assert.equal(calls.statuses.at(-1)[1].status, 'canceled');
+});
+
+test('nonvisual exports skip isolated rendering and retain the captured document', async () => {
+  const exporter = async capture => ({ documentId: capture.documentId, content: capture.content });
+  const controller = new SessionController(makeDependencies({ exporter, renderer: {
+    renderForExport() { throw new Error('must not render Markdown downloads'); },
+  } }).dependencies);
+  await controller.restore();
+  const capture = controller.captureActiveDocument();
+  assert.deepEqual(await controller.exportActive('md'), { documentId: capture.documentId, content: capture.content });
+});
 
 test("browser wrapper merges SessionController into window.MDEdit", () => {
   const code = fs.readFileSync(path.join(__dirname, "..", "src", "session-controller.js"), "utf8");
@@ -626,6 +937,25 @@ test("equivalent browser handles dedupe, non-equivalent same-name handles do not
   assert.equal(equivalent.results[0].id, first.results[0].id);
   assert.notEqual(distinct.results[0].id, first.results[0].id);
   assert.equal(controller.session.documents.size, 2);
+});
+
+test('controller owns writable browser handles through rebinding, rename and close', async () => {
+  const controller = new SessionController(makeDependencies().dependencies);
+  const a = { async createWritable() {}, async getFile() {} };
+  const b = { async createWritable() {}, async getFile() {} };
+  const file = { name: 'a.md', async text() { return 'a'; } };
+  const opened = await controller.openBrowserFiles([file], [a]);
+  const document = opened.results[0].document;
+  assert.equal(controller.browserWriteHandle(document.id), a);
+  await controller.rebindBrowserSource(document.id, b);
+  assert.equal(controller.browserWriteHandle(document.id), b);
+  await controller.renameDocument(document.id, 'copy.md');
+  assert.equal(document.displayName, 'copy.md');
+  assert.equal(document.canonicalPath, null);
+  assert.equal(controller.browserWriteHandle(document.id), null);
+  await controller.rebindBrowserSource(document.id, a);
+  await controller.closeDocument(document.id);
+  assert.equal(controller.browserWriteHandle(document.id), null);
 });
 
 test("rebindBrowserSource transfers a saved document from handle A to B", async () => {
@@ -3210,6 +3540,52 @@ test("a failed outgoing recovery flush is reported to that document without roll
   assert.equal(fixture.calls.recoveryErrors.at(-1).phase, "activation-flush");
 });
 
+test('preview results own a separate failure channel and current success clears it', async () => {
+  const fixture = makeDependencies(), controller = new SessionController(fixture.dependencies);
+  await controller.restore(); await settle();
+  const document = controller.activeDocument(), recovery = document.recoveryStatus;
+  controller.renderer = { render() { throw new Error('parser unavailable'); } };
+  await assert.rejects(controller.renderDocument(document.id), /parser unavailable/);
+  const failed = fixture.calls.statuses.at(-1)[1];
+  assert.equal(failed.previewStatus, 'failed');
+  assert.equal(failed.recoveryStatus, undefined);
+  assert.match(failed.message, /Preview failed.*parser unavailable/);
+  controller.renderer = { render: () => '<p>recovered</p>' };
+  await controller.renderDocument(document.id);
+  assert.equal(fixture.calls.statuses.at(-1)[1].previewStatus, 'clean');
+  assert.equal(document.recoveryStatus, recovery);
+  await controller.dispose();
+});
+
+test('a stale render rejection cannot replace the status of a newer successful preview', async () => {
+  const fixture = makeDependencies(), controller = new SessionController(fixture.dependencies);
+  await controller.restore(); await settle();
+  const old = deferred(), next = deferred(); let calls = 0;
+  controller.renderer = { render: () => (++calls === 1 ? old.promise : next.promise) };
+  const id = controller.activeDocument().id;
+  const older = controller.renderDocument(id), newer = controller.renderDocument(id);
+  const rejected = assert.rejects(older, /old failure/);
+  next.resolve('<p>latest</p>'); await newer;
+  old.reject(new Error('old failure')); await rejected;
+  assert.equal(fixture.calls.statuses.at(-1)[1].previewStatus, 'clean');
+  assert.equal(fixture.calls.statuses.some(([, value]) => value.previewStatus === 'failed'), false);
+  await controller.dispose();
+});
+
+test('a stale render success cannot clear a newer preview failure', async () => {
+  const fixture = makeDependencies(), controller = new SessionController(fixture.dependencies);
+  await controller.restore(); await settle();
+  const old = deferred(), next = deferred(); let calls = 0;
+  controller.renderer = { render: () => (++calls === 1 ? old.promise : next.promise) };
+  const id = controller.activeDocument().id;
+  const older = controller.renderDocument(id), newer = controller.renderDocument(id);
+  next.reject(new Error('latest failure')); await assert.rejects(newer, /latest failure/);
+  old.resolve('<p>obsolete</p>'); await older;
+  assert.equal(fixture.calls.statuses.at(-1)[1].previewStatus, 'failed');
+  assert.match(fixture.calls.statuses.at(-1)[1].message, /latest failure/);
+  await controller.dispose();
+});
+
 test("a render is stale after its captured document revision changes", async () => {
   const pending = deferred();
   let renders = 0;
@@ -5131,7 +5507,7 @@ test("browser builds resolve editors by active document without a mutable editor
     assert.match(html, /controller\.runCapturedExport\("diagram " \+ n \+ " as SVG"/, filename);
     assert.match(html, /controller\.runCapturedExport\("table " \+ n \+ " as CSV"/, filename);
     assert.match(html, /canPrintCapture\(capture, previewOwner\)/, filename);
-    assert.match(html, /createBrowserRecoveryEnvironment\(window\)/, filename);
+    assert.match(html, /createBrowserRecoveryEnvironment\(window,\s*\{\s*snapshotParser: json => snapshotSerializer\.parse\(json\)/, filename);
     assert.match(html, /controller\.writeRecoveryCheckpoint\(documentId, revision\)/, filename);
     assert.match(html, /renderForExport/, filename);
     assert.match(html, /capture\.renderedHtml/, filename);

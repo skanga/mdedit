@@ -13,7 +13,7 @@
   }
 
   function createMarkdownLinks({ preview, nativeApp, controller, setStatus }) {
-    const links = new WeakMap();
+    const links = new WeakMap(), guarded = new WeakSet();
 
     function disable(anchor) {
       anchor.setAttribute('aria-disabled', 'true');
@@ -25,6 +25,12 @@
       // Disable all candidates synchronously, before the first filesystem call.
       const candidates = [...root.querySelectorAll('a[href]')].filter(anchor => isLocalMarkdownLink(anchor.getAttribute('href')));
       for (const anchor of candidates) {
+        // Cached DOM can be replaced after a click target is resolved. A
+        // detached anchor cannot bubble to the preview's delegated handlers.
+        if (!guarded.has(anchor)) {
+          for (const type of ['click', 'auxclick']) anchor.addEventListener(type, event => event.preventDefault());
+          guarded.add(anchor);
+        }
         disable(anchor);
         links.delete(anchor);
         anchor.removeAttribute('target');

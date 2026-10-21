@@ -1132,6 +1132,7 @@
   <span id="stat-lines" class="hide-sm">1 line</span>
   <span class="spacer"></span>
   <span id="status" role="status" aria-live="polite"></span>
+  <button class="btn" id="btn-retry-recovery" type="button" title="Retry recovery for all open documents" hidden>Retry recovery</button>
   <span id="document-details" title="Cursor position, encoding, line endings, and current document size"></span>
 </footer>
 
@@ -1139,19 +1140,26 @@
 
 <input type="file" id="file-input" accept=".md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain" multiple style="display:none">
 
-<script>/*__MARKED__*/</script>
+<script id="marked-library">/*__MARKED__*/</script>
 <script>/*__PURIFY__*/</script>
-<script>/*__HLJS__*/</script>
+<script id="highlight-library">/*__HLJS__*/</script>
 <script>/*__KATEX__*/</script>
 <script>/*__MERMAID__*/</script>
 <script>/*__DOCUMENT_MODEL__*/</script>
 <script>/*__SESSION_MODEL__*/</script>
+<script>/*__BROWSER_RECOVERY__*/</script>
+<script>/*__EXPORT_SERVICE__*/</script>
+<script>/*__MARKDOWN_PARSER__*/</script>
+<script>/*__SYNTAX_HIGHLIGHTER__*/</script>
+<script>/*__SNAPSHOT_SERIALIZER__*/</script>
 <script>/*__RECOVERY_SCHEDULER__*/</script>
 <script>/*__SESSION_CONTROLLER__*/</script>
 <script>/*__WORKSPACE_VIEW__*/</script>
 <script>/*__NATIVE_BRIDGE__*/</script>
 <script>/*__RECENT_DOCUMENTS__*/</script>
 <script>/*__EDITOR_TOOLS__*/</script>
+<script>/*__SEARCH_RUNNER__*/</script>
+<script>/*__FIND_CONTROLLER__*/</script>
 <script>/*__EDITOR_ENHANCEMENTS__*/</script>
 <script>/*__FORMATTING_TOOLBAR__*/</script>
 <script>/*__DESKTOP_ASSETS__*/</script>
@@ -1172,8 +1180,7 @@
   let resolveControllerReady;
   const controllerReady = new Promise((resolve) => { resolveControllerReady = resolve; });
   let workspaceView = null;
-  const browserFileHandles = new Map();
-  let statusTimer = null;
+  const statusTimers = new Map();
   let persistentRecoveryWarning = "";
   let nativeWindow = null;
   let pendingNativeTitle = null;
@@ -1218,7 +1225,12 @@
   const HAS_MATH = typeof katex !== "undefined";
   const HAS_DIAGRAMS = typeof mermaid !== "undefined";
 
-  marked.use({ gfm: true, breaks: false });
+  const markdownLibrarySource = $("marked-library").textContent;
+  const previewParser = MDEdit.createMarkdownParser({ window, librarySource: markdownLibrarySource });
+  const highlightLibrarySource = $("highlight-library").textContent;
+  const previewHighlighter = MDEdit.createSyntaxHighlighter({ window, librarySource: highlightLibrarySource });
+  // Release work when leaving, but allow a BFCache-restored page to parse again.
+  window.addEventListener("pagehide", () => { previewParser.cancel(); previewHighlighter.cancel(); });
   DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     if (node.tagName === "A" && data.attrName === "href"
       && /^[a-z]:[/\\]/i.test(data.attrValue) && MDEdit.isLocalMarkdownLink(data.attrValue)) {
@@ -1238,130 +1250,9 @@
 
 
   /* ── Footnotes ───────────────────────────────────
-     marked ships no footnote support, but [^1] references and their
-     definitions are common in specs, papers and RFC-style docs. Definition
-     bodies are rendered with a second, hook-free marked instance so this can
-     never re-enter the main parse. */
-  const markedPlain = new marked.Marked({ gfm: true });
-  let fnDefs = new Map(), fnOrder = [];
-
-  marked.use({
-    hooks: {
-      preprocess(src) {
-        fnDefs = new Map();
-        fnOrder = [];
-        // "[^label]: body", continued by indented lines
-        return src.replace(
-          /^\[\^([^\]\n]+)\]:[ \t]*([^\n]*(?:\n(?:[ \t]{2,}|\t)[^\n]*)*)/gm,
-          (_m, label, body) => {
-            fnDefs.set(label.trim(), body.replace(/\n[ \t]+/g, "\n").trim());
-            return "";
-          }
-        );
-      },
-      postprocess(html) {
-        if (!fnOrder.length) return html;
-        let out = '<section class="footnotes"><ol>';
-        fnOrder.forEach((label, i) => {
-          const n = i + 1;
-          out += '<li id="fn-' + n + '">' + markedPlain.parseInline(fnDefs.get(label) || "") +
-                 ' <a class="fn-back" href="#fnref-' + n + '" title="Back to text">↩</a></li>';
-        });
-        return html + out + '</ol></section>';
-      },
-    },
-    extensions: [{
-      name: "footnoteRef",
-      level: "inline",
-      start(src) { return src.indexOf("[^"); },
-      tokenizer(src) {
-        const m = /^\[\^([^\]\n]+)\]/.exec(src);
-        if (!m) return;
-        const label = m[1].trim();
-        if (!fnDefs.has(label)) return;   // a reference with no definition stays literal text
-        return { type: "footnoteRef", raw: m[0], label };
-      },
-      renderer(token) {
-        let i = fnOrder.indexOf(token.label);
-        if (i === -1) { fnOrder.push(token.label); i = fnOrder.length - 1; }
-        const n = i + 1;
-        return '<sup class="fn-ref" id="fnref-' + n + '"><a href="#fn-' + n + '">' + n + '</a></sup>';
-      },
-    }],
-  });
-
+     Footnote expansion and math extraction live in the worker engine.
+     Only DOM-dependent transformations run below. */
   const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-  /* Math is pulled out BEFORE markdown parsing (marked would mangle _ and *
-     inside TeX) and re-injected into the sanitized DOM afterwards. Private-use
-     characters make placeholders that survive marked untouched. */
-  const PH = (i) => "\uE000M" + i + "\uE001";
-  function extractMath(src) {
-    const math = [];
-    const out = [];
-    let inFence = false, fenceCh = "";
-    let disp = null, dispPrefix = "";
-    for (const rawLine of src.split("\n")) {
-      let line = rawLine;
-      if (disp) {
-        const close = line.indexOf("$$");
-        if (close === -1) { disp.push(line); continue; }
-        disp.push(line.slice(0, close));
-        math.push({ tex: disp.join("\n"), display: true });
-        out.push(dispPrefix + PH(math.length - 1) + line.slice(close + 2));
-        disp = null; dispPrefix = "";
-        continue;
-      }
-      const fm = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-      if (fm) {
-        if (!inFence) { inFence = true; fenceCh = fm[1][0]; }
-        else if (fm[1][0] === fenceCh) inFence = false;
-        out.push(line); continue;
-      }
-      if (inFence) { out.push(line); continue; }
-      let res = "", j = 0, opened = false;
-      while (j < line.length) {
-        const c = line[j];
-        if (c === "`") {
-          let k = j; while (line[k] === "`") k++;
-          const run = k - j;
-          let m = k, close = -1;
-          while (m < line.length) {
-            if (line[m] === "`") { let m2 = m; while (line[m2] === "`") m2++; if (m2 - m === run) { close = m2; break; } m = m2; }
-            else m++;
-          }
-          if (close !== -1) { res += line.slice(j, close); j = close; } else { res += line.slice(j, k); j = k; }
-          continue;
-        }
-        if (c === "\\" && (line[j + 1] === "(" || line[j + 1] === "[")) {
-          const closer = line[j + 1] === "(" ? "\\)" : "\\]";
-          const end = line.indexOf(closer, j + 2);
-          if (end !== -1) { math.push({ tex: line.slice(j + 2, end), display: line[j + 1] === "[" }); res += PH(math.length - 1); j = end + 2; continue; }
-          res += c; j++; continue;
-        }
-        if (c === "$") {
-          if (line[j + 1] === "$") {
-            const end = line.indexOf("$$", j + 2);
-            if (end !== -1) { math.push({ tex: line.slice(j + 2, end), display: true }); res += PH(math.length - 1); j = end + 2; continue; }
-            disp = [line.slice(j + 2)]; dispPrefix = res; opened = true; break;
-          }
-          let end = -1;
-          for (let m = j + 1; m < line.length; m++) {
-            if (line[m] === "$") { if (line[m - 1] !== "\\" && line[m - 1] !== " " && m > j + 1) end = m; break; }
-          }
-          if (end !== -1 && line[j + 1] !== " ") {
-            const tex = line.slice(j + 1, end);
-            if (!/^[\d.,]*$/.test(tex)) { math.push({ tex, display: false }); res += PH(math.length - 1); j = end + 1; continue; }
-          }
-          res += c; j++; continue;
-        }
-        res += c; j++;
-      }
-      if (!opened) out.push(res);
-    }
-    if (disp) out.push(dispPrefix + "$$" + (disp.length ? "\n" : "") + disp.join("\n"));
-    return { src: out.join("\n"), math };
-  }
 
   function injectMath(mathList, rootElement = preview) {
     if (!mathList.length) return;
@@ -1418,7 +1309,6 @@
 
   /* Code highlighting + mermaid diagrams */
   let mermaidSeq = 0;
-  let mermaidPending = Promise.resolve();   // awaited by the PDF export
   let previewOwner = null;
   function initMermaid() {
     if (!HAS_DIAGRAMS) return;
@@ -1451,19 +1341,28 @@
       }
     }
   }
-  function highlightAndDiagrams(rootElement = preview, isCurrent = () => true, interactive = true) {
-    rootElement.querySelectorAll("pre > code").forEach((code) => {
-      const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
-      if (!lang || lang === "mermaid") return;
-      if (hljs.getLanguage(lang)) {
-        try {
-          code.innerHTML = hljs.highlight(code.textContent, { language: lang }).value;
-          code.classList.add("hljs");
-        } catch (e) { /* leave plain */ }
-      }
+  function highlightAndDiagrams(rootElement = preview, isCurrent = () => true, interactive = true, highlighter = previewHighlighter) {
+    const codes = [...rootElement.querySelectorAll("pre > code")].filter(code => {
+      const language = (code.className.match(/language-([\w-]+)/) || [])[1];
+      return language && language !== "mermaid";
+    });
+    const blocks = codes.map(code => ({ language: code.className.match(/language-([\w-]+)/)[1], text: code.textContent }));
+    const highlighting = highlighter.highlight(blocks).then(result => {
+      if (result.canceled || !isCurrent()) return;
+      result.results.forEach((html, index) => {
+        const code = codes[index];
+        if (typeof html !== "string" || !rootElement.contains(code)) return;
+        const selection = window.getSelection();
+        // Optional styling must not replace text a user is currently selecting.
+        if (selection && !selection.isCollapsed && selection.containsNode(code, true)) return;
+        const fragment = DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true, ALLOWED_TAGS: ["span"], ALLOWED_ATTR: ["class"] });
+        if (fragment.textContent !== blocks[index].text || code.textContent !== blocks[index].text) return;
+        code.replaceChildren(fragment);
+        code.classList.add("hljs");
+      });
     });
     const jobs = [];
-    if (!HAS_DIAGRAMS) return Promise.resolve();      // leave the fence as an ordinary code block
+    if (!HAS_DIAGRAMS) return highlighting; // Leave Mermaid fences as ordinary code blocks in lite.
     rootElement.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
       const div = document.createElement("div");
       div.className = "mermaid-block";
@@ -1471,7 +1370,8 @@
       code.parentElement.replaceWith(div);
       jobs.push({ div, src });
     });
-    return jobs.length ? renderMermaidJobs(jobs, isCurrent, interactive) : Promise.resolve();
+    // Prepare Mermaid nodes synchronously, before addCodeTools wraps code fences.
+    return Promise.all([highlighting, jobs.length ? renderMermaidJobs(jobs, isCurrent, interactive) : Promise.resolve()]);
   }
 
   /* Per-block downloads: a diagram as SVG, a table as CSV. */
@@ -1590,13 +1490,20 @@
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null, exportFormat = null) {
-    const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
-    rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
+  async function render(content, {
+    isCurrent = () => true, rootElement = preview, interactive = true,
+    documentPath = null, exportFormat = null, parser = previewParser, highlighter = previewHighlighter, onCommit = () => {},
+  } = {}) {
+    const result = await parser.parse(content, { math: HAS_MATH });
+    if (result.canceled || !isCurrent()) return false;
+    const scrollTop = rootElement === preview ? previewPane.scrollTop : null;
+    onCommit();
+    rootElement.innerHTML = DOMPurify.sanitize(result.html);
+    const { math } = result;
     const links = interactive && markdownLinks ? markdownLinks.hydrate(rootElement, documentPath, isCurrent) : Promise.resolve();
     if (HAS_MATH) injectMath(math, rootElement);
     transformCallouts(rootElement);
-    const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive);
+    const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive, highlighter);
     // mark task-list items so CSS can drop their bullets
     rootElement.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
       cb.closest("li").classList.add("task");
@@ -1607,15 +1514,28 @@
       buildToc(rootElement);
       updateStats(content);
     }
-    return Promise.all([diagrams, links]).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive, exportFormat === "html"));
+    // Sample scroll only at DOM commit, not when the worker request starts.
+    // Restore synchronously, before asynchronous diagram and asset hydration.
+    if (scrollTop !== null) previewPane.scrollTop = scrollTop;
+    await Promise.all([diagrams, links]);
+    if (desktopAssets) await desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive, exportFormat === "html");
+    return true;
   }
 
   async function renderForExport(capture) {
     const isolated = document.createElement("article");
     const owned = () => controller.isDocumentCaptureCurrent(capture);
-    await render(capture.content, owned, isolated, false, capture.path, capture.format);
-    if (!owned()) throw new Error("the document changed before its export could be rendered");
-    return isolated.innerHTML;
+    // An export must not cancel (or be canceled by) live preview parsing.
+    const parser = MDEdit.createMarkdownParser({ window, librarySource: markdownLibrarySource });
+    const highlighter = MDEdit.createSyntaxHighlighter({ window, librarySource: highlightLibrarySource });
+    try {
+      const rendered = await render(capture.content, {
+        isCurrent: owned, rootElement: isolated, interactive: false,
+        documentPath: capture.path, exportFormat: capture.format, parser, highlighter,
+      });
+      if (!rendered || !owned()) throw new Error("the document changed before its export could be rendered");
+      return isolated.innerHTML;
+    } finally { parser.dispose(); highlighter.dispose(); }
   }
 
   function updateStats(text) {
@@ -1643,18 +1563,51 @@
 
   function setStatus(msg, sticky, documentId) {
     const id = documentId || (controller && controller.activeDocument() && controller.activeDocument().id);
-    if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: sticky ? "writing" : "message", message: msg });
-    statusEl.textContent = [persistentRecoveryWarning, msg].filter(Boolean).join(" · ");
-    clearTimeout(statusTimer);
-    if (!sticky) statusTimer = setTimeout(() => { statusEl.textContent = persistentRecoveryWarning; }, 4000);
+    if (id && controller?.session && !controller.session.documents.has(id)) return;
+    const status = { status: sticky ? "writing" : "message", message: msg };
+    const fallback = [persistentRecoveryWarning, msg].filter(Boolean).join(" · ");
+    if (id && workspaceView) workspaceView.setDocumentStatus(id, status);
+    else statusEl.textContent = fallback;
+    const key = id || null;
+    clearTimeout(statusTimers.get(key));
+    statusTimers.delete(key);
+    if (!sticky) {
+      const timer = setTimeout(() => {
+        if (statusTimers.get(key) !== timer) return;
+        statusTimers.delete(key);
+        if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: "clean" }, { expectedOperation: status });
+        else if (!controller?.activeDocument() && statusEl.textContent === fallback) statusEl.textContent = persistentRecoveryWarning;
+      }, 4000);
+      statusTimers.set(key, timer);
+    }
   }
 
-  function setDirty(v) {
+  function updateRecoveryAction() {
+    const documents = controller && controller.session ? controller.session.documents.values() : [];
+    $("btn-retry-recovery").hidden = ![...documents].some(document => document.recoveryStatus === "failed");
+  }
+  $("btn-retry-recovery").addEventListener("click", async () => {
+    const button = $("btn-retry-recovery"), hadFocus = document.activeElement === button;
+    button.disabled = true;
+    try {
+      await controller.retryRecovery();
+      setStatus("Recovery restored");
+    } catch (error) { setStatus("Recovery retry failed — " + error.message); }
+    finally {
+      button.disabled = false;
+      updateRecoveryAction();
+      if (hadFocus && document.activeElement === document.body) {
+        const target = button.hidden ? activeEditor() : button;
+        target?.focus({ preventScroll: true });
+      }
+    }
+  });
+
+  function afterEdit() {
     const active = controller && controller.activeDocument();
     const surface = activeEditor();
-    if (active && surface && v && active.content !== surface.value) controller.onEditorInput(active.id, surface.value);
-    if (active) active.dirty = Boolean(v);
-    dirtyDot.classList.toggle("on", v);
+    if (active && surface && active.content !== surface.value) controller.onEditorInput(active.id, surface.value);
+    syncActiveSurface();
   }
 
   /* ── File loading ───────────────────────────── */
@@ -1684,12 +1637,6 @@
       acceptedBatch.then((batch) => batch.sourceKeys),
     );
     const batch = await acceptedBatch;
-    result.results.forEach((outcome, index) => {
-      const handle = batch.sourceKeys[index];
-      if (outcome.document && !outcome.reserved && handle && handle !== outcome.file) {
-        browserFileHandles.set(outcome.id, handle);
-      }
-    });
     const acceptedByIndex = new Map(batch.acceptedIndexes.map(
       (inputIndex, index) => [inputIndex, result.results[index]],
     ));
@@ -1711,7 +1658,7 @@
     const active = controller.activeDocument();
     if (active && result.opened.length) {
       setStatus("Opened " + active.displayName
-        + (browserFileHandles.has(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
+        + (controller.browserWriteHandle(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
     }
     return { ...result, failed: [...result.failed, ...unsupported], results };
   }
@@ -1777,7 +1724,7 @@
   }
 
   async function browserSaveDocumentStrategy({ document, capture, saveBrowser }) {
-    const fileHandle = browserFileHandles.get(document.id);
+    const fileHandle = controller.browserWriteHandle(document.id);
     if (!fileHandle) return saveAs(capture);
     try {
       if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
@@ -1845,7 +1792,6 @@
       try {
         const result = await controller.saveAs(capture.documentId);
         if (!result || !result.saved) return result;
-        browserFileHandles.delete(capture.documentId);
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
         return result;
@@ -1876,7 +1822,6 @@
           await controller.releaseBrowserSourceReservation(source.reservation).catch(() => {});
           throw error;
         }
-        browserFileHandles.set(capture.documentId, handle);
         const contentSha256 = await hashText(capture.content);
         controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
@@ -2157,7 +2102,6 @@
     else if (command === "move-tab-right") controller.moveActiveDocument(1);
     else if (command === "close-tab") {
       const result = await controller.closeDocument(active.id);
-      if (result && result.closed) browserFileHandles.delete(active.id);
     }
     syncActiveSurface();
     if (command === "close-tab" && focusOptions.preserveTabFocus) {
@@ -2244,16 +2188,14 @@
     if (eMax > 0 && pMax > 0) previewPane.scrollTop = (surface.scrollTop / eMax) * pMax;
   }, true);
 
-  filenameEl.addEventListener("change", () => {
+  filenameEl.addEventListener("change", async () => {
     let name = filenameEl.value.trim() || "untitled.md";
     if (!/\.(md|markdown|mdown|mkd|txt)$/i.test(name)) name += ".md";
     filenameEl.value = name;
     const active = controller.activeDocument();
     if (!active) return;
-    active.updateMetadata({ displayName: name, path: null, canonicalPath: null });
-    controller.checkpointDocument(active.id, "rename-checkpoint");
-    browserFileHandles.delete(active.id);
-    controller.activateDocument(active.id);
+    try { await controller.renameDocument(active.id, name); }
+    catch (error) { setStatus("Could not rename document — " + error.message); }
     syncActiveSurface();
   });
   filenameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") filenameEl.blur(); });
@@ -2368,7 +2310,7 @@
       setView(btn.dataset.mode);
       if (active && btn.dataset.mode !== "preview") workspaceView.applyWorkspace(active.id, active.workspace);
       if (active && btn.dataset.mode !== "edit") {
-        controller.renderDocument(active.id).catch((error) => setStatus(error.message));
+        controller.renderDocument(active.id).catch(() => {}); // Capture-owned preview status.
       }
       const surface = activeEditor();
       if (btn.dataset.mode !== "preview" && surface) surface.focus();
@@ -2419,7 +2361,7 @@
     const k = e.key.toLowerCase();
     if (k === "s") { e.preventDefault(); e.shiftKey ? saveAs() : save(); }
     else if (k === "o") { e.preventDefault(); openPicker(); }
-    else if (k === "f" && document.body.dataset.view !== "preview") { e.preventDefault(); openFind(); }
+    else if (k === "f" && document.body.dataset.view !== "preview") { e.preventDefault(); findController.open(); }
   });
 
   window.addEventListener("beforeunload", (e) => {
@@ -2573,7 +2515,7 @@
     replaceRange(surface, surface.selectionStart, surface.selectionEnd, text);   // undo-safe
     const pos = at + (caret === -1 ? text.length : caret);
     surface.setSelectionRange(pos, pos);
-    setDirty(true);
+    afterEdit();
   }
 
   if (!HAS_MATH) $("btn-eq").closest(".popover-wrap").style.display = "none";
@@ -2589,121 +2531,9 @@
     if (b) insertEquation(b.dataset.tex);
   });
 
-  /* ── Find & replace ─────────────────────────────
-     A textarea gives us nothing here: the browser's own find can search the
-     rendered preview but not the source, so in Edit mode there was no way to
-     locate a string at all. Replacements go through replaceRange so they land
-     on the native undo stack like every other edit. */
-  const findBar = $("find-bar"), findInput = $("find-input"), replaceInput = $("replace-input");
-  let matches = [], matchIdx = -1;
-  const findOptions = () => ({caseSensitive:$("find-case").checked, wholeWord:$("find-word").checked, regex:$("find-regex").checked});
-  for (const id of ["find-case", "find-word", "find-regex"]) $(id).addEventListener("change", () => { runFind(false); });
-
-  function runFind(keepIndex) {
-    const surface = activeEditor();
-    const q = findInput.value;
-    const result = MDEdit.searchMatches(surface ? surface.value : "", q, findOptions());
-    matches = result.matches;
-    $("find-error").textContent = result.error ? "Invalid regular expression: " + result.error : "";
-    findInput.setAttribute("aria-invalid", String(Boolean(result.error)));
-    $("find-replace").disabled = $("find-all").disabled = Boolean(result.error);
-    if (!keepIndex || matchIdx < 0 || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
-    paintCount();
-  }
-  function paintCount() {
-    const c = $("find-count");
-    c.textContent = findInput.value ? (matches.length ? (matchIdx + 1) + "/" + matches.length : "0/0") : "";
-    c.classList.toggle("none", !!findInput.value && !matches.length);
-  }
-  function revealMatch() {
-    const surface = activeEditor();
-    if (!surface) return;
-    if (matchIdx < 0 || !matches.length) return;
-    const { start, end } = matches[matchIdx];
-    // Selecting a match must not steal subsequent typing from the find bar.
-    surface.setSelectionRange(start, end);
-    // approximate, but enough to bring a match on screen in a wrapped textarea
-    const line = surface.value.slice(0, start).split("\n").length - 1;
-    const lh = parseFloat(getComputedStyle(surface).lineHeight) || 20;
-    const top = line * lh;
-    if (top < surface.scrollTop || top > surface.scrollTop + surface.clientHeight - lh * 2) {
-      surface.scrollTop = Math.max(0, top - surface.clientHeight / 3);
-    }
-    paintCount();
-  }
-  function stepMatch(dir) {
-    if (!matches.length) return;
-    matchIdx = (matchIdx + dir + matches.length) % matches.length;
-    revealMatch();
-  }
-  function afterEdit() { setDirty(true); }
-
-  function replaceCurrent() {
-    const surface = activeEditor();
-    if (!surface) return;
-    runFind(true);
-    if (matchIdx < 0 || !matches.length) return;
-    const { start, end } = matches[matchIdx];
-    const focused = document.activeElement;
-    const replacement = MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex);
-    replaceRange(surface, start, end, replacement);
-    afterEdit();
-    runFind(false);
-    const nextStart = start + replacement.length + (start === end ? 1 : 0);
-    const nextIndex = matches.findIndex(match => match.start >= nextStart);
-    if (nextIndex >= 0) matchIdx = nextIndex;
-    revealMatch();
-    if (findBar.contains(focused)) focused.focus();
-  }
-  function replaceAll() {
-    const surface = activeEditor();
-    if (!surface) return;
-    runFind(true);
-    if (!matches.length) return;
-    const r = replaceInput.value, n = matches.length;
-    let out = "", last = 0;
-    for (const match of matches) { out += surface.value.slice(last, match.start) + MDEdit.replacementText(r, match, findOptions().regex); last = match.end; }
-    out += surface.value.slice(last);
-    replaceRange(surface, 0, surface.value.length, out);   // one undo step for the lot
-    afterEdit();
-    runFind(false);
-    setStatus("Replaced " + n + " occurrence" + (n === 1 ? "" : "s"));
-  }
-
-  function openFind() {
-    const surface = activeEditor();
-    if (!surface) return;
-    if (document.body.dataset.view === "preview") setView("split");
-    document.body.classList.add("find-open");
-    const sel = surface.value.slice(surface.selectionStart, surface.selectionEnd);
-    if (sel && !sel.includes("\n")) findInput.value = sel;
-    findInput.focus();
-    findInput.select();
-    runFind(false);
-  }
-  function closeFind() {
-    document.body.classList.remove("find-open");
-    const surface = activeEditor();
-    if (surface) surface.focus();
-  }
-
-  findInput.addEventListener("input", () => { runFind(false); revealMatch(); });
-  findInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); stepMatch(e.shiftKey ? -1 : 1); }
-    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
-  });
-  replaceInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); replaceCurrent(); }
-    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
-  });
-  $("find-next").addEventListener("click", () => stepMatch(1));
-  $("find-prev").addEventListener("click", () => stepMatch(-1));
-  $("find-replace").addEventListener("click", replaceCurrent);
-  $("find-all").addEventListener("click", replaceAll);
-  $("find-close").addEventListener("click", closeFind);
-  $("editor-surfaces").addEventListener("keydown", (e) => {
-    if (!isActiveEditorEvent(e)) return;
-    if (e.key === "Escape" && document.body.classList.contains("find-open")) closeFind();
+  /* ── Find & replace ────────────────────────── */
+  const findController = MDEdit.createFindController({
+    document, activeEditor, replaceRange, onChange: afterEdit, setView, setStatus, isActiveEditorEvent,
   });
 
   /* ── Installed-app plumbing ─────────────────── */
@@ -2751,28 +2581,15 @@
       previewScrollTop: previewPane.scrollTop,
       viewMode: document.body.dataset.view || "split",
       tocOpen: document.body.classList.contains("toc-open"),
-      find: {
-        open: document.body.classList.contains("find-open"),
-        query: findInput.value,
-        replacement: replaceInput.value,
-        matchIndex: matchIdx,
-        ...findOptions(),
-      },
+      find: findController.capture(),
     };
   }
 
   function applySharedWorkspace(workspace) {
     setView(workspace.viewMode || "split");
     setToc(Boolean(workspace.tocOpen));
-    $("find-case").checked = Boolean(workspace.find?.caseSensitive);
-    $("find-word").checked = Boolean(workspace.find?.wholeWord);
-    $("find-regex").checked = Boolean(workspace.find?.regex);
-    findInput.value = workspace.find && workspace.find.query || "";
-    replaceInput.value = workspace.find && workspace.find.replacement || "";
-    matchIdx = workspace.find && Number.isInteger(workspace.find.matchIndex) ? workspace.find.matchIndex : -1;
-    document.body.classList.toggle("find-open", Boolean(workspace.find && workspace.find.open));
+    findController.apply(workspace.find);
     previewPane.scrollTop = Number.isFinite(workspace.previewScrollTop) ? workspace.previewScrollTop : 0;
-    runFind(true);
   }
 
   const documentDetailsCache = new WeakMap();
@@ -2873,7 +2690,10 @@
     });
   }
 
-  const browserRecoveryEnvironment = nativeApp ? null : MDEdit.createBrowserRecoveryEnvironment(window);
+  const snapshotSerializer = MDEdit.createSnapshotSerializer({ window });
+  const browserRecoveryEnvironment = nativeApp ? null : MDEdit.createBrowserRecoveryEnvironment(window, {
+    snapshotParser: json => snapshotSerializer.parse(json),
+  });
   const sessionIo = nativeApp ? {
     ...nativeApp,
     listenFileOpened(handler) {
@@ -2901,16 +2721,21 @@
     dialogDocuments: $("dialog-documents"),
     dialogActions: $("dialog-actions"),
     statusElement: statusEl,
+    statusPrefix: () => persistentRecoveryWarning,
     isMac,
     captureSharedWorkspace,
     applySharedWorkspace,
+    renderDocument: renderWorkspaceDocument,
+    beforeReloadDocument: () => desktopAssets?.clearCache(),
+    clearPreview: clearWorkspacePreview,
+    setPreview: setWorkspacePreview,
+    onDocumentStatus: updateRecoveryAction,
     onActivate(documentId, options) {
       controller.activateDocument(documentId, options);
       syncActiveSurface();
     },
     async onClose(documentId) {
       const result = await controller.closeDocument(documentId);
-      if (result && result.closed) browserFileHandles.delete(documentId);
       syncActiveSurface();
     },
     onCommand(command, event) {
@@ -2923,24 +2748,22 @@
     },
     onEditorInput(documentId, content) {
       controller.onEditorInput(documentId, content);
-      if (findInput.value) runFind(true);
+      findController.refresh();
       syncActiveSurface();
     },
   });
-  workspaceView.renderDocument = () => {
+  function renderWorkspaceDocument() {
     syncActiveSurface();
-    if (findInput.value) runFind(true);
-  };
-  workspaceView.beforeReloadDocument = () => desktopAssets?.clearCache();
-  workspaceView.clearPreview = (capture) => {
-    // Keep the current document visible during the debounced edit render.
-    // Clearing it collapses the scroll range and jumps the reader to the top.
+    findController.refresh();
+  }
+  function clearWorkspacePreview(capture) {
+    // Preserve the current document and scroll range during debounced edits.
     if (previewOwner?.documentId === capture?.documentId && document.body.dataset.view !== "edit") return;
     previewOwner = null;
     preview.replaceChildren();
     tocEl.replaceChildren();
-  };
-  workspaceView.setPreview = (html, capture) => {
+  }
+  function setWorkspacePreview(html, capture) {
     previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
     preview.innerHTML = html;
     const owner = previewOwner;
@@ -2951,7 +2774,7 @@
     wireCachedPreviewTools();
     buildToc();
     updateStats(capture.content);
-  };
+  }
 
   let recoveryScheduler;
   recoveryScheduler = new MDEdit.RecoveryScheduler({
@@ -2959,7 +2782,7 @@
       const model = controller && controller.session && controller.session.documents.get(documentId);
       const controlledSnapshot = controller && controller.recoverySnapshotForWrite(documentId, revision);
       if (!controlledSnapshot) return controller.writeRecoveryCheckpoint(documentId, revision);
-      const snapshotJson = controlledSnapshot || JSON.stringify(model.toSnapshot());
+      const snapshotJson = await controlledSnapshot;
       await sessionIo.writeRecoveryDocument(documentId, revision, snapshotJson);
       if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {
         model.persistedRevision = revision;
@@ -2974,6 +2797,7 @@
   controller = new MDEdit.SessionController({
     io: sessionIo,
     saveDocumentStrategy: nativeApp ? null : browserSaveDocumentStrategy,
+    snapshotSerializer,
     onRecoveryPerformance(metric) {
       const measurements = window.__MDEDIT_RECOVERY_PERFORMANCE__ || [];
       measurements.push(metric);
@@ -3009,14 +2833,13 @@
             // this work until Preview or Split is requested keeps large-tab
             // activation independent from Markdown/DOM construction.
             if (document.body.dataset.view === "edit" && !renderWhenHidden) return null;
-            const scrollTop = previewPane.scrollTop;
-            previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
-            mermaidPending = render(capture.content, isCurrent, preview, true, capture.path);
-            // Restore after synchronous DOM replacement, not after async diagrams,
-            // so a user's subsequent scrolling is never overwritten.
-            previewPane.scrollTop = scrollTop;
-            await mermaidPending;
-            return isCurrent() ? preview.innerHTML : null;
+            const canCommit = () => isCurrent()
+              && (renderWhenHidden || document.body.dataset.view !== "edit");
+            const rendered = await render(capture.content, {
+              isCurrent: canCommit, documentPath: capture.path,
+              onCommit() { previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision }; },
+            });
+            return rendered && canCommit() ? preview.innerHTML : null;
           },
         };
       },

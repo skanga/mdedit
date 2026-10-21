@@ -7,7 +7,10 @@
   "use strict";
 
   const LEGACY_DRAFT_KEY = "mdedit-draft-v1";
-  const BROWSER_RECOVERY_PREFIX = "mdedit-recovery-v1:";
+  const { BROWSER_RECOVERY_PREFIX, createBrowserRecoveryIo, createBrowserRecoveryEnvironment } =
+    typeof module !== "undefined" && module.exports ? require("./browser-recovery.js") : root.MDEdit;
+  const { createExportOperation, runCapturedExport } =
+    typeof module !== "undefined" && module.exports ? require("./export-service.js") : root.MDEdit;
   const DEFAULT_INACTIVE_LOAD_CONCURRENCY = 4;
   const DEFAULT_PREVIEW_CACHE_MAX_ENTRIES = 5;
   const DEFAULT_PREVIEW_CACHE_MAX_BYTES = 20 * 1024 * 1024;
@@ -117,122 +120,6 @@
     return unescape(encodeURIComponent(text)).length;
   }
 
-  function createBrowserRecoveryIo(storage) {
-    requireObject(storage, "storage");
-    for (const method of ["getItem", "setItem", "removeItem", "key"]) {
-      requireFunction(storage[method], `storage.${method}`);
-    }
-    const documentPrefix = (documentId) => `${BROWSER_RECOVERY_PREFIX}document:${encodeURIComponent(documentId)}:`;
-    const slots = (prefix) => ({ current: `${prefix}current`, previous: `${prefix}previous`, temp: `${prefix}temp` });
-    const valid = (raw, predicate) => {
-      if (typeof raw !== "string") return null;
-      try { const value = JSON.parse(raw); return predicate(value) ? raw : null; } catch (_) { return null; }
-    };
-    const validManifest = (raw) => valid(raw, (value) => {
-      SessionModel.fromManifest(value, { idFactory: () => "validation-id" });
-      return true;
-    });
-    const validDocument = (raw, documentId, revision) => valid(raw, (value) => {
-      const document = DocumentModel.fromSnapshot(value);
-      return document.id === documentId && document.snapshotRevision === revision;
-    });
-    const rotate = (keys, json, currentValidator) => {
-      JSON.parse(json);
-      storage.setItem(keys.temp, json);
-      try {
-        const current = currentValidator(storage.getItem(keys.current));
-        if (current !== null) storage.setItem(keys.previous, current);
-        storage.setItem(keys.current, json);
-      } finally {
-        storage.removeItem(keys.temp);
-      }
-    };
-    const cleanup = (prefix, keep) => {
-      const keys = [];
-      for (let index = 0; index < storage.length; index += 1) {
-        const key = storage.key(index);
-        if (typeof key === "string" && key.startsWith(prefix) && !keep.has(key)) keys.push(key);
-      }
-      for (const key of keys) storage.removeItem(key);
-    };
-    const manifestSlots = slots(`${BROWSER_RECOVERY_PREFIX}manifest:`);
-    return {
-      listenFileOpened() { return () => {}; },
-      async loadRecoveryManifest() {
-        return validManifest(storage.getItem(manifestSlots.current)) || validManifest(storage.getItem(manifestSlots.previous));
-      },
-      async loadRecoveryDocument(documentId, revision) {
-        const keys = slots(documentPrefix(documentId));
-        return validDocument(storage.getItem(keys.current), documentId, revision)
-          || validDocument(storage.getItem(keys.previous), documentId, revision);
-      },
-      async writeRecoveryDocument(documentId, revision, json) {
-        const keys = slots(documentPrefix(documentId));
-        const text = String(json);
-        const value = JSON.parse(text);
-        if (value.documentId !== documentId || value.snapshotRevision !== revision) throw new Error("recovery snapshot identity mismatch");
-        DocumentModel.fromSnapshot(value);
-        rotate(keys, text, (raw) => {
-          if (typeof raw !== "string") return null;
-          try {
-            const currentDocument = DocumentModel.fromSnapshot(JSON.parse(raw));
-            return currentDocument.id === documentId ? raw : null;
-          } catch (_) { return null; }
-        });
-        cleanup(documentPrefix(documentId), new Set([keys.current, keys.previous]));
-      },
-      async writeRecoveryManifest(generation, json) {
-        const text = String(json);
-        const value = JSON.parse(text);
-        if (value.generation !== generation) throw new Error("recovery manifest generation mismatch");
-        SessionModel.fromManifest(value, { idFactory: () => "validation-id" });
-        rotate(manifestSlots, text, validManifest);
-        cleanup(`${BROWSER_RECOVERY_PREFIX}manifest`, new Set([manifestSlots.current, manifestSlots.previous]));
-      },
-      async deleteRecoveryDocument(documentId) {
-        const prefix = documentPrefix(documentId);
-        const keys = [];
-        for (let index = 0; index < storage.length; index += 1) {
-          const key = storage.key(index);
-          if (typeof key === "string" && key.startsWith(prefix)) keys.push(key);
-        }
-        for (const key of keys) storage.removeItem(key);
-      },
-      async recoveryDirectory() { return "localStorage://mdedit-recovery-v1"; },
-    };
-  }
-
-  function createMemoryStorage() {
-    const values = new Map();
-    return {
-      get length() { return values.size; },
-      key(index) { return [...values.keys()][index] ?? null; },
-      getItem(key) { return values.has(key) ? values.get(key) : null; },
-      setItem(key, value) { values.set(String(key), String(value)); },
-      removeItem(key) { values.delete(key); },
-    };
-  }
-
-  function createBrowserRecoveryEnvironment(browserRoot) {
-    let storage;
-    let error = null;
-    try {
-      storage = browserRoot.localStorage;
-      const probe = `${BROWSER_RECOVERY_PREFIX}probe`;
-      storage.setItem(probe, "1");
-      storage.removeItem(probe);
-    } catch (reason) {
-      error = normalizeError(reason);
-      storage = createMemoryStorage();
-    }
-    return {
-      io: createBrowserRecoveryIo(storage),
-      legacyStorage: storage,
-      persistent: error === null,
-      error,
-    };
-  }
-
   class SessionController {
     constructor({
       io,
@@ -250,6 +137,7 @@
       previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
       onRecoveryPerformance = () => {},
       saveDocumentStrategy = null,
+      snapshotSerializer = null,
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -281,6 +169,10 @@
         throw new TypeError("saveDocumentStrategy must be a function or null");
       }
       this.saveDocumentStrategy = saveDocumentStrategy;
+      this.snapshotSerializer = snapshotSerializer === null
+        ? { serialize: (snapshot) => JSON.stringify(snapshot) }
+        : requireObject(snapshotSerializer, "snapshot serializer");
+      requireFunction(this.snapshotSerializer.serialize, "snapshot serializer.serialize");
       this.session = null;
 
       this._started = false;
@@ -454,6 +346,14 @@
         this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
       }
       if (!this._isLifecycleActive(token)) return this.session;
+      if (typeof this.snapshotSerializer.prepare === "function") {
+        try { await this.snapshotSerializer.prepare(); }
+        catch (_) {
+          // Worker startup must not prevent reading source or encoding small
+          // snapshots. A large encoding request will report its own failure.
+        }
+        if (!this._isLifecycleActive(token)) return this.session;
+      }
       if (this._localSessionEstablished) {
         if (this.restoreOutcome === "pending") this.restoreOutcome = "local-session";
         return this._finishRestore(token);
@@ -1012,6 +912,27 @@
       return this.rebindBrowserSource(documentId, ...sourceKeys);
     }
 
+    browserWriteHandle(documentId) {
+      if (this._disposed || !this.session?.documents.has(documentId)) return null;
+      const sources = this._browserSourcesByDocument.get(documentId);
+      return sources ? [...sources].find(source => typeof source.createWritable === "function" && typeof source.getFile === "function") || null : null;
+    }
+
+    renameDocument(documentId, displayName) {
+      return this._runDocumentOperation(`rename:${documentId}`, async () => {
+        const document = this._requireLoadedDocument(documentId);
+        document.updateMetadata({ displayName, path: null, canonicalPath: null });
+        this._forgetBrowserSources(documentId);
+        this._externalVersions?.delete(documentId);
+        this.checkpointDocument(documentId, "rename-checkpoint");
+        this._invalidatePreview(documentId);
+        this._renderSession();
+        this._renderDocumentView(document);
+        if (this.session.activeDocumentId === documentId) await this.renderDocument(documentId);
+        return document;
+      });
+    }
+
     _forgetBrowserSources(documentId) {
       const sources = this._browserSourcesByDocument.get(documentId);
       if (!sources) return;
@@ -1404,17 +1325,13 @@
         recoveryStatus: document.recoveryStatus,
       });
       if (this.session.activeDocumentId === documentId) {
-        this.renderDocument(documentId).catch((reason) => {
-          this._setDocumentStatus(documentId, {
-            status: "failed",
-            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
-          });
-        });
+        this.renderDocument(documentId).catch(() => {}); // Preview status is capture-owned.
       }
       return true;
     }
 
     onRecoveryStatus(documentId, status, error) {
+      if (this._disposed) return;
       const document = this.session && this.session.documents.get(documentId);
       if (this._sessionRecoveryFailure) {
         this._publishBlockedStatus(document);
@@ -1495,6 +1412,27 @@
       return true;
     }
 
+    _encodeRecoverySnapshot(snapshot) {
+      const started = Date.now();
+      const encoding = { json: null, durationMs: 0, asynchronous: false };
+      const complete = (json) => {
+        if (typeof json !== "string") throw new TypeError("snapshot encoder must return a JSON string");
+        encoding.durationMs = Date.now() - started;
+        return json;
+      };
+      try {
+        const result = this.snapshotSerializer.serialize(snapshot);
+        encoding.asynchronous = Boolean(result && typeof result.then === "function");
+        encoding.json = encoding.asynchronous ? Promise.resolve(result).then(complete) : complete(result);
+      } catch (reason) {
+        encoding.json = Promise.reject(reason);
+      }
+      // Encoding may finish before its queued transaction begins consuming it.
+      // Observe rejection now, while retaining it for the actual write to fail.
+      if (encoding.json && typeof encoding.json.catch === "function") encoding.json.catch(() => {});
+      return encoding;
+    }
+
     recoverySnapshotForWrite(documentId, revision) {
       const snapshot = this._manifestBarrier && this._manifestBarrier.snapshots
         && this._manifestBarrier.snapshots.get(documentId);
@@ -1509,14 +1447,13 @@
       if (!(document instanceof DocumentModel) || document.snapshotRevision !== snapshotRevision) {
         return Promise.resolve(false);
       }
-      const serializationStartedAt = Date.now();
-      const snapshotJson = JSON.stringify(document.toSnapshot());
+      const encoding = this._encodeRecoverySnapshot(document.toSnapshot());
       const capture = Object.freeze({
         document,
         documentId,
         snapshotRevision,
-        json: snapshotJson,
-        serializationDurationMs: Date.now() - serializationStartedAt,
+        token: this._lifecycleToken,
+        encoding,
         tab: Object.freeze({
           documentId,
           displayName: document.displayName,
@@ -1539,7 +1476,7 @@
         };
         this._manifestBarrier = barrier;
       }
-      barrier.snapshots.set(documentId, { revision: snapshotRevision, json: capture.json });
+      barrier.snapshots.set(documentId, { revision: snapshotRevision, json: encoding.json });
       barrier.pending += 1;
       const operation = this._checkpointWrites.catch(() => {}).then(
         () => this._writeRecoveryCheckpointNow(capture),
@@ -1554,30 +1491,36 @@
     }
 
     async _writeRecoveryCheckpointNow(capture) {
-      if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
+      const current = () => this._isLifecycleActive(capture.token)
+        && this.session && this.session.documents.get(capture.documentId) === capture.document;
+      if (!current()) return false;
       try {
+        const json = typeof capture.encoding.json === "string" ? capture.encoding.json : await capture.encoding.json;
+        if (!current()) return false;
         const writeMetrics = await this.io.writeRecoveryDocument(
-          capture.documentId, capture.snapshotRevision, capture.json,
+          capture.documentId, capture.snapshotRevision, json,
         );
         if (writeMetrics && Number.isFinite(writeMetrics.ipcAndNativeDurationMs)) {
           try {
             this.onRecoveryPerformance(Object.freeze({
               documentId: capture.documentId,
               revision: capture.snapshotRevision,
-              bytes: Number.isSafeInteger(writeMetrics.bytes) ? writeMetrics.bytes : capture.json.length,
-              serializationDurationMs: capture.serializationDurationMs,
+              bytes: Number.isSafeInteger(writeMetrics.bytes) ? writeMetrics.bytes : json.length,
+              serializationDurationMs: capture.encoding.durationMs,
+              serializationMode: capture.encoding.asynchronous ? "asynchronous-latency" : "synchronous-duration",
               ipcAndNativeDurationMs: writeMetrics.ipcAndNativeDurationMs,
               atomicWriteDurationMs: writeMetrics.atomicWriteDurationMs,
-              endToEndDurationMs: capture.serializationDurationMs + writeMetrics.ipcAndNativeDurationMs,
+              endToEndDurationMs: capture.encoding.durationMs + writeMetrics.ipcAndNativeDurationMs,
             }));
           } catch (_) {
             // Diagnostics must never turn a durable recovery write into a failure.
           }
         }
-        if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
+        if (!current()) return false;
         const candidate = this._durableManifestCandidate(capture);
         if (!candidate) return false;
         await this.io.writeRecoveryManifest(candidate.generation, JSON.stringify(candidate));
+        if (!current()) return false;
         this._rememberDurableManifest(candidate);
         await this._cleanupRecoveryAfterManifest(candidate);
         if (this.session.documents.get(capture.documentId) === capture.document) {
@@ -1588,8 +1531,10 @@
         }
         return true;
       } catch (reason) {
-        for (const current of this.session ? this.session.documents.values() : []) {
-          if (current instanceof DocumentModel) this._blockRecovery(current.id, reason);
+        if (this._isLifecycleActive(capture.token)) {
+          for (const document of this.session ? this.session.documents.values() : []) {
+            if (document instanceof DocumentModel) this._blockRecovery(document.id, reason);
+          }
         }
         throw reason;
       }
@@ -1640,6 +1585,7 @@
 
     _releaseManifestBarrier(scheduleDeferred) {
       this._manifestBarrier = null;
+      if (this._disposed) { this._deferredRecoveryRevisions.clear(); return; }
       if (!scheduleDeferred || this._sessionRecoveryFailure) return;
       const deferred = [...this._deferredRecoveryRevisions];
       this._deferredRecoveryRevisions.clear();
@@ -1674,7 +1620,7 @@
       const cacheKey = this._previewCacheKey(capture);
       const cached = this._showCachedPreviewOrClear(capture);
       if (cached) {
-        return Promise.resolve(cached.html);
+        return this._trackPreviewResult(capture, cached.html);
       }
       let rendering;
       try {
@@ -1682,9 +1628,9 @@
         if (typeof render !== "function") throw new TypeError("renderer must be a function or provide render");
         rendering = render.call(this.renderer, capture, { renderWhenHidden });
       } catch (reason) {
-        return Promise.reject(reason);
+        return this._trackPreviewResult(capture, Promise.reject(reason));
       }
-      return Promise.resolve(rendering).then((result) => {
+      return this._trackPreviewResult(capture, Promise.resolve(rendering).then((result) => {
         if (result && typeof result === "object" && typeof result.commit === "function") {
           if (!this._canCommitRender(capture)) return null;
           return Promise.resolve(result.commit(capture, () => this._canCommitRender(capture))).then((html) => {
@@ -1701,6 +1647,21 @@
         this._storePreview(cacheKey, document.id, html);
         if (this._canCommitRender(capture)) this._setPreview(html, capture);
         return html;
+      }));
+    }
+
+    _trackPreviewResult(capture, result) {
+      return Promise.resolve(result).then((html) => {
+        if (typeof html === "string" && this._isCurrentRender(capture)) {
+          this._setDocumentStatus(capture.documentId, { previewStatus: "clean" });
+        }
+        return html;
+      }, (reason) => {
+        if (this._isCurrentRender(capture)) {
+          this._setDocumentStatus(capture.documentId, { previewStatus: "failed",
+            message: `Preview failed for ${capture.displayName}: ${normalizeError(reason).message}` });
+        }
+        throw reason;
       });
     }
 
@@ -1752,27 +1713,8 @@
       if (typeof format !== "string" || format.length === 0) throw new TypeError("export format is required");
 
       const capture = this.captureActiveDocument({ format });
-      const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
-      if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
-      return this._runCapturedExport(
-        capture,
-        capture.displayName,
-        async () => {
-          let exportCapture = capture;
-          if (format === "html" || format === "png") {
-            const renderForExport = this.renderer && this.renderer.renderForExport;
-            if (typeof renderForExport !== "function") {
-              throw new Error(`isolated ${format.toUpperCase()} export renderer is unavailable`);
-            }
-            const renderedHtml = await renderForExport.call(this.renderer, capture);
-            if (typeof renderedHtml !== "string" || renderedHtml.length === 0) {
-              throw new Error(`isolated ${format.toUpperCase()} export produced no HTML`);
-            }
-            exportCapture = Object.freeze({ ...capture, renderedHtml });
-          }
-          return exportDocument.call(this.exporter, exportCapture);
-        },
-      );
+      const operation = createExportOperation(capture, this.renderer, this.exporter);
+      return this._runCapturedExport(capture, capture.displayName, operation);
     }
 
     recordCapturedSave(capture, result, { persist = true } = {}) {
@@ -2431,12 +2373,7 @@
       this._renderSession();
       this._renderDocumentView(document);
       if (this.session.activeDocumentId === document.id) {
-        this.renderDocument(document.id).catch((reason) => {
-          this._setDocumentStatus(document.id, {
-            status: "failed",
-            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
-          });
-        });
+        this.renderDocument(document.id).catch(() => {}); // Preview status is capture-owned.
       }
     }
 
@@ -2533,39 +2470,13 @@
       return true;
     }
 
-    async _runCapturedExport(capture, label, operation) {
-      this._setDocumentStatus(capture.documentId, {
-        status: "exporting",
-        message: `Exporting ${label}`,
-        editRevision: capture.editRevision,
+    _runCapturedExport(capture, label, operation) {
+      return runCapturedExport({
+        capture, label, operation,
+        isCurrent: (options) => this.isDocumentCaptureCurrent(capture, options),
+        owns: () => this._ownsOperationCapture(capture),
+        setStatus: (status) => this._setDocumentStatus(capture.documentId, status),
       });
-      try {
-        const result = await operation(
-          capture,
-          (options) => this.isDocumentCaptureCurrent(capture, options),
-        );
-        if (this.isDocumentCaptureCurrent(capture)) {
-          const canceled = Boolean(result && result.canceled);
-          const message = canceled ? `Export canceled for ${label}`
-            : result && typeof result.message === "string" ? result.message : `Exported ${label}`;
-          this._setDocumentStatus(capture.documentId, {
-            status: canceled ? "canceled" : "exported",
-            message,
-            editRevision: capture.editRevision,
-          });
-        }
-        return result;
-      } catch (reason) {
-        const error = normalizeError(reason);
-        if (this._ownsOperationCapture(capture)) {
-          this._setDocumentStatus(capture.documentId, {
-            status: "failed",
-            message: `Could not export ${label}: ${error.message}`,
-            editRevision: capture.editRevision,
-          });
-        }
-        throw error;
-      }
     }
 
     closeDocument(documentId) {
@@ -2949,9 +2860,10 @@
               && document.persistedRevision < tab.snapshotRevision,
           };
           if (capture.needsSnapshot) {
+            capture.encoding = this._encodeRecoverySnapshot(document.toSnapshot());
             barrier.snapshots.set(tab.documentId, {
               revision: tab.snapshotRevision,
-              json: JSON.stringify(document.toSnapshot()),
+              json: capture.encoding.json,
             });
           }
           return capture;
@@ -2971,6 +2883,8 @@
             throw this._sessionRecoveryFailure;
           }
           try {
+            await Promise.all(capturedDocuments.filter(capture => capture.needsSnapshot).map(capture => capture.encoding.json));
+            if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
             if (retryScheduler && typeof this.scheduler.retry === "function") {
               for (const capture of capturedDocuments) await this.scheduler.retry(capture.documentId);
             }
@@ -2995,7 +2909,9 @@
             await this._cleanupRecoveryAfterManifest(candidate);
           } catch (reason) {
             if (this._manifestBarrier === barrier) this._manifestBarrier = null;
-            for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
+            if (this._isLifecycleActive(token)) {
+              for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
+            }
             throw reason;
           }
           const diverged = barrier.needsCatchUp
@@ -3117,13 +3033,7 @@
           if (this._disposed || viewToken !== this._viewToken || !this.session
               || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
           if (!(document instanceof DocumentModel) || document.workspace.viewMode !== "edit") {
-            this.renderDocument(id).catch((reason) => {
-              if (!this.session || this.session.documents.get(id) !== document) return;
-              this._setDocumentStatus(id, {
-                status: "failed",
-                message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
-              });
-            });
+            this.renderDocument(id).catch(() => {}); // Preview status is capture-owned.
           }
           if (persist && this._restoreState === "restored") {
             this._persistManifestNow().catch((reason) => {
@@ -3177,6 +3087,7 @@
     }
 
     _setDocumentStatus(documentId, status) {
+      if (this._disposed) return;
       if (typeof this.view.setDocumentStatus === "function") this.view.setDocumentStatus(documentId, status);
     }
 
@@ -3282,6 +3193,7 @@
       this._loadQueue = [];
       this._loadPriority = [];
       this._loadingIds.clear();
+      this._deferredRecoveryRevisions.clear();
       this._browserSourcesByDocument.clear();
       this._compatibilitySavePaths.clear();
       this._allowCompatibilitySaving = false;
@@ -3306,7 +3218,11 @@
         this._unlisten = null;
         this._started = false;
         this._listenerReady = Promise.resolve(null);
-        if (typeof unlisten === "function") await Promise.resolve(unlisten());
+        try {
+          if (typeof this.snapshotSerializer.dispose === "function") await this.snapshotSerializer.dispose();
+        } finally {
+          if (typeof unlisten === "function") await Promise.resolve(unlisten());
+        }
       })();
       return this._disposePromise;
     }

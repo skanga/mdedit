@@ -128,7 +128,11 @@
       let source = options.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (options.wholeWord) source = '(?<![\\p{L}\\p{N}_])(?:' + source + ')(?![\\p{L}\\p{N}_])';
       const pattern = new RegExp(source, options.caseSensitive ? 'gu' : 'giu');
-      const matches = [...value.matchAll(pattern)].map(match => ({start:match.index, end:match.index + match[0].length, captures:[...match], groups:match.groups}));
+      const matches = [];
+      for (const match of value.matchAll(pattern)) {
+        if (matches.length === 10000) return {matches:[], error:'Too many matches (limit 10000); refine your search', errorKind:'limit'};
+        matches.push({start:match.index, end:match.index + match[0].length, captures:[...match], groups:match.groups});
+      }
       return {matches, error:null};
     } catch (error) { return {matches:[], error:error.message}; }
   }

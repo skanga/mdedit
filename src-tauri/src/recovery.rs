@@ -3,7 +3,7 @@ use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Instant;
 use uuid::Uuid;
 
@@ -102,16 +102,17 @@ struct FindState {
     match_index: i64,
 }
 
+#[derive(Clone)]
 pub struct RecoveryStore {
     root: PathBuf,
-    operation_lock: Mutex<()>,
+    operation_lock: Arc<Mutex<()>>,
 }
 
 impl RecoveryStore {
     pub fn new(root: PathBuf) -> Self {
         Self {
             root,
-            operation_lock: Mutex::new(()),
+            operation_lock: Arc::new(Mutex::new(())),
         }
     }
 
@@ -639,51 +640,64 @@ fn sync_directory(directory: Option<&Path>) {
 }
 
 #[tauri::command]
-pub(crate) fn load_recovery_manifest(
+pub(crate) async fn load_recovery_manifest(
     store: tauri::State<'_, RecoveryStore>,
 ) -> Result<Option<String>, String> {
-    store
-        .load_manifest_optional()?
-        .map(|bytes| {
-            String::from_utf8(bytes)
-                .map_err(|error| format!("recovery manifest is not UTF-8: {error}"))
-        })
-        .transpose()
+    let store = store.inner().clone();
+    crate::blocking::run(move || {
+        store
+            .load_manifest_optional()?
+            .map(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|error| format!("recovery manifest is not UTF-8: {error}"))
+            })
+            .transpose()
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn write_recovery_manifest(
+pub(crate) async fn write_recovery_manifest(
     store: tauri::State<'_, RecoveryStore>,
     generation: u64,
     json: String,
 ) -> Result<(), String> {
-    store.write_manifest(generation, json.as_bytes())
+    let store = store.inner().clone();
+    crate::blocking::run(move || store.write_manifest(generation, json.as_bytes())).await
 }
 
 #[tauri::command]
-pub(crate) fn load_recovery_document(
+pub(crate) async fn load_recovery_document(
     store: tauri::State<'_, RecoveryStore>,
     document_id: String,
     snapshot_revision: u64,
 ) -> Result<String, String> {
-    String::from_utf8(store.load_document(&document_id, snapshot_revision)?)
-        .map_err(|error| format!("recovery document is not UTF-8: {error}"))
+    let store = store.inner().clone();
+    crate::blocking::run(move || {
+        String::from_utf8(store.load_document(&document_id, snapshot_revision)?)
+            .map_err(|error| format!("recovery document is not UTF-8: {error}"))
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn write_recovery_document(
+pub(crate) async fn write_recovery_document(
     store: tauri::State<'_, RecoveryStore>,
     document_id: String,
     revision: u64,
     json: String,
 ) -> Result<RecoveryWriteMetrics, String> {
-    let bytes = json.len();
-    let started = Instant::now();
-    store.write_document(&document_id, revision, json.as_bytes())?;
-    Ok(RecoveryWriteMetrics {
-        bytes,
-        atomic_write_duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
+    let store = store.inner().clone();
+    crate::blocking::run(move || {
+        let bytes = json.len();
+        let started = Instant::now();
+        store.write_document(&document_id, revision, json.as_bytes())?;
+        Ok(RecoveryWriteMetrics {
+            bytes,
+            atomic_write_duration_ms: started.elapsed().as_secs_f64() * 1_000.0,
+        })
     })
+    .await
 }
 
 #[derive(Debug, Serialize)]
@@ -694,11 +708,12 @@ pub(crate) struct RecoveryWriteMetrics {
 }
 
 #[tauri::command]
-pub(crate) fn delete_recovery_document(
+pub(crate) async fn delete_recovery_document(
     store: tauri::State<'_, RecoveryStore>,
     document_id: String,
 ) -> Result<(), String> {
-    store.delete_document(&document_id)
+    let store = store.inner().clone();
+    crate::blocking::run(move || store.delete_document(&document_id)).await
 }
 
 fn recovery_directory_path(store: &RecoveryStore) -> Result<String, String> {
@@ -720,6 +735,17 @@ mod tests {
     use std::cell::Cell;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn worker_store_clones_share_the_recovery_operation_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RecoveryStore::new(directory.path().to_path_buf());
+        let worker_store = store.clone();
+        let guard = store.lock().unwrap();
+        assert!(worker_store.operation_lock.try_lock().is_err());
+        drop(guard);
+        assert!(worker_store.operation_lock.try_lock().is_ok());
+    }
 
     const DOCUMENT_ID: &str = "11111111-1111-4111-8111-111111111111";
     const OTHER_DOCUMENT_ID: &str = "22222222-2222-4222-8222-222222222222";

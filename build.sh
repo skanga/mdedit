@@ -9,9 +9,10 @@
 # both and they can never drift apart.
 set -euo pipefail
 cd "$(dirname "$0")"
+export MDEDIT_BUILD_MODE="${1:-}"
 
 python3 - <<'PY'
-import base64, re
+import base64, os, re
 from pathlib import Path
 
 template = Path("src/index.template.html").read_text(encoding="utf-8")
@@ -42,12 +43,19 @@ LIBS = {
     "/*__MERMAID__*/": "vendor/mermaid.min.js",
     "/*__DOCUMENT_MODEL__*/": "src/document-model.js",
     "/*__SESSION_MODEL__*/": "src/session-model.js",
+    "/*__BROWSER_RECOVERY__*/": "src/browser-recovery.js",
+    "/*__EXPORT_SERVICE__*/": "src/export-service.js",
+    "/*__MARKDOWN_PARSER__*/": "src/markdown-parser.js",
+    "/*__SYNTAX_HIGHLIGHTER__*/": "src/syntax-highlighter.js",
+    "/*__SNAPSHOT_SERIALIZER__*/": "src/snapshot-serializer.js",
     "/*__RECOVERY_SCHEDULER__*/": "src/recovery-scheduler.js",
     "/*__SESSION_CONTROLLER__*/": "src/session-controller.js",
     "/*__WORKSPACE_VIEW__*/": "src/workspace-view.js",
     "/*__NATIVE_BRIDGE__*/": "src/native-bridge.js",
     "/*__RECENT_DOCUMENTS__*/": "src/recent-documents.js",
     "/*__EDITOR_TOOLS__*/": "src/editor-tools.js",
+    "/*__SEARCH_RUNNER__*/": "src/search-runner.js",
+    "/*__FIND_CONTROLLER__*/": "src/find-controller.js",
     "/*__EDITOR_ENHANCEMENTS__*/": "src/editor-enhancements.js",
     "/*__FORMATTING_TOOLBAR__*/": "src/formatting-toolbar.js",
     "/*__DESKTOP_ASSETS__*/": "src/desktop-assets.js",
@@ -96,8 +104,13 @@ def build(out, include_heavy):
               '  }\n')
         assert sw in doc, "service worker registration block not found"
         doc = doc.replace(sw, "  // no service worker in the lite build: it ships as a single standalone file\n")
-    Path(out).write_text(doc, encoding="utf-8")
-    print(f"built {out} ({len(doc):,} bytes)")
+    if os.environ.get("MDEDIT_BUILD_MODE") == "--check":
+        if not Path(out).exists() or Path(out).read_text(encoding="utf-8") != doc:
+            raise SystemExit(f"{out} is stale; run bash ./build.sh and commit the generated files")
+        print(f"verified {out}")
+    else:
+        Path(out).write_text(doc, encoding="utf-8")
+        print(f"built {out} ({len(doc):,} bytes)")
 
 build("index.html", True)
 build("index-lite.html", False)
@@ -105,5 +118,12 @@ PY
 
 # The repo root is the deployable folder for the full build: the app plus the
 # PWA sidecars that make it installable and register it for .md files.
-cp pwa/manifest.json pwa/sw.js pwa/icon-192.png pwa/icon-512.png pwa/icon-maskable-512.png .
-echo "copied PWA files (manifest, service worker, icons)"
+if [[ "${MDEDIT_BUILD_MODE}" == "--check" ]]; then
+  for file in manifest.json sw.js icon-192.png icon-512.png icon-maskable-512.png; do
+    cmp "pwa/$file" "$file"
+  done
+  echo "verified PWA files"
+else
+  cp pwa/manifest.json pwa/sw.js pwa/icon-192.png pwa/icon-512.png pwa/icon-maskable-512.png .
+  echo "copied PWA files (manifest, service worker, icons)"
+fi

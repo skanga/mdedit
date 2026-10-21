@@ -57,6 +57,90 @@ for (const regex of [false, true]) {
   });
 }
 
+test('rapid regex replacement requests are serialized rather than dropping an Enter', async ({ page }) => {
+  await page.addInitScript(() => {
+    const Worker = window.Worker;
+    window.Worker = class extends Worker {
+      postMessage(message, ...transfer) {
+        setTimeout(() => super.postMessage(message, ...transfer), 100);
+      }
+    };
+  });
+  await setupFind(page, 'cat cat');
+  await page.locator('#find-regex').check();
+  await page.locator('#find-input').fill('(cat)');
+  await page.locator('#replace-input').fill('$1fish');
+  await page.locator('#replace-input').evaluate(input => {
+    input.focus();
+    for (let i = 0; i < 2; i++) input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+  });
+  await expect(activeEditor(page)).toHaveValue('catfish catfish');
+  await expect(page.locator('#replace-input')).toBeFocused();
+});
+
+test('changing the query cancels queued replacement requests', async ({ page }) => {
+  await setupFind(page, 'cat cat');
+  await page.locator('#find-input').fill('cat');
+  await page.locator('#replace-input').fill('fox');
+  await page.locator('#replace-input').evaluate(input => {
+    for (let i = 0; i < 2; i++) input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    const find = document.querySelector('#find-input');
+    find.value = 'dog';
+    find.dispatchEvent(new Event('input', { bubbles: true }));
+  });
+  await expect(page.locator('#find-count')).toHaveText('0/0');
+  await expect(activeEditor(page)).toHaveValue('cat cat');
+});
+
+test('switching documents cancels queued replacement requests', async ({ page }) => {
+  await setupFind(page, 'cat cat');
+  await page.locator('#find-input').fill('cat');
+  await page.locator('#replace-input').fill('fox');
+  await page.locator('#replace-input').evaluate(input => {
+    for (let i = 0; i < 2; i++) input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    window.__MDEDIT_TEST_HOOK__.controller.createUntitled();
+  });
+  await expect(activeEditor(page)).toHaveValue('');
+  await page.getByRole('tab').first().click();
+  await expect(activeEditor(page)).toHaveValue('cat cat');
+});
+
+for (const build of ['/', '/index-lite.html']) {
+  test(`pathological regex times out without blocking typing (${build})`, async ({ page }) => {
+    await installFakeTauri(page);
+    await page.goto(build);
+    await expect.poll(() => page.evaluate(() => window.__MDEDIT_TEST_HOOK__?.restored)).toBe(true);
+    await setEditorContent(page, 'a'.repeat(30) + '!');
+    await activeEditor(page).press('Control+f');
+    await page.locator('#find-regex').check();
+    // Dispatch without waiting for a pathological main-thread regex to return.
+    await page.evaluate(() => setTimeout(() => {
+      const input = document.querySelector('#find-input');
+      input.value = '(a+)+$';
+      input.dispatchEvent(new Event('input', { bubbles: true }));
+    }, 0));
+    await expect(page.locator('#find-error')).toContainText('timed out', { timeout: 3000 });
+    await expect(page.locator('#find-all')).toBeDisabled();
+    await page.locator('#find-input').fill('a+');
+    await expect(page.locator('#find-count')).toHaveText('1/1');
+    await expect(page.locator('#find-error')).toBeEmpty();
+    await expect(activeEditor(page)).toHaveValue('a'.repeat(30) + '!');
+  });
+}
+
+for (const regex of [false, true]) {
+  test(`excessive match counts fail safely without partial replacement (regex=${regex})`, async ({ page }) => {
+    const content = 'x'.repeat(10001);
+    await setupFind(page, content);
+    if (regex) await page.locator('#find-regex').check();
+    await page.locator('#find-input').fill('x');
+    await expect(page.locator('#find-error')).toContainText('Too many matches');
+    await expect(page.locator('#find-all')).toBeDisabled();
+    await expect(page.locator('#find-replace')).toBeDisabled();
+    await expect(activeEditor(page)).toHaveValue(content);
+  });
+}
+
 test('find options, invalid regex, capture replacement, replace all and undo', async ({ page }) => {
   await setupFind(page, 'Cat cat scatter cat12');
   await page.locator('#find-input').fill('cat');

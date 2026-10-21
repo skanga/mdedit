@@ -36,21 +36,23 @@ In the desktop app, select **Recent** in the toolbar to reopen a file or return 
 
 An unsaved change shows a dirty indicator on that document's tab and an asterisk in the window title. **Save** writes the active document, while **Save As** writes it to a new location. **Save All** writes every dirty document in tab order without closing MDedit. **Save All & Quit** in the close-application prompt performs the same ordered saves, then closes the application. Both commands ask for a destination for each untitled document and stop if a save is canceled or fails, leaving the remaining documents open and unchanged.
 
-MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. When the file on disk has an external change, the conflict dialog offers **Reload Disk Version**, **Keep Editing**, and **Save Editor Version As**. A deleted source remains open and can be saved to a new location.
+MDedit stores local recovery snapshots as you work and restores the tab order, active document, content, and per-document workspace state after an unexpected shutdown. Large snapshots are encoded in a queued worker, which also parses incoming and current copies during browser recovery writes. Small snapshots, manifest processing, recovery-read parsing, and storage commits still run on the UI thread. Encoding failures preserve the editor contents and expose **Retry recovery** in the status bar. Until retry succeeds, recovery remains failed and a restore-on-quit cannot claim durability. Browser recovery retains the draft referenced by the selected valid manifest while newer writes are unpublished; it is not a version-history store or a cross-window transaction. Recovery status is independent of preview errors and ordinary save/export notifications, so successful operations do not dismiss a recovery failure. When the file on disk has an external change, the conflict dialog offers **Reload Disk Version**, **Keep Editing**, and **Save Editor Version As**. A deleted source remains open and can be saved to a new location.
 
 On Windows, desktop settings, WebView data, session recovery, and recent-file history are stored under `%LOCALAPPDATA%\com.skanga.mdedit`. To fully reset the app, close MDedit and delete the Local AppData folder; this removes unsaved recovery copies but leaves documents saved elsewhere untouched.
 
 Closing the application always asks for confirmation. With clean documents, choose **Close** or **Cancel**. With dirty documents, choose **Save All & Quit**, **Quit and Restore Next Time**, **Discard All & Quit**, or **Cancel**. The restore choice checkpoints the whole session locally before closing; discard permanently removes the pending recovered edits.
 
-Desktop exports use raw bytes and Tauri's native save dialog. The save dialog dynamically grants write access only to the selected destination; MDedit has no wildcard filesystem scope. Document saves and private recovery storage remain behind validated Rust commands.
+Desktop exports use raw bytes and Tauri's native save dialog. The save dialog dynamically grants write access only to the selected destination; MDedit has no wildcard filesystem scope. Document saves and private recovery storage remain behind validated Rust commands. These custom commands trust the application frontend rather than inheriting the export plugin's path scope; see the [desktop trust boundary](docs/security.md) for controls and remaining limits.
 
 ### Editing and attachments
+
+Markdown parsing, footnote expansion, and math preparation run in a cancellable worker. Preview and rendered exports report errors if worker support is unavailable rather than blocking the UI with a synchronous fallback; the source stays editable. Sanitization and DOM-dependent math/diagram rendering still run in the UI thread.
 
 Use the compact toolbar above the source editor for headings, bold, italic, lists, blockquotes, links, images, tables, code, horizontal rules, and equations. **More formatting** appears only when the pane is narrow, collecting secondary actions. The toolbar appears in Edit and Split modes. Use **Editor → Show formatting toolbar** to hide or restore it; this preference persists locally. On desktop, Image opens the existing image/attachment importer; in the browser it inserts a Markdown image placeholder.
 
 Use **Editor** for preferences. Font size, tab width, wrapping, and line numbers apply to every tab and persist locally. Enter continues bullets, numbered lists, and unchecked tasks; Enter on an empty list item ends the list. Shift+Enter inserts a plain newline. Formatting, indentation, list continuation, and replacement support Undo.
 
-Find searches only the active document. **Match case**, **Whole word**, and **Regex** stay with that tab's query. Regex replacements support `$1`, `$2`, named groups (`$<name>`), `$&` for the match, and `$$` for a literal dollar sign. Invalid expressions show an error and disable replacement.
+Find searches only the active document. **Match case**, **Whole word**, and **Regex** stay with that tab's query. Regex replacements support `$1`, `$2`, named groups (`$<name>`), `$&` for the match, and `$$` for a literal dollar sign. Invalid expressions show an error and disable replacement. Regex searches run in a worker with a 500 ms timeout; both search modes stop at 10,000 matches and ask you to refine the query rather than allocating an unbounded result set. Timeout/limit errors disable replacement without changing the document.
 
 On desktop, **Attach**, image paste, or dropping an image or other attachment copies it into an `assets` folder beside the Markdown document and inserts a relative link. Untitled documents prompt for Save As first. Each imported asset gets a unique filename, and files are limited to 20 MiB each. Relative images resolve from the document folder, including `../` references. HTML exports embed local images and attachments; PNG and PDF include local images. Remote images retain the existing export limitations. Keep the Markdown file and its relative assets together when moving or copying a document to another folder.
 
@@ -130,7 +132,7 @@ npm run tauri -- build
 npm run tauri -- build --bundles nsis
 ```
 
-Pull requests run the unit, Rust, desktop-build, and Linux Chromium browser gates. The 250 MB browser benchmark and native recovery-write diagnostic run only for version tags or an explicit workflow dispatch; see [the performance evidence guide](docs/testing/tabbed-editor-performance.md).
+Pull requests and pushes to `main` run the unit, Rust, desktop-build, Linux WebView smoke, and Chromium browser gates. The 250 MB browser benchmark and native recovery-write diagnostic run only for version tags or an explicit workflow dispatch; see [the performance evidence guide](docs/testing/tabbed-editor-performance.md).
 
 ## Project structure
 
@@ -138,6 +140,12 @@ Pull requests run the unit, Rust, desktop-build, and Linux Chromium browser gate
 | --- | --- |
 | `src/index.template.html` | Source template for the desktop frontend |
 | `src/native-bridge.js` | Native Tauri bridge used by the frontend |
+| `src/browser-recovery.js` | Browser storage adapter and in-memory recovery fallback |
+| `src/snapshot-serializer.js` | Queued worker encoding and write-validation parsing for large recovery snapshots |
+| `src/export-service.js` | Captured export rendering, lifecycle guards, and outcomes |
+| `src/markdown-parser.js` | Worker-based Markdown, footnote, and math preparation |
+| `src/syntax-highlighter.js` | Cancellable worker highlighting with plain-code fallback |
+| `src/find-controller.js` | Active-document Find/Replace coordination |
 | `src-tauri/` | Tauri application, Rust code, and bundle configuration |
 | `vendor/` | Vendored frontend dependencies and KaTeX fonts |
 | `build.sh` | Generates the frontend HTML assets |

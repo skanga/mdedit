@@ -258,6 +258,22 @@ function makeFixture(callbacks = {}, fixtureOptions = {}) {
   return { document, elements, legacy, view };
 }
 
+test('document status changes notify an injected observer even before tabs are mounted', () => {
+  const seen = [];
+  const { view } = makeFixture({ onDocumentStatus: (id, status) => seen.push([id, status]) });
+  const status = { recoveryStatus: 'failed', message: 'encoding failed' };
+  view.setDocumentStatus('one', status);
+  assert.deepEqual(seen, [['one', status]]);
+  view.dispose();
+});
+
+test('view accepts rendering and reload hooks at construction', () => {
+  const hooks = { renderDocument() {}, beforeReloadDocument() {}, clearPreview() {}, setPreview() {} };
+  const { view } = makeFixture(hooks);
+  for (const [name, hook] of Object.entries(hooks)) assert.equal(view[name], hook);
+  view.dispose();
+});
+
 function doc(id, overrides = {}) {
   return {
     id,
@@ -401,6 +417,22 @@ test("tabDescriptor exposes stable tab semantics and document status", () => {
     tabDescriptor(doc("both", { dirty: true, fileStatus: "externally-changed" }), { index: 0, size: 1 }).statusText,
     "File changed outside MDedit; Unsaved changes",
   );
+});
+
+test('captureEditorState uses native textLength without materializing textarea value', () => {
+  const editor = { textLength: 3, selectionStart: 0, selectionEnd: 99, scrollTop: 4,
+    get value() { throw new Error('unnecessary full-content read'); } };
+  assert.deepEqual(captureEditorState(editor), { selectionStart: 0, selectionEnd: 3, editorScrollTop: 4 });
+});
+
+test('applyWorkspace restores normalized offsets without reading textarea value', () => {
+  const { view } = makeFixture();
+  const editor = view.ensureEditor(doc('one', { content: '\r\nx' }));
+  Object.defineProperty(editor, 'textLength', { value: 2 });
+  Object.defineProperty(editor, 'value', { get() { throw new Error('unnecessary full-content read'); } });
+  view.applyWorkspace('one', { selectionStart: 0, selectionEnd: 99, editorScrollTop: 7 });
+  assert.equal(editor.selectionEnd, 2);
+  assert.equal(editor.scrollTop, 7);
 });
 
 test("captureEditorState defensively clamps caret and scroll values", () => {
@@ -757,7 +789,7 @@ test("active, close, dirty, conflict, and recovery announcements share the live 
   assert.equal(elements.statusElement.textContent, "Two.md: File changed outside MDedit; Unsaved changes; Recovery write failed");
 
   view.announceCloseOutcome({ closed: true }, "One.md");
-  assert.equal(elements.statusElement.textContent, "Closed One.md");
+  assert.equal(elements.statusElement.textContent, "Closed One.md · Recovery write failed");
 });
 
 test("identical consecutive close outcomes produce distinct live-region updates", async () => {
@@ -800,7 +832,8 @@ test("controller-shaped status payloads announce combined layers and omit clean 
     fileStatus: "normal",
     recoveryStatus: "clean",
   });
-  assert.equal(elements.statusElement.textContentWrites, writes);
+  assert.equal(elements.statusElement.textContent, "");
+  assert.equal(elements.statusElement.textContentWrites, writes + 1);
 });
 
 test("renderTabs preserves control focus and scrolls the focused or active tab into view", () => {
@@ -1137,6 +1170,133 @@ test("dispose force-closes a busy dialog once and ignores its late rejection", a
   await Promise.resolve();
   assert.equal(elements.dialog.hidden, true);
   assert.equal(elements.dialogMessage.textContent, "");
+});
+
+test('operation progress and failure cannot masquerade as recovery state', () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc('one')], 'one');
+  const shell = elements.tabList.children[0];
+  const badge = find(shell, el => el.classList.contains('document-tab-recovery'));
+  view.setDocumentStatus('one', { status: 'writing', message: 'Preparing PDF' });
+  assert.equal(shell.classList.contains('recovery-writing'), false);
+  view.setDocumentStatus('one', { status: 'failed', message: 'Could not export PDF' });
+  assert.equal(shell.classList.contains('recovery-failed'), false);
+  assert.equal(badge.hidden, true);
+  assert.match(shell.textContent, /Could not export PDF/);
+  view.setDocumentStatus('one', { status: 'failed' });
+  assert.match(shell.textContent, /Operation failed/);
+  assert.doesNotMatch(shell.textContent, /Recovery save failed/);
+});
+
+test('operation updates and clearing cannot hide an explicit recovery failure', () => {
+  const { elements, view } = makeFixture();
+  const documents = [doc('one'), doc('two')];
+  view.renderTabs(documents, 'one');
+  view.setDocumentStatus('one', { recoveryStatus: 'failed', message: 'Draft checkpoint failed' });
+  for (const status of [{ status: 'writing', message: 'Exporting PDF' }, { status: 'exported', message: 'Exported PDF' }, { status: 'clean' }]) {
+    view.setDocumentStatus('one', status);
+    assert.equal(elements.tabList.children[0].classList.contains('recovery-failed'), true);
+    assert.match(elements.statusElement.textContent, /Draft checkpoint failed/);
+  }
+  view.renderTabs([...documents].reverse(), 'one');
+  const shell = elements.tabList.children[1];
+  assert.equal(shell.classList.contains('recovery-failed'), true);
+  assert.match(shell.textContent, /Draft checkpoint failed/);
+});
+
+test('preview and recovery cleanup clear only their own status channels', () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc('one')], 'one');
+  const shell = elements.tabList.children[0];
+  view.setDocumentStatus('one', { previewStatus: 'failed', message: 'Preview worker unavailable' });
+  view.setDocumentStatus('one', { recoveryStatus: 'pending' });
+  view.setDocumentStatus('one', { recoveryStatus: 'clean' });
+  assert.match(shell.textContent, /Preview worker unavailable/);
+  view.setDocumentStatus('one', { status: 'exported', message: 'Exported source' });
+  view.setDocumentStatus('one', { previewStatus: 'clean' });
+  assert.doesNotMatch(shell.textContent, /Preview worker unavailable/);
+  assert.match(shell.textContent, /Exported source/);
+  view.setDocumentStatus('one', { status: 'clean' });
+  assert.equal(elements.statusElement.textContent, '');
+  view.setDocumentStatus('one', { previewStatus: 'failed', message: 'Preview failed again' });
+  view.setDocumentStatus('one', 'clean'); // The legacy full reset remains supported.
+  assert.doesNotMatch(shell.textContent, /Preview failed again/);
+  view.setDocumentStatus('one', { status: 'message', message: 'temporary' });
+  view.setDocumentStatus('one', null);
+  assert.doesNotMatch(shell.textContent, /temporary/);
+});
+
+test('a no-op preview cleanup does not rewrite tab text or the current announcement', () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc('one')], 'one');
+  view.setDocumentStatus('one', { status: 'exported', message: 'Exported source' });
+  const status = find(elements.tabList.children[0], el => el.classList.contains('document-tab-status'));
+  const tabWrites = status.textContentWrites, liveWrites = elements.statusElement.textContentWrites;
+  view.setDocumentStatus('one', { previewStatus: 'clean' });
+  assert.equal(status.textContentWrites, tabWrites);
+  assert.equal(elements.statusElement.textContentWrites, liveWrites);
+});
+
+test('guarded message cleanup cannot clear a newer operation even if its text is identical', () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc('one')], 'one');
+  const first = { status: 'message', message: 'Saved' }, next = { status: 'message', message: 'Saved' };
+  view.setDocumentStatus('one', first);
+  view.setDocumentStatus('one', next);
+  assert.equal(view.setDocumentStatus('one', { status: 'clean' }, { expectedOperation: first }), false);
+  assert.match(elements.tabList.textContent, /Saved/);
+  assert.equal(view.setDocumentStatus('one', { status: 'clean' }, { expectedOperation: next }), true);
+  assert.doesNotMatch(elements.tabList.textContent, /Saved/);
+});
+
+test('background operation cleanup can update its tab without stealing the active announcement', () => {
+  const { elements, view } = makeFixture();
+  const documents = [doc('one'), doc('two')];
+  view.renderTabs(documents, 'one');
+  view.setDocumentStatus('two', { status: 'message', message: 'Background export complete' });
+  view.announceActiveDocument(documents[0], documents);
+  const announcement = elements.statusElement.textContent;
+  view.setDocumentStatus('two', { status: 'clean' }, { announce: false });
+  assert.equal(elements.statusElement.textContent, announcement);
+  assert.doesNotMatch(elements.tabList.children[1].textContent, /Background export complete/);
+});
+
+test('persistent warnings and active recovery failures survive routine announcements', () => {
+  const { elements, view } = makeFixture({ statusPrefix: () => 'Persistent storage unavailable' });
+  const documents = [doc('one')];
+  view.renderTabs(documents, 'one');
+  view.setDocumentStatus('one', { recoveryStatus: 'failed', message: 'Checkpoint failed' });
+  view.announceActiveDocument(documents[0], documents);
+  assert.match(elements.statusElement.textContent, /Persistent storage unavailable/);
+  assert.match(elements.statusElement.textContent, /Checkpoint failed/);
+});
+
+test('recreating an editor surface does not clear the document recovery channel', () => {
+  const { elements, view } = makeFixture();
+  const document = doc('one');
+  view.renderTabs([document], 'one');
+  view.ensureEditor(document);
+  view.setDocumentStatus('one', { recoveryStatus: 'failed', message: 'Checkpoint failed' });
+  view.removeEditor('one');
+  view.ensureEditor(document);
+  view.setDocumentStatus('one', { status: 'message', message: 'Surface recreated' });
+  assert.equal(elements.tabList.children[0].classList.contains('recovery-failed'), true);
+  assert.match(elements.tabList.children[0].textContent, /Checkpoint failed/);
+});
+
+test('removed and disposed documents cannot retain or acquire old runtime status', () => {
+  const { elements, view } = makeFixture();
+  view.renderTabs([doc('one'), doc('two')], 'one');
+  view.setDocumentStatus('one', { recoveryStatus: 'failed', message: 'Old checkpoint error' });
+  view.setDocumentStatus('one', { previewStatus: 'failed', message: 'Old preview error' });
+  view.setDocumentStatus('one', { status: 'message', message: 'Old operation' });
+  view.renderTabs([doc('two')], 'two');
+  view.renderTabs([doc('one'), doc('two')], 'one');
+  assert.doesNotMatch(elements.tabList.children[0].textContent, /Old /);
+  view.dispose();
+  const message = elements.statusElement.textContent;
+  assert.equal(view.setDocumentStatus('one', { recoveryStatus: 'failed', message: 'Late failure' }), false);
+  assert.equal(elements.statusElement.textContent, message);
 });
 
 test("recovery status layers over dirty and conflict state and survives tab rerenders", () => {

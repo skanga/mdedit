@@ -2,6 +2,7 @@ name: Desktop
 on:
   pull_request:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
@@ -38,7 +39,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf webkit2gtk-driver xvfb
       - name: Build frontend
         # npm uses cmd.exe for package scripts on Windows; invoke the POSIX build explicitly.
         shell: bash
@@ -47,6 +48,12 @@ jobs:
         run: cargo test --manifest-path src-tauri/Cargo.toml
       - name: Build desktop bundles
         run: npx tauri build ${{ matrix.args }}
+      - name: Install desktop WebDriver
+        if: runner.os == 'Linux'
+        run: cargo install tauri-driver --locked
+      - name: Smoke-test real Linux release WebView
+        if: runner.os == 'Linux'
+        run: xvfb-run -a python3 tools/smoke-desktop.py src-tauri/target/release/mdedit
       - name: Stage portable Windows executable
         if: runner.os == 'Windows'
         shell: pwsh
@@ -77,6 +84,8 @@ jobs:
         run: npm ci
       - name: Install Chromium
         run: npx playwright install --with-deps chromium
+      - name: Verify checked-in generated frontend
+        run: npm run check:generated
       - name: Test browser interactions
         run: npm run test:browser
 

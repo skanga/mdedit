@@ -1486,28 +1486,31 @@ where
 }
 
 #[tauri::command]
-pub(crate) fn read_document(path: String) -> Result<ReadDocumentResult, String> {
-    read_document_path(Path::new(&path))
+pub(crate) async fn read_document(path: String) -> Result<ReadDocumentResult, String> {
+    crate::blocking::run(move || read_document_path(Path::new(&path))).await
 }
 
 #[tauri::command]
-pub(crate) fn save_document(
+pub(crate) async fn save_document(
     path: String,
     content: String,
     expected_sha256: Option<String>,
     compatibility_path: Option<String>,
 ) -> Result<SaveDocumentResult, String> {
-    save_document_path_with_compatibility(
-        Path::new(&path),
-        &content,
-        expected_sha256.as_deref(),
-        compatibility_path.as_deref(),
-    )
+    crate::blocking::run(move || {
+        save_document_path_with_compatibility(
+            Path::new(&path),
+            &content,
+            expected_sha256.as_deref(),
+            compatibility_path.as_deref(),
+        )
+    })
+    .await
 }
 
 #[tauri::command]
-pub(crate) fn canonicalize_document_path(path: String) -> Result<String, String> {
-    canonical_comparison_path(Path::new(&path))
+pub(crate) async fn canonicalize_document_path(path: String) -> Result<String, String> {
+    crate::blocking::run(move || canonical_comparison_path(Path::new(&path))).await
 }
 
 #[cfg(test)]

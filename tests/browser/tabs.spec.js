@@ -728,6 +728,27 @@ test('Markdown links open resolved files in tabs and preserve existing edits', a
   expect(await page.evaluate(() => window.__testBridge.calls.invokes.filter(c => c.command === 'read_document_asset'))).toEqual([]);
 });
 
+test('a detached local Markdown link cannot navigate out of the editor', async ({ page }) => {
+  await installFakeTauri(page, {
+    openPaths: ['/project/README.md'],
+    documents: { '/project/README.md': { content: '[Missing](missing.md)' } },
+  });
+  await openEditor(page);
+  await page.getByRole('button', { name: 'Open', exact: true }).click();
+  const missing = page.locator('#preview a', { hasText: 'Missing' });
+  await expect(missing).toHaveAttribute('aria-disabled', 'true');
+  const url = page.url();
+  const prevented = await missing.evaluate(anchor => {
+    let prevented = false;
+    anchor.addEventListener('click', event => { prevented = event.defaultPrevented; });
+    anchor.remove(); anchor.click();
+    return prevented;
+  });
+  expect(prevented).toBe(true);
+  expect(page.url()).toBe(url);
+  await expect(page.getByRole('tab', { name: /README.md/ })).toHaveAttribute('aria-selected', 'true');
+});
+
 test('same-name Save As updates tooltip, title and relative Markdown link resolution', async ({ page }) => {
   await installFakeTauri(page, {
     openPaths: ['/old/README.md'], savePath: '/new/README.md',
@@ -1127,7 +1148,7 @@ test("browser Save All stops after conflict and Save All and Quit only succeeds 
     editor.value = "a final";
     editor.dispatchEvent(new Event("input", { bubbles: true }));
   });
-  await page.getByRole("tab", { name: /b\.md/ }).click();
+  await page.getByRole("tab", { name: /^b\.md/ }).click();
   await activeEditor(page).evaluate((editor) => {
     editor.value = "b final";
     editor.dispatchEvent(new Event("input", { bubbles: true }));

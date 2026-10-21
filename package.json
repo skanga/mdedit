@@ -3,11 +3,14 @@
   "private": true,
   "scripts": {
     "build:web": "./build.sh",
+    "check:generated": "bash ./build.sh --check",
     "build:desktop": "./tools/build-desktop.sh",
     "tauri": "tauri",
     "test": "node --test",
-    "test:browser": "playwright test tests/browser/tabs.spec.js tests/browser/find.spec.js",
-    "test:performance": "playwright test tests/browser/performance.spec.js --workers=1"
+    "pretest:browser": "bash ./build.sh",
+    "test:browser": "playwright test tests/browser/tabs.spec.js tests/browser/find.spec.js tests/browser/security.spec.js tests/browser/rendering.spec.js tests/browser/recovery-encoding.spec.js tests/browser/recovery-storage.spec.js tests/browser/highlighting.spec.js",
+    "pretest:performance": "bash ./build.sh",
+    "test:performance": "playwright test tests/browser/performance.spec.js tests/browser/responsiveness.spec.js --workers=1"
   },
   "devDependencies": {
     "@playwright/test": "^1.63.0",

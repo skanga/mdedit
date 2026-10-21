@@ -1133,6 +1133,7 @@
   <span id="stat-lines" class="hide-sm">1 line</span>
   <span class="spacer"></span>
   <span id="status" role="status" aria-live="polite"></span>
+  <button class="btn" id="btn-retry-recovery" type="button" title="Retry recovery for all open documents" hidden>Retry recovery</button>
   <span id="document-details" title="Cursor position, encoding, line endings, and current document size"></span>
 </footer>
 
@@ -1140,7 +1141,7 @@
 
 <input type="file" id="file-input" accept=".md,.markdown,.mdown,.mkd,.txt,text/markdown,text/plain" multiple style="display:none">
 
-<script>/**
+<script id="marked-library">/**
  * marked v14.1.4 - a markdown parser
  * Copyright (c) 2011-2024, Christopher Jeffrey. (MIT Licensed)
  * https://github.com/markedjs/marked
@@ -1150,7 +1151,7 @@
 <script>/*! @license DOMPurify 3.2.7 | (c) Cure53 and other contributors | Released under the Apache license 2.0 and Mozilla Public License 2.0 | github.com/cure53/DOMPurify/blob/3.2.7/LICENSE */
 !function(e,t){"object"==typeof exports&&"undefined"!=typeof module?module.exports=t():"function"==typeof define&&define.amd?define(t):(e="undefined"!=typeof globalThis?globalThis:e||self).DOMPurify=t()}(this,(function(){"use strict";const{entries:e,setPrototypeOf:t,isFrozen:n,getPrototypeOf:o,getOwnPropertyDescriptor:r}=Object;let{freeze:i,seal:a,create:l}=Object,{apply:c,construct:s}="undefined"!=typeof Reflect&&Reflect;i||(i=function(e){return e}),a||(a=function(e){return e}),c||(c=function(e,t){for(var n=arguments.length,o=new Array(n>2?n-2:0),r=2;r<n;r++)o[r-2]=arguments[r];return e.apply(t,o)}),s||(s=function(e){for(var t=arguments.length,n=new Array(t>1?t-1:0),o=1;o<t;o++)n[o-1]=arguments[o];return new e(...n)});const u=w(Array.prototype.forEach),m=w(Array.prototype.lastIndexOf),p=w(Array.prototype.pop),f=w(Array.prototype.push),d=w(Array.prototype.splice),h=w(String.prototype.toLowerCase),g=w(String.prototype.toString),T=w(String.prototype.match),y=w(String.prototype.replace),E=w(String.prototype.indexOf),A=w(String.prototype.trim),_=w(Object.prototype.hasOwnProperty),S=w(RegExp.prototype.test),b=(N=TypeError,function(){for(var e=arguments.length,t=new Array(e),n=0;n<e;n++)t[n]=arguments[n];return s(N,t)});var N;function w(e){return function(t){t instanceof RegExp&&(t.lastIndex=0);for(var n=arguments.length,o=new Array(n>1?n-1:0),r=1;r<n;r++)o[r-1]=arguments[r];return c(e,t,o)}}function R(e,o){let r=arguments.length>2&&void 0!==arguments[2]?arguments[2]:h;t&&t(e,null);let i=o.length;for(;i--;){let t=o[i];if("string"==typeof t){const e=r(t);e!==t&&(n(o)||(o[i]=e),t=e)}e[t]=!0}return e}function O(e){for(let t=0;t<e.length;t++){_(e,t)||(e[t]=null)}return e}function v(t){const n=l(null);for(const[o,r]of e(t)){_(t,o)&&(Array.isArray(r)?n[o]=O(r):r&&"object"==typeof r&&r.constructor===Object?n[o]=v(r):n[o]=r)}return n}function D(e,t){for(;null!==e;){const n=r(e,t);if(n){if(n.get)return w(n.get);if("function"==typeof n.value)return w(n.value)}e=o(e)}return function(){return null}}const x=i(["a","abbr","acronym","address","area","article","aside","audio","b","bdi","bdo","big","blink","blockquote","body","br","button","canvas","caption","center","cite","code","col","colgroup","content","data","datalist","dd","decorator","del","details","dfn","dialog","dir","div","dl","dt","element","em","fieldset","figcaption","figure","font","footer","form","h1","h2","h3","h4","h5","h6","head","header","hgroup","hr","html","i","img","input","ins","kbd","label","legend","li","main","map","mark","marquee","menu","menuitem","meter","nav","nobr","ol","optgroup","option","output","p","picture","pre","progress","q","rp","rt","ruby","s","samp","search","section","select","shadow","slot","small","source","spacer","span","strike","strong","style","sub","summary","sup","table","tbody","td","template","textarea","tfoot","th","thead","time","tr","track","tt","u","ul","var","video","wbr"]),L=i(["svg","a","altglyph","altglyphdef","altglyphitem","animatecolor","animatemotion","animatetransform","circle","clippath","defs","desc","ellipse","enterkeyhint","exportparts","filter","font","g","glyph","glyphref","hkern","image","inputmode","line","lineargradient","marker","mask","metadata","mpath","part","path","pattern","polygon","polyline","radialgradient","rect","slot","stop","style","switch","symbol","text","textpath","title","tref","tspan","view","vkern"]),C=i(["feBlend","feColorMatrix","feComponentTransfer","feComposite","feConvolveMatrix","feDiffuseLighting","feDisplacementMap","feDistantLight","feDropShadow","feFlood","feFuncA","feFuncB","feFuncG","feFuncR","feGaussianBlur","feImage","feMerge","feMergeNode","feMorphology","feOffset","fePointLight","feSpecularLighting","feSpotLight","feTile","feTurbulence"]),k=i(["animate","color-profile","cursor","discard","font-face","font-face-format","font-face-name","font-face-src","font-face-uri","foreignobject","hatch","hatchpath","mesh","meshgradient","meshpatch","meshrow","missing-glyph","script","set","solidcolor","unknown","use"]),I=i(["math","menclose","merror","mfenced","mfrac","mglyph","mi","mlabeledtr","mmultiscripts","mn","mo","mover","mpadded","mphantom","mroot","mrow","ms","mspace","msqrt","mstyle","msub","msup","msubsup","mtable","mtd","mtext","mtr","munder","munderover","mprescripts"]),M=i(["maction","maligngroup","malignmark","mlongdiv","mscarries","mscarry","msgroup","mstack","msline","msrow","semantics","annotation","annotation-xml","mprescripts","none"]),U=i(["#text"]),z=i(["accept","action","align","alt","autocapitalize","autocomplete","autopictureinpicture","autoplay","background","bgcolor","border","capture","cellpadding","cellspacing","checked","cite","class","clear","color","cols","colspan","controls","controlslist","coords","crossorigin","datetime","decoding","default","dir","disabled","disablepictureinpicture","disableremoteplayback","download","draggable","enctype","enterkeyhint","exportparts","face","for","headers","height","hidden","high","href","hreflang","id","inert","inputmode","integrity","ismap","kind","label","lang","list","loading","loop","low","max","maxlength","media","method","min","minlength","multiple","muted","name","nonce","noshade","novalidate","nowrap","open","optimum","part","pattern","placeholder","playsinline","popover","popovertarget","popovertargetaction","poster","preload","pubdate","radiogroup","readonly","rel","required","rev","reversed","role","rows","rowspan","spellcheck","scope","selected","shape","size","sizes","slot","span","srclang","start","src","srcset","step","style","summary","tabindex","title","translate","type","usemap","valign","value","width","wrap","xmlns","slot"]),P=i(["accent-height","accumulate","additive","alignment-baseline","amplitude","ascent","attributename","attributetype","azimuth","basefrequency","baseline-shift","begin","bias","by","class","clip","clippathunits","clip-path","clip-rule","color","color-interpolation","color-interpolation-filters","color-profile","color-rendering","cx","cy","d","dx","dy","diffuseconstant","direction","display","divisor","dur","edgemode","elevation","end","exponent","fill","fill-opacity","fill-rule","filter","filterunits","flood-color","flood-opacity","font-family","font-size","font-size-adjust","font-stretch","font-style","font-variant","font-weight","fx","fy","g1","g2","glyph-name","glyphref","gradientunits","gradienttransform","height","href","id","image-rendering","in","in2","intercept","k","k1","k2","k3","k4","kerning","keypoints","keysplines","keytimes","lang","lengthadjust","letter-spacing","kernelmatrix","kernelunitlength","lighting-color","local","marker-end","marker-mid","marker-start","markerheight","markerunits","markerwidth","maskcontentunits","maskunits","max","mask","media","method","mode","min","name","numoctaves","offset","operator","opacity","order","orient","orientation","origin","overflow","paint-order","path","pathlength","patterncontentunits","patterntransform","patternunits","points","preservealpha","preserveaspectratio","primitiveunits","r","rx","ry","radius","refx","refy","repeatcount","repeatdur","restart","result","rotate","scale","seed","shape-rendering","slope","specularconstant","specularexponent","spreadmethod","startoffset","stddeviation","stitchtiles","stop-color","stop-opacity","stroke-dasharray","stroke-dashoffset","stroke-linecap","stroke-linejoin","stroke-miterlimit","stroke-opacity","stroke","stroke-width","style","surfacescale","systemlanguage","tabindex","tablevalues","targetx","targety","transform","transform-origin","text-anchor","text-decoration","text-rendering","textlength","type","u1","u2","unicode","values","viewbox","visibility","version","vert-adv-y","vert-origin-x","vert-origin-y","width","word-spacing","wrap","writing-mode","xchannelselector","ychannelselector","x","x1","x2","xmlns","y","y1","y2","z","zoomandpan"]),H=i(["accent","accentunder","align","bevelled","close","columnsalign","columnlines","columnspan","denomalign","depth","dir","display","displaystyle","encoding","fence","frame","height","href","id","largeop","length","linethickness","lspace","lquote","mathbackground","mathcolor","mathsize","mathvariant","maxsize","minsize","movablelimits","notation","numalign","open","rowalign","rowlines","rowspacing","rowspan","rspace","rquote","scriptlevel","scriptminsize","scriptsizemultiplier","selection","separator","separators","stretchy","subscriptshift","supscriptshift","symmetric","voffset","width","xmlns"]),F=i(["xlink:href","xml:id","xlink:title","xml:space","xmlns:xlink"]),B=a(/\{\{[\w\W]*|[\w\W]*\}\}/gm),W=a(/<%[\w\W]*|[\w\W]*%>/gm),G=a(/\$\{[\w\W]*/gm),Y=a(/^data-[\-\w.\u00B7-\uFFFF]+$/),j=a(/^aria-[\-\w]+$/),X=a(/^(?:(?:(?:f|ht)tps?|mailto|tel|callto|sms|cid|xmpp|matrix):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i),q=a(/^(?:\w+script|data):/i),$=a(/[\u0000-\u0020\u00A0\u1680\u180E\u2000-\u2029\u205F\u3000]/g),K=a(/^html$/i),V=a(/^[a-z][.\w]*(-[.\w]+)+$/i);var Z=Object.freeze({__proto__:null,ARIA_ATTR:j,ATTR_WHITESPACE:$,CUSTOM_ELEMENT:V,DATA_ATTR:Y,DOCTYPE_NAME:K,ERB_EXPR:W,IS_ALLOWED_URI:X,IS_SCRIPT_OR_DATA:q,MUSTACHE_EXPR:B,TMPLIT_EXPR:G});const J=1,Q=3,ee=7,te=8,ne=9,oe=function(){return"undefined"==typeof window?null:window};var re=function t(){let n=arguments.length>0&&void 0!==arguments[0]?arguments[0]:oe();const o=e=>t(e);if(o.version="3.2.7",o.removed=[],!n||!n.document||n.document.nodeType!==ne||!n.Element)return o.isSupported=!1,o;let{document:r}=n;const a=r,c=a.currentScript,{DocumentFragment:s,HTMLTemplateElement:N,Node:w,Element:O,NodeFilter:B,NamedNodeMap:W=n.NamedNodeMap||n.MozNamedAttrMap,HTMLFormElement:G,DOMParser:Y,trustedTypes:j}=n,q=O.prototype,$=D(q,"cloneNode"),V=D(q,"remove"),re=D(q,"nextSibling"),ie=D(q,"childNodes"),ae=D(q,"parentNode");if("function"==typeof N){const e=r.createElement("template");e.content&&e.content.ownerDocument&&(r=e.content.ownerDocument)}let le,ce="";const{implementation:se,createNodeIterator:ue,createDocumentFragment:me,getElementsByTagName:pe}=r,{importNode:fe}=a;let de={afterSanitizeAttributes:[],afterSanitizeElements:[],afterSanitizeShadowDOM:[],beforeSanitizeAttributes:[],beforeSanitizeElements:[],beforeSanitizeShadowDOM:[],uponSanitizeAttribute:[],uponSanitizeElement:[],uponSanitizeShadowNode:[]};o.isSupported="function"==typeof e&&"function"==typeof ae&&se&&void 0!==se.createHTMLDocument;const{MUSTACHE_EXPR:he,ERB_EXPR:ge,TMPLIT_EXPR:Te,DATA_ATTR:ye,ARIA_ATTR:Ee,IS_SCRIPT_OR_DATA:Ae,ATTR_WHITESPACE:_e,CUSTOM_ELEMENT:Se}=Z;let{IS_ALLOWED_URI:be}=Z,Ne=null;const we=R({},[...x,...L,...C,...I,...U]);let Re=null;const Oe=R({},[...z,...P,...H,...F]);let ve=Object.seal(l(null,{tagNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},attributeNameCheck:{writable:!0,configurable:!1,enumerable:!0,value:null},allowCustomizedBuiltInElements:{writable:!0,configurable:!1,enumerable:!0,value:!1}})),De=null,xe=null,Le=!0,Ce=!0,ke=!1,Ie=!0,Me=!1,Ue=!0,ze=!1,Pe=!1,He=!1,Fe=!1,Be=!1,We=!1,Ge=!0,Ye=!1,je=!0,Xe=!1,qe={},$e=null;const Ke=R({},["annotation-xml","audio","colgroup","desc","foreignobject","head","iframe","math","mi","mn","mo","ms","mtext","noembed","noframes","noscript","plaintext","script","style","svg","template","thead","title","video","xmp"]);let Ve=null;const Ze=R({},["audio","video","img","source","image","track"]);let Je=null;const Qe=R({},["alt","class","for","id","label","name","pattern","placeholder","role","summary","title","value","style","xmlns"]),et="http://www.w3.org/1998/Math/MathML",tt="http://www.w3.org/2000/svg",nt="http://www.w3.org/1999/xhtml";let ot=nt,rt=!1,it=null;const at=R({},[et,tt,nt],g);let lt=R({},["mi","mo","mn","ms","mtext"]),ct=R({},["annotation-xml"]);const st=R({},["title","style","font","a","script"]);let ut=null;const mt=["application/xhtml+xml","text/html"];let pt=null,ft=null;const dt=r.createElement("form"),ht=function(e){return e instanceof RegExp||e instanceof Function},gt=function(){let e=arguments.length>0&&void 0!==arguments[0]?arguments[0]:{};if(!ft||ft!==e){if(e&&"object"==typeof e||(e={}),e=v(e),ut=-1===mt.indexOf(e.PARSER_MEDIA_TYPE)?"text/html":e.PARSER_MEDIA_TYPE,pt="application/xhtml+xml"===ut?g:h,Ne=_(e,"ALLOWED_TAGS")?R({},e.ALLOWED_TAGS,pt):we,Re=_(e,"ALLOWED_ATTR")?R({},e.ALLOWED_ATTR,pt):Oe,it=_(e,"ALLOWED_NAMESPACES")?R({},e.ALLOWED_NAMESPACES,g):at,Je=_(e,"ADD_URI_SAFE_ATTR")?R(v(Qe),e.ADD_URI_SAFE_ATTR,pt):Qe,Ve=_(e,"ADD_DATA_URI_TAGS")?R(v(Ze),e.ADD_DATA_URI_TAGS,pt):Ze,$e=_(e,"FORBID_CONTENTS")?R({},e.FORBID_CONTENTS,pt):Ke,De=_(e,"FORBID_TAGS")?R({},e.FORBID_TAGS,pt):v({}),xe=_(e,"FORBID_ATTR")?R({},e.FORBID_ATTR,pt):v({}),qe=!!_(e,"USE_PROFILES")&&e.USE_PROFILES,Le=!1!==e.ALLOW_ARIA_ATTR,Ce=!1!==e.ALLOW_DATA_ATTR,ke=e.ALLOW_UNKNOWN_PROTOCOLS||!1,Ie=!1!==e.ALLOW_SELF_CLOSE_IN_ATTR,Me=e.SAFE_FOR_TEMPLATES||!1,Ue=!1!==e.SAFE_FOR_XML,ze=e.WHOLE_DOCUMENT||!1,Fe=e.RETURN_DOM||!1,Be=e.RETURN_DOM_FRAGMENT||!1,We=e.RETURN_TRUSTED_TYPE||!1,He=e.FORCE_BODY||!1,Ge=!1!==e.SANITIZE_DOM,Ye=e.SANITIZE_NAMED_PROPS||!1,je=!1!==e.KEEP_CONTENT,Xe=e.IN_PLACE||!1,be=e.ALLOWED_URI_REGEXP||X,ot=e.NAMESPACE||nt,lt=e.MATHML_TEXT_INTEGRATION_POINTS||lt,ct=e.HTML_INTEGRATION_POINTS||ct,ve=e.CUSTOM_ELEMENT_HANDLING||{},e.CUSTOM_ELEMENT_HANDLING&&ht(e.CUSTOM_ELEMENT_HANDLING.tagNameCheck)&&(ve.tagNameCheck=e.CUSTOM_ELEMENT_HANDLING.tagNameCheck),e.CUSTOM_ELEMENT_HANDLING&&ht(e.CUSTOM_ELEMENT_HANDLING.attributeNameCheck)&&(ve.attributeNameCheck=e.CUSTOM_ELEMENT_HANDLING.attributeNameCheck),e.CUSTOM_ELEMENT_HANDLING&&"boolean"==typeof e.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements&&(ve.allowCustomizedBuiltInElements=e.CUSTOM_ELEMENT_HANDLING.allowCustomizedBuiltInElements),Me&&(Ce=!1),Be&&(Fe=!0),qe&&(Ne=R({},U),Re=[],!0===qe.html&&(R(Ne,x),R(Re,z)),!0===qe.svg&&(R(Ne,L),R(Re,P),R(Re,F)),!0===qe.svgFilters&&(R(Ne,C),R(Re,P),R(Re,F)),!0===qe.mathMl&&(R(Ne,I),R(Re,H),R(Re,F))),e.ADD_TAGS&&(Ne===we&&(Ne=v(Ne)),R(Ne,e.ADD_TAGS,pt)),e.ADD_ATTR&&(Re===Oe&&(Re=v(Re)),R(Re,e.ADD_ATTR,pt)),e.ADD_URI_SAFE_ATTR&&R(Je,e.ADD_URI_SAFE_ATTR,pt),e.FORBID_CONTENTS&&($e===Ke&&($e=v($e)),R($e,e.FORBID_CONTENTS,pt)),je&&(Ne["#text"]=!0),ze&&R(Ne,["html","head","body"]),Ne.table&&(R(Ne,["tbody"]),delete De.tbody),e.TRUSTED_TYPES_POLICY){if("function"!=typeof e.TRUSTED_TYPES_POLICY.createHTML)throw b('TRUSTED_TYPES_POLICY configuration option must provide a "createHTML" hook.');if("function"!=typeof e.TRUSTED_TYPES_POLICY.createScriptURL)throw b('TRUSTED_TYPES_POLICY configuration option must provide a "createScriptURL" hook.');le=e.TRUSTED_TYPES_POLICY,ce=le.createHTML("")}else void 0===le&&(le=function(e,t){if("object"!=typeof e||"function"!=typeof e.createPolicy)return null;let n=null;const o="data-tt-policy-suffix";t&&t.hasAttribute(o)&&(n=t.getAttribute(o));const r="dompurify"+(n?"#"+n:"");try{return e.createPolicy(r,{createHTML:e=>e,createScriptURL:e=>e})}catch(e){return console.warn("TrustedTypes policy "+r+" could not be created."),null}}(j,c)),null!==le&&"string"==typeof ce&&(ce=le.createHTML(""));i&&i(e),ft=e}},Tt=R({},[...L,...C,...k]),yt=R({},[...I,...M]),Et=function(e){f(o.removed,{element:e});try{ae(e).removeChild(e)}catch(t){V(e)}},At=function(e,t){try{f(o.removed,{attribute:t.getAttributeNode(e),from:t})}catch(e){f(o.removed,{attribute:null,from:t})}if(t.removeAttribute(e),"is"===e)if(Fe||Be)try{Et(t)}catch(e){}else try{t.setAttribute(e,"")}catch(e){}},_t=function(e){let t=null,n=null;if(He)e="<remove></remove>"+e;else{const t=T(e,/^[\r\n\t ]+/);n=t&&t[0]}"application/xhtml+xml"===ut&&ot===nt&&(e='<html xmlns="http://www.w3.org/1999/xhtml"><head></head><body>'+e+"</body></html>");const o=le?le.createHTML(e):e;if(ot===nt)try{t=(new Y).parseFromString(o,ut)}catch(e){}if(!t||!t.documentElement){t=se.createDocument(ot,"template",null);try{t.documentElement.innerHTML=rt?ce:o}catch(e){}}const i=t.body||t.documentElement;return e&&n&&i.insertBefore(r.createTextNode(n),i.childNodes[0]||null),ot===nt?pe.call(t,ze?"html":"body")[0]:ze?t.documentElement:i},St=function(e){return ue.call(e.ownerDocument||e,e,B.SHOW_ELEMENT|B.SHOW_COMMENT|B.SHOW_TEXT|B.SHOW_PROCESSING_INSTRUCTION|B.SHOW_CDATA_SECTION,null)},bt=function(e){return e instanceof G&&("string"!=typeof e.nodeName||"string"!=typeof e.textContent||"function"!=typeof e.removeChild||!(e.attributes instanceof W)||"function"!=typeof e.removeAttribute||"function"!=typeof e.setAttribute||"string"!=typeof e.namespaceURI||"function"!=typeof e.insertBefore||"function"!=typeof e.hasChildNodes)},Nt=function(e){return"function"==typeof w&&e instanceof w};function wt(e,t,n){u(e,(e=>{e.call(o,t,n,ft)}))}const Rt=function(e){let t=null;if(wt(de.beforeSanitizeElements,e,null),bt(e))return Et(e),!0;const n=pt(e.nodeName);if(wt(de.uponSanitizeElement,e,{tagName:n,allowedTags:Ne}),Ue&&e.hasChildNodes()&&!Nt(e.firstElementChild)&&S(/<[/\w!]/g,e.innerHTML)&&S(/<[/\w!]/g,e.textContent))return Et(e),!0;if(e.nodeType===ee)return Et(e),!0;if(Ue&&e.nodeType===te&&S(/<[/\w]/g,e.data))return Et(e),!0;if(!Ne[n]||De[n]){if(!De[n]&&vt(n)){if(ve.tagNameCheck instanceof RegExp&&S(ve.tagNameCheck,n))return!1;if(ve.tagNameCheck instanceof Function&&ve.tagNameCheck(n))return!1}if(je&&!$e[n]){const t=ae(e)||e.parentNode,n=ie(e)||e.childNodes;if(n&&t){for(let o=n.length-1;o>=0;--o){const r=$(n[o],!0);r.__removalCount=(e.__removalCount||0)+1,t.insertBefore(r,re(e))}}}return Et(e),!0}return e instanceof O&&!function(e){let t=ae(e);t&&t.tagName||(t={namespaceURI:ot,tagName:"template"});const n=h(e.tagName),o=h(t.tagName);return!!it[e.namespaceURI]&&(e.namespaceURI===tt?t.namespaceURI===nt?"svg"===n:t.namespaceURI===et?"svg"===n&&("annotation-xml"===o||lt[o]):Boolean(Tt[n]):e.namespaceURI===et?t.namespaceURI===nt?"math"===n:t.namespaceURI===tt?"math"===n&&ct[o]:Boolean(yt[n]):e.namespaceURI===nt?!(t.namespaceURI===tt&&!ct[o])&&!(t.namespaceURI===et&&!lt[o])&&!yt[n]&&(st[n]||!Tt[n]):!("application/xhtml+xml"!==ut||!it[e.namespaceURI]))}(e)?(Et(e),!0):"noscript"!==n&&"noembed"!==n&&"noframes"!==n||!S(/<\/no(script|embed|frames)/i,e.innerHTML)?(Me&&e.nodeType===Q&&(t=e.textContent,u([he,ge,Te],(e=>{t=y(t,e," ")})),e.textContent!==t&&(f(o.removed,{element:e.cloneNode()}),e.textContent=t)),wt(de.afterSanitizeElements,e,null),!1):(Et(e),!0)},Ot=function(e,t,n){if(Ge&&("id"===t||"name"===t)&&(n in r||n in dt))return!1;if(Ce&&!xe[t]&&S(ye,t));else if(Le&&S(Ee,t));else if(!Re[t]||xe[t]){if(!(vt(e)&&(ve.tagNameCheck instanceof RegExp&&S(ve.tagNameCheck,e)||ve.tagNameCheck instanceof Function&&ve.tagNameCheck(e))&&(ve.attributeNameCheck instanceof RegExp&&S(ve.attributeNameCheck,t)||ve.attributeNameCheck instanceof Function&&ve.attributeNameCheck(t,e))||"is"===t&&ve.allowCustomizedBuiltInElements&&(ve.tagNameCheck instanceof RegExp&&S(ve.tagNameCheck,n)||ve.tagNameCheck instanceof Function&&ve.tagNameCheck(n))))return!1}else if(Je[t]);else if(S(be,y(n,_e,"")));else if("src"!==t&&"xlink:href"!==t&&"href"!==t||"script"===e||0!==E(n,"data:")||!Ve[e]){if(ke&&!S(Ae,y(n,_e,"")));else if(n)return!1}else;return!0},vt=function(e){return"annotation-xml"!==e&&T(e,Se)},Dt=function(e){wt(de.beforeSanitizeAttributes,e,null);const{attributes:t}=e;if(!t||bt(e))return;const n={attrName:"",attrValue:"",keepAttr:!0,allowedAttributes:Re,forceKeepAttr:void 0};let r=t.length;for(;r--;){const i=t[r],{name:a,namespaceURI:l,value:c}=i,s=pt(a),m=c;let f="value"===a?m:A(m);if(n.attrName=s,n.attrValue=f,n.keepAttr=!0,n.forceKeepAttr=void 0,wt(de.uponSanitizeAttribute,e,n),f=n.attrValue,!Ye||"id"!==s&&"name"!==s||(At(a,e),f="user-content-"+f),Ue&&S(/((--!?|])>)|<\/(style|title|textarea)/i,f)){At(a,e);continue}if("attributename"===s&&T(f,"href")){At(a,e);continue}if(n.forceKeepAttr)continue;if(!n.keepAttr){At(a,e);continue}if(!Ie&&S(/\/>/i,f)){At(a,e);continue}Me&&u([he,ge,Te],(e=>{f=y(f,e," ")}));const d=pt(e.nodeName);if(Ot(d,s,f)){if(le&&"object"==typeof j&&"function"==typeof j.getAttributeType)if(l);else switch(j.getAttributeType(d,s)){case"TrustedHTML":f=le.createHTML(f);break;case"TrustedScriptURL":f=le.createScriptURL(f)}if(f!==m)try{l?e.setAttributeNS(l,a,f):e.setAttribute(a,f),bt(e)?Et(e):p(o.removed)}catch(t){At(a,e)}}else At(a,e)}wt(de.afterSanitizeAttributes,e,null)},xt=function e(t){let n=null;const o=St(t);for(wt(de.beforeSanitizeShadowDOM,t,null);n=o.nextNode();)wt(de.uponSanitizeShadowNode,n,null),Rt(n),Dt(n),n.content instanceof s&&e(n.content);wt(de.afterSanitizeShadowDOM,t,null)};return o.sanitize=function(e){let t=arguments.length>1&&void 0!==arguments[1]?arguments[1]:{},n=null,r=null,i=null,l=null;if(rt=!e,rt&&(e="\x3c!--\x3e"),"string"!=typeof e&&!Nt(e)){if("function"!=typeof e.toString)throw b("toString is not a function");if("string"!=typeof(e=e.toString()))throw b("dirty is not a string, aborting")}if(!o.isSupported)return e;if(Pe||gt(t),o.removed=[],"string"==typeof e&&(Xe=!1),Xe){if(e.nodeName){const t=pt(e.nodeName);if(!Ne[t]||De[t])throw b("root node is forbidden and cannot be sanitized in-place")}}else if(e instanceof w)n=_t("\x3c!----\x3e"),r=n.ownerDocument.importNode(e,!0),r.nodeType===J&&"BODY"===r.nodeName||"HTML"===r.nodeName?n=r:n.appendChild(r);else{if(!Fe&&!Me&&!ze&&-1===e.indexOf("<"))return le&&We?le.createHTML(e):e;if(n=_t(e),!n)return Fe?null:We?ce:""}n&&He&&Et(n.firstChild);const c=St(Xe?e:n);for(;i=c.nextNode();)Rt(i),Dt(i),i.content instanceof s&&xt(i.content);if(Xe)return e;if(Fe){if(Be)for(l=me.call(n.ownerDocument);n.firstChild;)l.appendChild(n.firstChild);else l=n;return(Re.shadowroot||Re.shadowrootmode)&&(l=fe.call(a,l,!0)),l}let m=ze?n.outerHTML:n.innerHTML;return ze&&Ne["!doctype"]&&n.ownerDocument&&n.ownerDocument.doctype&&n.ownerDocument.doctype.name&&S(K,n.ownerDocument.doctype.name)&&(m="<!DOCTYPE "+n.ownerDocument.doctype.name+">\n"+m),Me&&u([he,ge,Te],(e=>{m=y(m,e," ")})),le&&We?le.createHTML(m):m},o.setConfig=function(){gt(arguments.length>0&&void 0!==arguments[0]?arguments[0]:{}),Pe=!0},o.clearConfig=function(){ft=null,Pe=!1},o.isValidAttribute=function(e,t,n){ft||gt({});const o=pt(e),r=pt(t);return Ot(o,r,n)},o.addHook=function(e,t){"function"==typeof t&&f(de[e],t)},o.removeHook=function(e,t){if(void 0!==t){const n=m(de[e],t);return-1===n?void 0:d(de[e],n,1)[0]}return p(de[e])},o.removeHooks=function(e){de[e]=[]},o.removeAllHooks=function(){de={afterSanitizeAttributes:[],afterSanitizeElements:[],afterSanitizeShadowDOM:[],beforeSanitizeAttributes:[],beforeSanitizeElements:[],beforeSanitizeShadowDOM:[],uponSanitizeAttribute:[],uponSanitizeElement:[],uponSanitizeShadowNode:[]}},o}();return re}));
 </script>
-<script>/*!
+<script id="highlight-library">/*!
   Highlight.js v11.11.1 (git: 08cb242e7d)
   (c) 2006-2024 Josh Goebel <hello@joshgoebel.com> and other contributors
   License: BSD-3-Clause
@@ -6003,6 +6004,694 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
   };
 });
 </script>
+<script>(function(root, factory) {
+  const models = typeof module !== 'undefined' && module.exports
+    ? { ...require('./document-model.js'), ...require('./session-model.js') } : root.MDEdit;
+  const api = factory(models);
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, (models) => {
+  'use strict';
+  const { DocumentModel, SessionModel } = models;
+  const BROWSER_RECOVERY_PREFIX = 'mdedit-recovery-v1:';
+
+  function createBrowserRecoveryIo(storage, { snapshotParser = JSON.parse } = {}) {
+    if (typeof snapshotParser !== 'function') throw new TypeError('snapshotParser must be a function');
+    if (!storage || typeof storage !== 'object') throw new TypeError('storage is required');
+    for (const method of ['getItem', 'setItem', 'removeItem', 'key']) {
+      if (typeof storage[method] !== 'function') throw new TypeError(`storage.${method} must be a function`);
+    }
+    const documentOperations = new Map();
+    function ordered(documentId, operation) {
+      const previous = documentOperations.get(documentId) || Promise.resolve();
+      const result = previous.catch(() => {}).then(operation);
+      documentOperations.set(documentId, result);
+      const release = () => { if (documentOperations.get(documentId) === result) documentOperations.delete(documentId); };
+      result.then(release, release);
+      return result;
+    }
+    const documentPrefix = (documentId) => `${BROWSER_RECOVERY_PREFIX}document:${encodeURIComponent(documentId)}:`;
+    const slots = (prefix) => ({ current: `${prefix}current`, previous: `${prefix}previous`, temp: `${prefix}temp` });
+    const valid = (raw, predicate) => {
+      if (typeof raw !== 'string') return null;
+      try { const value = JSON.parse(raw); return predicate(value) ? raw : null; } catch (_) { return null; }
+    };
+    const validManifest = (raw) => valid(raw, (value) => {
+      SessionModel.fromManifest(value, { idFactory: () => 'validation-id' });
+      return true;
+    });
+    const validDocument = (raw, documentId, revision) => valid(raw, (value) => {
+      const document = DocumentModel.fromSnapshot(value);
+      return document.id === documentId && document.snapshotRevision === revision;
+    });
+    async function validStoredDocument(raw, documentId) {
+      if (typeof raw !== 'string') return null;
+      let value;
+      try { value = await snapshotParser(raw); }
+      catch (error) {
+        if (error && error.name === 'SyntaxError') return null;
+        throw error; // Worker failure is not evidence that stored data is corrupt.
+      }
+      try {
+        const document = DocumentModel.fromSnapshot(value);
+        return document.id === documentId ? { raw, revision: document.snapshotRevision } : null;
+      } catch (_) { return null; }
+    }
+    function retentionState(keys) {
+      return { current: storage.getItem(keys.current), previous: storage.getItem(keys.previous),
+        manifest: storage.getItem(manifestSlots.current), previousManifest: storage.getItem(manifestSlots.previous) };
+    }
+    async function retainedDocument(state, documentId) {
+      const manifestBackup = validManifest(state.manifest);
+      const manifest = manifestBackup || validManifest(state.previousManifest);
+      const revision = manifest === null ? null
+        : JSON.parse(manifest).tabs.find(tab => tab.documentId === documentId)?.snapshotRevision ?? null;
+      const current = await validStoredDocument(state.current, documentId);
+      let pinned = current && current.revision === revision ? current : null;
+      if (revision !== null && !pinned) {
+        const previous = await validStoredDocument(state.previous, documentId);
+        if (previous && previous.revision === revision) pinned = previous;
+      }
+      return { retained: pinned || current, pinned, manifestBackup };
+    }
+    function backupManifest(current, previous) {
+      if (current && current !== previous) storage.setItem(manifestSlots.previous, current);
+    }
+    const rotate = (keys, json, current) => {
+      // All decoding/validation finishes before this synchronous commit starts.
+      storage.setItem(keys.temp, json);
+      try {
+        if (current !== null) storage.setItem(keys.previous, current);
+        storage.setItem(keys.current, json);
+      } finally {
+        storage.removeItem(keys.temp);
+      }
+    };
+    const cleanup = (prefix, keep) => {
+      const keys = [];
+      for (let index = 0; index < storage.length; index += 1) {
+        const key = storage.key(index);
+        if (typeof key === 'string' && key.startsWith(prefix) && !keep.has(key)) keys.push(key);
+      }
+      for (const key of keys) storage.removeItem(key);
+    };
+    const manifestSlots = slots(`${BROWSER_RECOVERY_PREFIX}manifest:`);
+    return {
+      listenFileOpened() { return () => {}; },
+      async loadRecoveryManifest() {
+        return validManifest(storage.getItem(manifestSlots.current)) || validManifest(storage.getItem(manifestSlots.previous));
+      },
+      async loadRecoveryDocument(documentId, revision) {
+        return ordered(documentId, () => {
+          const keys = slots(documentPrefix(documentId));
+          // Recovery reads remain independent of worker availability.
+          return validDocument(storage.getItem(keys.current), documentId, revision)
+            || validDocument(storage.getItem(keys.previous), documentId, revision);
+        });
+      },
+      async writeRecoveryDocument(documentId, revision, json) {
+        const text = String(json);
+        return ordered(documentId, async () => {
+          const keys = slots(documentPrefix(documentId));
+          const value = await snapshotParser(text);
+          if (value.documentId !== documentId || value.snapshotRevision !== revision) throw new Error('recovery snapshot identity mismatch');
+          DocumentModel.fromSnapshot(value);
+          // A newer current slot may be an orphan from a failed publication.
+          // Retain the manifest's copy, not simply the last snapshot written.
+          for (let attempt = 0; attempt < 2; attempt++) {
+            const before = retentionState(keys);
+            const { retained, pinned, manifestBackup } = await retainedDocument(before, documentId);
+            const after = retentionState(keys);
+            if (!Object.keys(before).every(key => before[key] === after[key])) continue;
+            if (pinned && pinned.revision === revision && pinned.raw !== text) {
+              throw new Error('Cannot replace a committed revision with different snapshot bytes');
+            }
+            // Exact retries must not rotate away an older fallback copy.
+            if (before.current !== text) {
+              // Retiring older snapshot data also retires its old manifest.
+              // A backup of the selected current manifest still references the
+              // copy we are preserving, even if current metadata later corrupts.
+              backupManifest(manifestBackup, before.previousManifest);
+              rotate(keys, text, retained ? retained.raw : null);
+            }
+            cleanup(documentPrefix(documentId), new Set([keys.current, keys.previous]));
+            return;
+          }
+          throw new Error('Recovery storage changed during validation; retry recovery');
+        });
+      },
+      async writeRecoveryManifest(generation, json) {
+        const text = String(json);
+        const value = JSON.parse(text);
+        if (value.generation !== generation) throw new Error('recovery manifest generation mismatch');
+        SessionModel.fromManifest(value, { idFactory: () => 'validation-id' });
+        rotate(manifestSlots, text, validManifest(storage.getItem(manifestSlots.current)));
+        cleanup(`${BROWSER_RECOVERY_PREFIX}manifest`, new Set([manifestSlots.current, manifestSlots.previous]));
+      },
+      async deleteRecoveryDocument(documentId) {
+        return ordered(documentId, () => {
+          const prefix = documentPrefix(documentId);
+          const keys = [];
+          for (let index = 0; index < storage.length; index += 1) {
+            const key = storage.key(index);
+            if (typeof key === 'string' && key.startsWith(prefix)) keys.push(key);
+          }
+          if (keys.length) {
+            const manifest = validManifest(storage.getItem(manifestSlots.current));
+            // Managed deletion follows publication of the document's removal.
+            // Its older fallback header must retire before the data does.
+            if (manifest && !JSON.parse(manifest).tabs.some(tab => tab.documentId === documentId)) {
+              backupManifest(manifest, storage.getItem(manifestSlots.previous));
+            }
+          }
+          for (const key of keys) storage.removeItem(key);
+        });
+      },
+      async recoveryDirectory() { return 'localStorage://mdedit-recovery-v1'; },
+    };
+  }
+
+  function createMemoryStorage() {
+    const values = new Map();
+    return {
+      get length() { return values.size; },
+      key(index) { return [...values.keys()][index] ?? null; },
+      getItem(key) { return values.has(key) ? values.get(key) : null; },
+      setItem(key, value) { values.set(String(key), String(value)); },
+      removeItem(key) { values.delete(key); },
+    };
+  }
+
+  function createBrowserRecoveryEnvironment(browserRoot, options) {
+    let storage;
+    let error = null;
+    try {
+      storage = browserRoot.localStorage;
+      const probe = `${BROWSER_RECOVERY_PREFIX}probe`;
+      storage.setItem(probe, '1');
+      storage.removeItem(probe);
+    } catch (reason) {
+      error = reason instanceof Error ? reason : new Error(String(reason));
+      storage = createMemoryStorage();
+    }
+    return {
+      io: createBrowserRecoveryIo(storage, options),
+      legacyStorage: storage,
+      persistent: error === null,
+      error,
+    };
+  }
+  return { BROWSER_RECOVERY_PREFIX, createBrowserRecoveryIo, createBrowserRecoveryEnvironment };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+
+  // Rendering is isolated from the live preview. The caller owns document
+  // captures and provides the lifecycle guards; this module owns export flow.
+  function createExportOperation(capture, renderer, exporter) {
+    const exportDocument = typeof exporter === 'function' ? exporter : exporter.export;
+    if (typeof exportDocument !== 'function') throw new TypeError('exporter must be a function or provide export');
+    return async () => {
+      let exportCapture = capture;
+      const format = capture.format;
+      if (format === 'html' || format === 'png') {
+        const renderForExport = renderer && renderer.renderForExport;
+        if (typeof renderForExport !== 'function') {
+          throw new Error(`isolated ${format.toUpperCase()} export renderer is unavailable`);
+        }
+        const renderedHtml = await renderForExport.call(renderer, capture);
+        if (typeof renderedHtml !== 'string' || renderedHtml.length === 0) {
+          throw new Error(`isolated ${format.toUpperCase()} export produced no HTML`);
+        }
+        exportCapture = Object.freeze({ ...capture, renderedHtml });
+      }
+      return exportDocument.call(exporter, exportCapture);
+    };
+  }
+
+  async function runCapturedExport({ capture, label, operation, isCurrent, owns, setStatus }) {
+    setStatus({ status: 'exporting', message: `Exporting ${label}`, editRevision: capture.editRevision });
+    try {
+      const result = await operation(capture, isCurrent);
+      if (isCurrent()) {
+        const canceled = Boolean(result && result.canceled);
+        const message = canceled ? `Export canceled for ${label}`
+          : result && typeof result.message === 'string' ? result.message : `Exported ${label}`;
+        setStatus({ status: canceled ? 'canceled' : 'exported', message, editRevision: capture.editRevision });
+      }
+      return result;
+    } catch (reason) {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      if (owns()) {
+        setStatus({ status: 'failed', message: `Could not export ${label}: ${error.message}`, editRevision: capture.editRevision });
+      }
+      throw error;
+    }
+  }
+  return { createExportOperation, runCapturedExport };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+
+  // Self-contained so the same engine can be instantiated inside a blob worker.
+  // The vendored Marked source is supplied by the existing inline script tag.
+  // Returned HTML is deliberately unsanitized; sanitize it before DOM insertion.
+  function createMarkdownEngine(marked) {
+    const parser = new marked.Marked({ gfm: true, breaks: false });
+    const plain = new marked.Marked({ gfm: true });
+    let definitions = new Map(), order = [];
+    parser.use({
+      hooks: {
+        preprocess(src) {
+          definitions = new Map(); order = [];
+          return src.replace(/^\[\^([^\]\n]+)\]:[ \t]*([^\n]*(?:\n(?:[ \t]{2,}|\t)[^\n]*)*)/gm, (_match, label, body) => {
+            definitions.set(label.trim(), body.replace(/\n[ \t]+/g, '\n').trim());
+            return '';
+          });
+        },
+        postprocess(html) {
+          if (!order.length) return html;
+          let out = '<section class="footnotes"><ol>';
+          order.forEach((label, i) => {
+            const n = i + 1;
+            out += '<li id="fn-' + n + '">' + plain.parseInline(definitions.get(label) || '') +
+              ' <a class="fn-back" href="#fnref-' + n + '" title="Back to text">↩</a></li>';
+          });
+          return html + out + '</ol></section>';
+        },
+      },
+      extensions: [{
+        name: 'footnoteRef', level: 'inline',
+        start(src) { return src.indexOf('[^'); },
+        tokenizer(src) {
+          const match = /^\[\^([^\]\n]+)\]/.exec(src);
+          if (!match) return;
+          const label = match[1].trim();
+          if (!definitions.has(label)) return;
+          return { type: 'footnoteRef', raw: match[0], label };
+        },
+        renderer(token) {
+          let i = order.indexOf(token.label);
+          if (i === -1) { order.push(token.label); i = order.length - 1; }
+          const n = i + 1;
+          return '<sup class="fn-ref" id="fnref-' + n + '"><a href="#fn-' + n + '">' + n + '</a></sup>';
+        },
+      }],
+    });
+
+    const placeholder = i => '\uE000M' + i + '\uE001';
+    function extractMath(src) {
+      const math = [], out = [];
+      let inFence = false, fenceCh = '', disp = null, dispPrefix = '';
+      for (const rawLine of src.split('\n')) {
+        const line = rawLine;
+        if (disp) {
+          const close = line.indexOf('$$');
+          if (close === -1) { disp.push(line); continue; }
+          disp.push(line.slice(0, close));
+          math.push({ tex: disp.join('\n'), display: true });
+          out.push(dispPrefix + placeholder(math.length - 1) + line.slice(close + 2));
+          disp = null; dispPrefix = '';
+          continue;
+        }
+        const fm = line.match(/^\s{0,3}(`{3,}|~{3,})/);
+        if (fm) {
+          if (!inFence) { inFence = true; fenceCh = fm[1][0]; }
+          else if (fm[1][0] === fenceCh) inFence = false;
+          out.push(line); continue;
+        }
+        if (inFence) { out.push(line); continue; }
+        let res = '', j = 0, opened = false;
+        while (j < line.length) {
+          const c = line[j];
+          if (c === '`') {
+            let k = j; while (line[k] === '`') k++;
+            const run = k - j;
+            let m = k, close = -1;
+            while (m < line.length) {
+              if (line[m] === '`') {
+                let m2 = m; while (line[m2] === '`') m2++;
+                if (m2 - m === run) { close = m2; break; }
+                m = m2;
+              } else m++;
+            }
+            if (close !== -1) { res += line.slice(j, close); j = close; }
+            else { res += line.slice(j, k); j = k; }
+            continue;
+          }
+          if (c === '\\' && (line[j + 1] === '(' || line[j + 1] === '[')) {
+            const closer = line[j + 1] === '(' ? '\\)' : '\\]';
+            const end = line.indexOf(closer, j + 2);
+            if (end !== -1) {
+              math.push({ tex: line.slice(j + 2, end), display: line[j + 1] === '[' });
+              res += placeholder(math.length - 1); j = end + 2; continue;
+            }
+            res += c; j++; continue;
+          }
+          if (c === '$') {
+            if (line[j + 1] === '$') {
+              const end = line.indexOf('$$', j + 2);
+              if (end !== -1) {
+                math.push({ tex: line.slice(j + 2, end), display: true });
+                res += placeholder(math.length - 1); j = end + 2; continue;
+              }
+              disp = [line.slice(j + 2)]; dispPrefix = res; opened = true; break;
+            }
+            let end = -1;
+            for (let m = j + 1; m < line.length; m++) {
+              if (line[m] === '$') { if (line[m - 1] !== '\\' && line[m - 1] !== ' ' && m > j + 1) end = m; break; }
+            }
+            if (end !== -1 && line[j + 1] !== ' ') {
+              const tex = line.slice(j + 1, end);
+              if (!/^[\d.,]*$/.test(tex)) {
+                math.push({ tex, display: false });
+                res += placeholder(math.length - 1); j = end + 1; continue;
+              }
+            }
+            res += c; j++; continue;
+          }
+          res += c; j++;
+        }
+        if (!opened) out.push(res);
+      }
+      if (disp) out.push(dispPrefix + '$$' + (disp.length ? '\n' : '') + disp.join('\n'));
+      return { src: out.join('\n'), math };
+    }
+    return (content, options = {}) => {
+      const { src, math } = options.math ? extractMath(content) : { src: content, math: [] };
+      return { html: parser.parse(src), math };
+    };
+  }
+
+  function createMarkdownParser({ window: win, librarySource, timeoutMs = 10000 }) {
+    let worker = null, url = null, pending = null, nextId = 0, disposed = false;
+    function resetWorker() {
+      if (worker) worker.terminate();
+      if (url) win.URL.revokeObjectURL(url);
+      worker = null; url = null;
+    }
+    function finish(error, result) {
+      if (!pending) return;
+      const entry = pending; pending = null;
+      win.clearTimeout(entry.timer);
+      if (error) { resetWorker(); entry.reject(error); }
+      else entry.resolve(result);
+    }
+    function cancel() {
+      finish(null, { canceled: true });
+      resetWorker();
+    }
+    function ensureWorker() {
+      if (worker) return;
+      if (!librarySource) throw new Error('Bundled Markdown parser source is unavailable');
+      const source = librarySource + '\nconst parse = (' + createMarkdownEngine.toString() + ')(marked);' +
+        '\nonmessage = ({data}) => { try { postMessage({id:data.id,result:parse(data.content,data.options)}); }' +
+        ' catch(error) { postMessage({id:data.id,error:error.message || String(error)}); } };';
+      url = win.URL.createObjectURL(new win.Blob([source], { type: 'text/javascript' }));
+      const instance = new win.Worker(url);
+      worker = instance;
+      instance.onmessage = event => {
+        if (worker !== instance || !pending || !event.data || event.data.id !== pending.id) return;
+        const { result, error } = event.data;
+        if (error) return finish(new Error(error));
+        if (!result || typeof result.html !== 'string' || !Array.isArray(result.math)) return finish(new Error('Invalid Markdown worker response'));
+        finish(null, result);
+      };
+      instance.onerror = event => {
+        event.preventDefault();
+        if (worker !== instance) return;
+        if (pending) finish(new Error('Markdown worker failed'));
+        else resetWorker();
+      };
+    }
+    return {
+      parse(content, options = {}) {
+        if (disposed) return Promise.reject(new Error('Markdown parser is disposed'));
+        if (typeof content !== 'string') return Promise.reject(new TypeError('Markdown content must be a string'));
+        if (pending) cancel();
+        return new Promise((resolve, reject) => {
+          const id = ++nextId;
+          const timer = win.setTimeout(() => finish(new Error('Markdown parsing timed out')), timeoutMs);
+          pending = { id, resolve, reject, timer };
+          try { ensureWorker(); worker.postMessage({ kind: 'parse-markdown', id, content, options }); }
+          catch (error) { finish(error); }
+        });
+      },
+      cancel,
+      dispose() { disposed = true; cancel(); },
+    };
+  }
+  return { createMarkdownEngine, createMarkdownParser };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+
+  // Self-contained for the worker. Match the existing explicit-language policy;
+  // highlighting is optional, and a grammar error must not hide the code.
+  function highlightCodeBlocks(hljs, blocks) {
+    return blocks.map(({ language, text }) => {
+      if (!language || language === 'mermaid') return null;
+      try {
+        return hljs.getLanguage(language) ? hljs.highlight(text, { language }).value : null;
+      } catch (_) { return null; }
+    });
+  }
+
+  function createSyntaxHighlighter({ window: win, librarySource, timeoutMs = 10000 }) {
+    let worker = null, url = null, pending = null, nextId = 0, disposed = false;
+    function resetWorker() {
+      if (worker) worker.terminate();
+      if (url) win.URL.revokeObjectURL(url);
+      worker = null; url = null;
+    }
+    function finish(result, reset = false) {
+      if (!pending) return;
+      const entry = pending; pending = null;
+      win.clearTimeout(entry.timer);
+      if (reset) resetWorker();
+      entry.resolve(result);
+    }
+    function plain() { finish({ canceled: false, results: [] }, true); }
+    function cancel() {
+      finish({ canceled: true, results: [] });
+      resetWorker();
+    }
+    function ensureWorker() {
+      if (worker) return;
+      if (!librarySource) throw new Error('Bundled highlighting source is unavailable');
+      const source = librarySource + '\nconst highlight = (' + highlightCodeBlocks.toString() + ');' +
+        '\nonmessage = ({data}) => { try { postMessage({id:data.id,results:highlight(hljs,data.blocks)}); }' +
+        ' catch(error) { postMessage({id:data.id,error:error.message || String(error)}); } };';
+      url = win.URL.createObjectURL(new win.Blob([source], { type: 'text/javascript' }));
+      const instance = new win.Worker(url);
+      worker = instance;
+      instance.onmessage = ({ data }) => {
+        if (worker !== instance || !pending || !data || data.id !== pending.id) return;
+        if (!Array.isArray(data.results) || data.results.length !== pending.count
+            || data.results.some(value => value !== null && typeof value !== 'string')) return plain();
+        finish({ canceled: false, results: data.results });
+      };
+      instance.onerror = event => {
+        event.preventDefault();
+        if (worker !== instance) return;
+        if (pending) plain();
+        else resetWorker();
+      };
+    }
+    return {
+      highlight(blocks) {
+        if (disposed) return Promise.reject(new Error('Syntax highlighter is disposed'));
+        if (!Array.isArray(blocks) || blocks.some(block => !block || typeof block.language !== 'string' || typeof block.text !== 'string')) {
+          return Promise.reject(new TypeError('highlight blocks must contain language and text strings'));
+        }
+        if (pending) cancel();
+        if (!blocks.length) return Promise.resolve({ canceled: false, results: [] });
+        return new Promise(resolve => {
+          const id = ++nextId;
+          pending = { id, resolve, count: blocks.length, timer: null };
+          pending.timer = win.setTimeout(() => {
+            if (!pending || pending.id !== id) return;
+            // Let replies already queued behind native layout run first.
+            pending.timer = win.setTimeout(() => { if (pending && pending.id === id) plain(); }, 0);
+          }, timeoutMs);
+          try { ensureWorker(); worker.postMessage({ kind: 'highlight-code', id, blocks }); }
+          catch (_) { plain(); } // No main-thread highlighting fallback.
+        });
+      },
+      cancel,
+      dispose() { if (!disposed) { disposed = true; cancel(); } },
+    };
+  }
+  return { highlightCodeBlocks, createSyntaxHighlighter };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+
+  function snapshotWorker() {
+    self.onmessage = ({ data }) => {
+      try {
+        if (data.kind === 'parse-snapshot') self.postMessage({ id: data.id, value: JSON.parse(data.json) });
+        else self.postMessage({ id: data.id, json: JSON.stringify(data.snapshot) });
+      } catch (error) {
+        self.postMessage({ id: data.id, error: error && error.message || String(error), errorName: error && error.name });
+      }
+    };
+    self.postMessage({ kind: 'snapshot-ready' });
+  }
+
+  // Encoding callers supply owned DocumentModel.toSnapshot() DTOs, not live
+  // models. Encoding/parsing share one queue; clone only the active payload.
+  function createSnapshotSerializer({ window: win, minimumWorkerCharacters = 256 * 1024, timeoutMs = 10000 }) {
+    let worker = null, url = null, active = null, nextId = 0, disposed = false;
+    let ready = false, readyPromise = null, resolveReady = null, rejectReady = null, startupTimer = null;
+    const queue = [];
+    function watchdog(callback) {
+      const timer = { id: null };
+      timer.id = win.setTimeout(() => {
+        // Native layout can delay both watchdogs and worker messages. Give
+        // already-queued completions a task turn before declaring failure.
+        timer.id = win.setTimeout(callback, 0);
+      }, timeoutMs);
+      return timer;
+    }
+    function clearWatchdog(timer) { if (timer) win.clearTimeout(timer.id); }
+    function resetWorker() {
+      clearWatchdog(startupTimer);
+      startupTimer = null;
+      if (worker) worker.terminate();
+      if (url) win.URL.revokeObjectURL(url);
+      worker = null; url = null; ready = false; readyPromise = null;
+    }
+    function failAll(reason) {
+      const error = reason instanceof Error ? reason : new Error(String(reason));
+      const jobs = active ? [active, ...queue] : [...queue];
+      const rejectStartup = rejectReady;
+      queue.length = 0;
+      active = null; resolveReady = null; rejectReady = null;
+      resetWorker();
+      if (rejectStartup) rejectStartup(error);
+      for (const job of jobs) { clearWatchdog(job.timer); job.reject(error); }
+    }
+    function ensureWorker() {
+      if (worker) return;
+      readyPromise = new Promise((resolve, reject) => { resolveReady = resolve; rejectReady = reject; });
+      readyPromise.catch(() => {});
+      url = win.URL.createObjectURL(new win.Blob(['(' + snapshotWorker.toString() + ')();'], { type: 'text/javascript' }));
+      const instance = new win.Worker(url);
+      worker = instance;
+      startupTimer = watchdog(() => {
+        if (worker === instance && !ready) failAll(new Error('Recovery worker startup timed out'));
+      });
+      instance.onerror = event => {
+        event.preventDefault();
+        if (worker === instance) failAll(new Error('Recovery serialization worker failed'));
+      };
+      instance.onmessage = event => {
+        if (worker !== instance || !event.data) return;
+        if (event.data.kind === 'snapshot-ready') {
+          ready = true;
+          clearWatchdog(startupTimer); startupTimer = null;
+          if (resolveReady) resolveReady();
+          resolveReady = null; rejectReady = null;
+          pump();
+          return;
+        }
+        if (!active || event.data.id !== active.id) return;
+        const job = active, parsing = job.kind === 'parse-snapshot';
+        if (event.data.error) {
+          if (!parsing || event.data.errorName !== 'SyntaxError') return failAll(new Error(event.data.error));
+          // Corrupt stored JSON is an input failure, not a broken worker. Let
+          // fallback validation and unrelated queued checkpoints continue.
+          active = null;
+          clearWatchdog(job.timer);
+          job.reject(new SyntaxError(event.data.error));
+        } else {
+          const valid = parsing ? Object.prototype.hasOwnProperty.call(event.data, 'value')
+            && event.data.value !== undefined : typeof event.data.json === 'string';
+          if (!valid) return failAll(new Error('Invalid snapshot worker response'));
+          active = null;
+          clearWatchdog(job.timer);
+          job.resolve(parsing ? event.data.value : event.data.json);
+        }
+        pump();
+      };
+    }
+    function pump() {
+      if (active || disposed || !queue.length) return;
+      try {
+        ensureWorker();
+        if (!ready || active) return;
+        const job = queue.shift();
+        active = job;
+        job.timer = watchdog(() => {
+          if (active === job) failAll(new Error('Recovery snapshot ' + (job.kind === 'parse-snapshot' ? 'parsing' : 'encoding') + ' timed out'));
+        });
+        worker.postMessage({ kind: job.kind, id: job.id,
+          ...(job.kind === 'parse-snapshot' ? { json: job.payload } : { snapshot: job.payload }) });
+      } catch (error) { failAll(error); }
+    }
+    function enqueue(kind, payload) {
+      return new Promise((resolve, reject) => {
+        queue.push({ id: ++nextId, kind, payload, resolve, reject, timer: null });
+        pump();
+      });
+    }
+    function textCharacters(snapshot) {
+      let length = 0;
+      for (const value of Object.values(snapshot)) if (typeof value === 'string') length += value.length;
+      for (const value of Object.values(snapshot.workspace?.find || {})) if (typeof value === 'string') length += value.length;
+      return length;
+    }
+    return {
+      prepare() {
+        if (disposed) return Promise.reject(new Error('Snapshot serializer is disposed'));
+        try { ensureWorker(); return readyPromise; }
+        catch (error) { failAll(error); return Promise.reject(error); }
+      },
+      serialize(snapshot) {
+        if (disposed) return Promise.reject(new Error('Snapshot serializer is disposed'));
+        if (!snapshot || typeof snapshot !== 'object') throw new TypeError('snapshot must be an object');
+        // Small DTOs avoid per-job messaging. Large jobs never fall back to UI
+        // encoding on worker failure: the controller must report recovery risk.
+        if (textCharacters(snapshot) < minimumWorkerCharacters) return JSON.stringify(snapshot);
+        return enqueue('serialize-snapshot', snapshot);
+      },
+      parse(json) {
+        if (disposed) return Promise.reject(new Error('Snapshot serializer is disposed'));
+        if (typeof json !== 'string') throw new TypeError('snapshot JSON must be a string');
+        if (json.length < minimumWorkerCharacters) return JSON.parse(json);
+        return enqueue('parse-snapshot', json);
+      },
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        failAll(new Error('Snapshot serializer is disposed'));
+      },
+    };
+  }
+  return { createSnapshotSerializer };
+});
+</script>
 <script>(function initRecoveryScheduler(root, factory) {
   const api = factory();
 
@@ -6354,7 +7043,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
   "use strict";
 
   const LEGACY_DRAFT_KEY = "mdedit-draft-v1";
-  const BROWSER_RECOVERY_PREFIX = "mdedit-recovery-v1:";
+  const { BROWSER_RECOVERY_PREFIX, createBrowserRecoveryIo, createBrowserRecoveryEnvironment } =
+    typeof module !== "undefined" && module.exports ? require("./browser-recovery.js") : root.MDEdit;
+  const { createExportOperation, runCapturedExport } =
+    typeof module !== "undefined" && module.exports ? require("./export-service.js") : root.MDEdit;
   const DEFAULT_INACTIVE_LOAD_CONCURRENCY = 4;
   const DEFAULT_PREVIEW_CACHE_MAX_ENTRIES = 5;
   const DEFAULT_PREVIEW_CACHE_MAX_BYTES = 20 * 1024 * 1024;
@@ -6464,122 +7156,6 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     return unescape(encodeURIComponent(text)).length;
   }
 
-  function createBrowserRecoveryIo(storage) {
-    requireObject(storage, "storage");
-    for (const method of ["getItem", "setItem", "removeItem", "key"]) {
-      requireFunction(storage[method], `storage.${method}`);
-    }
-    const documentPrefix = (documentId) => `${BROWSER_RECOVERY_PREFIX}document:${encodeURIComponent(documentId)}:`;
-    const slots = (prefix) => ({ current: `${prefix}current`, previous: `${prefix}previous`, temp: `${prefix}temp` });
-    const valid = (raw, predicate) => {
-      if (typeof raw !== "string") return null;
-      try { const value = JSON.parse(raw); return predicate(value) ? raw : null; } catch (_) { return null; }
-    };
-    const validManifest = (raw) => valid(raw, (value) => {
-      SessionModel.fromManifest(value, { idFactory: () => "validation-id" });
-      return true;
-    });
-    const validDocument = (raw, documentId, revision) => valid(raw, (value) => {
-      const document = DocumentModel.fromSnapshot(value);
-      return document.id === documentId && document.snapshotRevision === revision;
-    });
-    const rotate = (keys, json, currentValidator) => {
-      JSON.parse(json);
-      storage.setItem(keys.temp, json);
-      try {
-        const current = currentValidator(storage.getItem(keys.current));
-        if (current !== null) storage.setItem(keys.previous, current);
-        storage.setItem(keys.current, json);
-      } finally {
-        storage.removeItem(keys.temp);
-      }
-    };
-    const cleanup = (prefix, keep) => {
-      const keys = [];
-      for (let index = 0; index < storage.length; index += 1) {
-        const key = storage.key(index);
-        if (typeof key === "string" && key.startsWith(prefix) && !keep.has(key)) keys.push(key);
-      }
-      for (const key of keys) storage.removeItem(key);
-    };
-    const manifestSlots = slots(`${BROWSER_RECOVERY_PREFIX}manifest:`);
-    return {
-      listenFileOpened() { return () => {}; },
-      async loadRecoveryManifest() {
-        return validManifest(storage.getItem(manifestSlots.current)) || validManifest(storage.getItem(manifestSlots.previous));
-      },
-      async loadRecoveryDocument(documentId, revision) {
-        const keys = slots(documentPrefix(documentId));
-        return validDocument(storage.getItem(keys.current), documentId, revision)
-          || validDocument(storage.getItem(keys.previous), documentId, revision);
-      },
-      async writeRecoveryDocument(documentId, revision, json) {
-        const keys = slots(documentPrefix(documentId));
-        const text = String(json);
-        const value = JSON.parse(text);
-        if (value.documentId !== documentId || value.snapshotRevision !== revision) throw new Error("recovery snapshot identity mismatch");
-        DocumentModel.fromSnapshot(value);
-        rotate(keys, text, (raw) => {
-          if (typeof raw !== "string") return null;
-          try {
-            const currentDocument = DocumentModel.fromSnapshot(JSON.parse(raw));
-            return currentDocument.id === documentId ? raw : null;
-          } catch (_) { return null; }
-        });
-        cleanup(documentPrefix(documentId), new Set([keys.current, keys.previous]));
-      },
-      async writeRecoveryManifest(generation, json) {
-        const text = String(json);
-        const value = JSON.parse(text);
-        if (value.generation !== generation) throw new Error("recovery manifest generation mismatch");
-        SessionModel.fromManifest(value, { idFactory: () => "validation-id" });
-        rotate(manifestSlots, text, validManifest);
-        cleanup(`${BROWSER_RECOVERY_PREFIX}manifest`, new Set([manifestSlots.current, manifestSlots.previous]));
-      },
-      async deleteRecoveryDocument(documentId) {
-        const prefix = documentPrefix(documentId);
-        const keys = [];
-        for (let index = 0; index < storage.length; index += 1) {
-          const key = storage.key(index);
-          if (typeof key === "string" && key.startsWith(prefix)) keys.push(key);
-        }
-        for (const key of keys) storage.removeItem(key);
-      },
-      async recoveryDirectory() { return "localStorage://mdedit-recovery-v1"; },
-    };
-  }
-
-  function createMemoryStorage() {
-    const values = new Map();
-    return {
-      get length() { return values.size; },
-      key(index) { return [...values.keys()][index] ?? null; },
-      getItem(key) { return values.has(key) ? values.get(key) : null; },
-      setItem(key, value) { values.set(String(key), String(value)); },
-      removeItem(key) { values.delete(key); },
-    };
-  }
-
-  function createBrowserRecoveryEnvironment(browserRoot) {
-    let storage;
-    let error = null;
-    try {
-      storage = browserRoot.localStorage;
-      const probe = `${BROWSER_RECOVERY_PREFIX}probe`;
-      storage.setItem(probe, "1");
-      storage.removeItem(probe);
-    } catch (reason) {
-      error = normalizeError(reason);
-      storage = createMemoryStorage();
-    }
-    return {
-      io: createBrowserRecoveryIo(storage),
-      legacyStorage: storage,
-      persistent: error === null,
-      error,
-    };
-  }
-
   class SessionController {
     constructor({
       io,
@@ -6597,6 +7173,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       previewCacheMaxBytes = DEFAULT_PREVIEW_CACHE_MAX_BYTES,
       onRecoveryPerformance = () => {},
       saveDocumentStrategy = null,
+      snapshotSerializer = null,
     } = {}) {
       this.io = requireObject(io, "io");
       this.scheduler = requireObject(scheduler, "scheduler");
@@ -6628,6 +7205,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         throw new TypeError("saveDocumentStrategy must be a function or null");
       }
       this.saveDocumentStrategy = saveDocumentStrategy;
+      this.snapshotSerializer = snapshotSerializer === null
+        ? { serialize: (snapshot) => JSON.stringify(snapshot) }
+        : requireObject(snapshotSerializer, "snapshot serializer");
+      requireFunction(this.snapshotSerializer.serialize, "snapshot serializer.serialize");
       this.session = null;
 
       this._started = false;
@@ -6801,6 +7382,14 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         this._showRecoveryError(earlierListenerFailure, { phase: "file-open-listener" });
       }
       if (!this._isLifecycleActive(token)) return this.session;
+      if (typeof this.snapshotSerializer.prepare === "function") {
+        try { await this.snapshotSerializer.prepare(); }
+        catch (_) {
+          // Worker startup must not prevent reading source or encoding small
+          // snapshots. A large encoding request will report its own failure.
+        }
+        if (!this._isLifecycleActive(token)) return this.session;
+      }
       if (this._localSessionEstablished) {
         if (this.restoreOutcome === "pending") this.restoreOutcome = "local-session";
         return this._finishRestore(token);
@@ -7359,6 +7948,27 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return this.rebindBrowserSource(documentId, ...sourceKeys);
     }
 
+    browserWriteHandle(documentId) {
+      if (this._disposed || !this.session?.documents.has(documentId)) return null;
+      const sources = this._browserSourcesByDocument.get(documentId);
+      return sources ? [...sources].find(source => typeof source.createWritable === "function" && typeof source.getFile === "function") || null : null;
+    }
+
+    renameDocument(documentId, displayName) {
+      return this._runDocumentOperation(`rename:${documentId}`, async () => {
+        const document = this._requireLoadedDocument(documentId);
+        document.updateMetadata({ displayName, path: null, canonicalPath: null });
+        this._forgetBrowserSources(documentId);
+        this._externalVersions?.delete(documentId);
+        this.checkpointDocument(documentId, "rename-checkpoint");
+        this._invalidatePreview(documentId);
+        this._renderSession();
+        this._renderDocumentView(document);
+        if (this.session.activeDocumentId === documentId) await this.renderDocument(documentId);
+        return document;
+      });
+    }
+
     _forgetBrowserSources(documentId) {
       const sources = this._browserSourcesByDocument.get(documentId);
       if (!sources) return;
@@ -7751,17 +8361,13 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         recoveryStatus: document.recoveryStatus,
       });
       if (this.session.activeDocumentId === documentId) {
-        this.renderDocument(documentId).catch((reason) => {
-          this._setDocumentStatus(documentId, {
-            status: "failed",
-            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
-          });
-        });
+        this.renderDocument(documentId).catch(() => {}); // Preview status is capture-owned.
       }
       return true;
     }
 
     onRecoveryStatus(documentId, status, error) {
+      if (this._disposed) return;
       const document = this.session && this.session.documents.get(documentId);
       if (this._sessionRecoveryFailure) {
         this._publishBlockedStatus(document);
@@ -7842,6 +8448,27 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return true;
     }
 
+    _encodeRecoverySnapshot(snapshot) {
+      const started = Date.now();
+      const encoding = { json: null, durationMs: 0, asynchronous: false };
+      const complete = (json) => {
+        if (typeof json !== "string") throw new TypeError("snapshot encoder must return a JSON string");
+        encoding.durationMs = Date.now() - started;
+        return json;
+      };
+      try {
+        const result = this.snapshotSerializer.serialize(snapshot);
+        encoding.asynchronous = Boolean(result && typeof result.then === "function");
+        encoding.json = encoding.asynchronous ? Promise.resolve(result).then(complete) : complete(result);
+      } catch (reason) {
+        encoding.json = Promise.reject(reason);
+      }
+      // Encoding may finish before its queued transaction begins consuming it.
+      // Observe rejection now, while retaining it for the actual write to fail.
+      if (encoding.json && typeof encoding.json.catch === "function") encoding.json.catch(() => {});
+      return encoding;
+    }
+
     recoverySnapshotForWrite(documentId, revision) {
       const snapshot = this._manifestBarrier && this._manifestBarrier.snapshots
         && this._manifestBarrier.snapshots.get(documentId);
@@ -7856,14 +8483,13 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!(document instanceof DocumentModel) || document.snapshotRevision !== snapshotRevision) {
         return Promise.resolve(false);
       }
-      const serializationStartedAt = Date.now();
-      const snapshotJson = JSON.stringify(document.toSnapshot());
+      const encoding = this._encodeRecoverySnapshot(document.toSnapshot());
       const capture = Object.freeze({
         document,
         documentId,
         snapshotRevision,
-        json: snapshotJson,
-        serializationDurationMs: Date.now() - serializationStartedAt,
+        token: this._lifecycleToken,
+        encoding,
         tab: Object.freeze({
           documentId,
           displayName: document.displayName,
@@ -7886,7 +8512,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         };
         this._manifestBarrier = barrier;
       }
-      barrier.snapshots.set(documentId, { revision: snapshotRevision, json: capture.json });
+      barrier.snapshots.set(documentId, { revision: snapshotRevision, json: encoding.json });
       barrier.pending += 1;
       const operation = this._checkpointWrites.catch(() => {}).then(
         () => this._writeRecoveryCheckpointNow(capture),
@@ -7901,30 +8527,36 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
 
     async _writeRecoveryCheckpointNow(capture) {
-      if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
+      const current = () => this._isLifecycleActive(capture.token)
+        && this.session && this.session.documents.get(capture.documentId) === capture.document;
+      if (!current()) return false;
       try {
+        const json = typeof capture.encoding.json === "string" ? capture.encoding.json : await capture.encoding.json;
+        if (!current()) return false;
         const writeMetrics = await this.io.writeRecoveryDocument(
-          capture.documentId, capture.snapshotRevision, capture.json,
+          capture.documentId, capture.snapshotRevision, json,
         );
         if (writeMetrics && Number.isFinite(writeMetrics.ipcAndNativeDurationMs)) {
           try {
             this.onRecoveryPerformance(Object.freeze({
               documentId: capture.documentId,
               revision: capture.snapshotRevision,
-              bytes: Number.isSafeInteger(writeMetrics.bytes) ? writeMetrics.bytes : capture.json.length,
-              serializationDurationMs: capture.serializationDurationMs,
+              bytes: Number.isSafeInteger(writeMetrics.bytes) ? writeMetrics.bytes : json.length,
+              serializationDurationMs: capture.encoding.durationMs,
+              serializationMode: capture.encoding.asynchronous ? "asynchronous-latency" : "synchronous-duration",
               ipcAndNativeDurationMs: writeMetrics.ipcAndNativeDurationMs,
               atomicWriteDurationMs: writeMetrics.atomicWriteDurationMs,
-              endToEndDurationMs: capture.serializationDurationMs + writeMetrics.ipcAndNativeDurationMs,
+              endToEndDurationMs: capture.encoding.durationMs + writeMetrics.ipcAndNativeDurationMs,
             }));
           } catch (_) {
             // Diagnostics must never turn a durable recovery write into a failure.
           }
         }
-        if (!this.session || this.session.documents.get(capture.documentId) !== capture.document) return false;
+        if (!current()) return false;
         const candidate = this._durableManifestCandidate(capture);
         if (!candidate) return false;
         await this.io.writeRecoveryManifest(candidate.generation, JSON.stringify(candidate));
+        if (!current()) return false;
         this._rememberDurableManifest(candidate);
         await this._cleanupRecoveryAfterManifest(candidate);
         if (this.session.documents.get(capture.documentId) === capture.document) {
@@ -7935,8 +8567,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         }
         return true;
       } catch (reason) {
-        for (const current of this.session ? this.session.documents.values() : []) {
-          if (current instanceof DocumentModel) this._blockRecovery(current.id, reason);
+        if (this._isLifecycleActive(capture.token)) {
+          for (const document of this.session ? this.session.documents.values() : []) {
+            if (document instanceof DocumentModel) this._blockRecovery(document.id, reason);
+          }
         }
         throw reason;
       }
@@ -7987,6 +8621,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
 
     _releaseManifestBarrier(scheduleDeferred) {
       this._manifestBarrier = null;
+      if (this._disposed) { this._deferredRecoveryRevisions.clear(); return; }
       if (!scheduleDeferred || this._sessionRecoveryFailure) return;
       const deferred = [...this._deferredRecoveryRevisions];
       this._deferredRecoveryRevisions.clear();
@@ -8021,7 +8656,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       const cacheKey = this._previewCacheKey(capture);
       const cached = this._showCachedPreviewOrClear(capture);
       if (cached) {
-        return Promise.resolve(cached.html);
+        return this._trackPreviewResult(capture, cached.html);
       }
       let rendering;
       try {
@@ -8029,9 +8664,9 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         if (typeof render !== "function") throw new TypeError("renderer must be a function or provide render");
         rendering = render.call(this.renderer, capture, { renderWhenHidden });
       } catch (reason) {
-        return Promise.reject(reason);
+        return this._trackPreviewResult(capture, Promise.reject(reason));
       }
-      return Promise.resolve(rendering).then((result) => {
+      return this._trackPreviewResult(capture, Promise.resolve(rendering).then((result) => {
         if (result && typeof result === "object" && typeof result.commit === "function") {
           if (!this._canCommitRender(capture)) return null;
           return Promise.resolve(result.commit(capture, () => this._canCommitRender(capture))).then((html) => {
@@ -8048,6 +8683,21 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         this._storePreview(cacheKey, document.id, html);
         if (this._canCommitRender(capture)) this._setPreview(html, capture);
         return html;
+      }));
+    }
+
+    _trackPreviewResult(capture, result) {
+      return Promise.resolve(result).then((html) => {
+        if (typeof html === "string" && this._isCurrentRender(capture)) {
+          this._setDocumentStatus(capture.documentId, { previewStatus: "clean" });
+        }
+        return html;
+      }, (reason) => {
+        if (this._isCurrentRender(capture)) {
+          this._setDocumentStatus(capture.documentId, { previewStatus: "failed",
+            message: `Preview failed for ${capture.displayName}: ${normalizeError(reason).message}` });
+        }
+        throw reason;
       });
     }
 
@@ -8099,27 +8749,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (typeof format !== "string" || format.length === 0) throw new TypeError("export format is required");
 
       const capture = this.captureActiveDocument({ format });
-      const exportDocument = typeof this.exporter === "function" ? this.exporter : this.exporter.export;
-      if (typeof exportDocument !== "function") throw new TypeError("exporter must be a function or provide export");
-      return this._runCapturedExport(
-        capture,
-        capture.displayName,
-        async () => {
-          let exportCapture = capture;
-          if (format === "html" || format === "png") {
-            const renderForExport = this.renderer && this.renderer.renderForExport;
-            if (typeof renderForExport !== "function") {
-              throw new Error(`isolated ${format.toUpperCase()} export renderer is unavailable`);
-            }
-            const renderedHtml = await renderForExport.call(this.renderer, capture);
-            if (typeof renderedHtml !== "string" || renderedHtml.length === 0) {
-              throw new Error(`isolated ${format.toUpperCase()} export produced no HTML`);
-            }
-            exportCapture = Object.freeze({ ...capture, renderedHtml });
-          }
-          return exportDocument.call(this.exporter, exportCapture);
-        },
-      );
+      const operation = createExportOperation(capture, this.renderer, this.exporter);
+      return this._runCapturedExport(capture, capture.displayName, operation);
     }
 
     recordCapturedSave(capture, result, { persist = true } = {}) {
@@ -8778,12 +9409,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this._renderSession();
       this._renderDocumentView(document);
       if (this.session.activeDocumentId === document.id) {
-        this.renderDocument(document.id).catch((reason) => {
-          this._setDocumentStatus(document.id, {
-            status: "failed",
-            message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
-          });
-        });
+        this.renderDocument(document.id).catch(() => {}); // Preview status is capture-owned.
       }
     }
 
@@ -8880,39 +9506,13 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return true;
     }
 
-    async _runCapturedExport(capture, label, operation) {
-      this._setDocumentStatus(capture.documentId, {
-        status: "exporting",
-        message: `Exporting ${label}`,
-        editRevision: capture.editRevision,
+    _runCapturedExport(capture, label, operation) {
+      return runCapturedExport({
+        capture, label, operation,
+        isCurrent: (options) => this.isDocumentCaptureCurrent(capture, options),
+        owns: () => this._ownsOperationCapture(capture),
+        setStatus: (status) => this._setDocumentStatus(capture.documentId, status),
       });
-      try {
-        const result = await operation(
-          capture,
-          (options) => this.isDocumentCaptureCurrent(capture, options),
-        );
-        if (this.isDocumentCaptureCurrent(capture)) {
-          const canceled = Boolean(result && result.canceled);
-          const message = canceled ? `Export canceled for ${label}`
-            : result && typeof result.message === "string" ? result.message : `Exported ${label}`;
-          this._setDocumentStatus(capture.documentId, {
-            status: canceled ? "canceled" : "exported",
-            message,
-            editRevision: capture.editRevision,
-          });
-        }
-        return result;
-      } catch (reason) {
-        const error = normalizeError(reason);
-        if (this._ownsOperationCapture(capture)) {
-          this._setDocumentStatus(capture.documentId, {
-            status: "failed",
-            message: `Could not export ${label}: ${error.message}`,
-            editRevision: capture.editRevision,
-          });
-        }
-        throw error;
-      }
     }
 
     closeDocument(documentId) {
@@ -9296,9 +9896,10 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
               && document.persistedRevision < tab.snapshotRevision,
           };
           if (capture.needsSnapshot) {
+            capture.encoding = this._encodeRecoverySnapshot(document.toSnapshot());
             barrier.snapshots.set(tab.documentId, {
               revision: tab.snapshotRevision,
-              json: JSON.stringify(document.toSnapshot()),
+              json: capture.encoding.json,
             });
           }
           return capture;
@@ -9318,6 +9919,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
             throw this._sessionRecoveryFailure;
           }
           try {
+            await Promise.all(capturedDocuments.filter(capture => capture.needsSnapshot).map(capture => capture.encoding.json));
+            if (!this._isLifecycleActive(token)) throw new Error("session controller is disposed");
             if (retryScheduler && typeof this.scheduler.retry === "function") {
               for (const capture of capturedDocuments) await this.scheduler.retry(capture.documentId);
             }
@@ -9342,7 +9945,9 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
             await this._cleanupRecoveryAfterManifest(candidate);
           } catch (reason) {
             if (this._manifestBarrier === barrier) this._manifestBarrier = null;
-            for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
+            if (this._isLifecycleActive(token)) {
+              for (const document of this.session.documents.values()) this._blockRecovery(document.id, reason);
+            }
             throw reason;
           }
           const diverged = barrier.needsCatchUp
@@ -9464,13 +10069,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
           if (this._disposed || viewToken !== this._viewToken || !this.session
               || this.session.activeDocumentId !== id || this.session.documents.get(id) !== document) return;
           if (!(document instanceof DocumentModel) || document.workspace.viewMode !== "edit") {
-            this.renderDocument(id).catch((reason) => {
-              if (!this.session || this.session.documents.get(id) !== document) return;
-              this._setDocumentStatus(id, {
-                status: "failed",
-                message: `Preview failed for ${document.displayName}: ${normalizeError(reason).message}`,
-              });
-            });
+            this.renderDocument(id).catch(() => {}); // Preview status is capture-owned.
           }
           if (persist && this._restoreState === "restored") {
             this._persistManifestNow().catch((reason) => {
@@ -9524,6 +10123,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
 
     _setDocumentStatus(documentId, status) {
+      if (this._disposed) return;
       if (typeof this.view.setDocumentStatus === "function") this.view.setDocumentStatus(documentId, status);
     }
 
@@ -9629,6 +10229,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this._loadQueue = [];
       this._loadPriority = [];
       this._loadingIds.clear();
+      this._deferredRecoveryRevisions.clear();
       this._browserSourcesByDocument.clear();
       this._compatibilitySavePaths.clear();
       this._allowCompatibilitySaving = false;
@@ -9653,7 +10254,11 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         this._unlisten = null;
         this._started = false;
         this._listenerReady = Promise.resolve(null);
-        if (typeof unlisten === "function") await Promise.resolve(unlisten());
+        try {
+          if (typeof this.snapshotSerializer.dispose === "function") await this.snapshotSerializer.dispose();
+        } finally {
+          if (typeof unlisten === "function") await Promise.resolve(unlisten());
+        }
       })();
       return this._disposePromise;
     }
@@ -9757,11 +10362,14 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return { selectionStart: 0, selectionEnd: 0, editorScrollTop: 0 };
     }
 
-    const hasStringValue = typeof editor.value === "string";
-    const length = hasStringValue ? editor.value.length : 0;
+    const nativeLength = editor.textLength;
+    const hasNativeLength = Number.isSafeInteger(nativeLength) && nativeLength >= 0;
+    const value = hasNativeLength ? null : editor.value;
+    const hasContentLength = hasNativeLength || typeof value === "string";
+    const length = hasNativeLength ? nativeLength : (hasContentLength ? value.length : 0);
     let selectionStart = normalizedInteger(editor.selectionStart);
     let selectionEnd = Math.max(selectionStart, normalizedInteger(editor.selectionEnd));
-    if (hasStringValue) {
+    if (hasContentLength) {
       selectionStart = Math.min(length, selectionStart);
       selectionEnd = Math.min(length, Math.max(selectionStart, selectionEnd));
     }
@@ -9884,11 +10492,20 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         : { kind: "message", message: value };
     }
     if (typeof value !== "object") return null;
-    const kind = value.recoveryStatus || value.status;
+    const kind = value.recoveryStatus;
     if (kind === "clean") return null;
     const fallback = RECOVERY_STATUS_TEXT[kind] || "";
     const message = typeof value.message === "string" && value.message ? value.message : fallback;
     return message ? { kind: RECOVERY_STATUS_TEXT[kind] ? kind : "message", message } : null;
+  }
+
+  function operationStatus(value, field = "status") {
+    const kind = typeof value === "string" ? "message" : value && value[field];
+    if (kind === "clean" || value === null) return null;
+    const fallback = kind === "failed" ? (field === "previewStatus" ? "Preview failed" : "Operation failed") : "";
+    const message = typeof value === "string" ? value
+      : typeof value.message === "string" && value.message ? value.message : fallback;
+    return message ? { kind: kind || "message", message, source: value } : null;
   }
 
   class WorkspaceView {
@@ -9917,8 +10534,13 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this.onReorder = callbackFrom(options, intents, ["onReorder", "reorder", "reorderDocument"]);
       this.onCommand = callbackFrom(options, intents, ["onCommand", "command"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
+      this.onDocumentStatus = callbackFrom(options, intents, ["onDocumentStatus"]);
+      this.statusPrefix = callbackFrom(options, intents, ["statusPrefix"]);
       this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
       this.applySharedWorkspace = callbackFrom(options, intents, ["applySharedWorkspace"]);
+      for (const name of ["renderDocument", "beforeReloadDocument", "clearPreview", "setPreview"]) {
+        if (typeof options[name] === "function") this[name] = options[name];
+      }
 
       this._tabs = new Map();
       this._editors = new Map();
@@ -9933,6 +10555,7 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       this._dialogState = null;
       this._disposed = false;
       this._announcementToken = 0;
+      this._announcedOperation = null;
       this._scrollTimer = null;
       this._draggedDocumentId = null;
       this.isMac = Boolean(options.isMac);
@@ -10045,6 +10668,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         return nextOrder.length;
       }
 
+      const retainedIds = new Set(nextOrder);
+      for (const id of this._runtimeStatuses.keys()) if (!retainedIds.has(id)) this._runtimeStatuses.delete(id);
       const fragment = [];
       const tabs = new Map();
       const order = [];
@@ -10265,7 +10890,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       if (!editor) return false;
       const source = workspace && typeof workspace === "object" ? workspace : {};
       const state = captureEditorState({
-        value: editor.value,
+        textLength: editor.textLength,
+        value: record.content,
         selectionStart: source.selectionStart,
         selectionEnd: source.selectionEnd,
         scrollTop: source.editorScrollTop,
@@ -10285,13 +10911,17 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
       return true;
     }
 
-    setDocumentStatus(documentId, status) {
+    setDocumentStatus(documentId, status, options = {}) {
+      if (this._disposed) return false;
       if (documentId && typeof documentId === "object") {
         status = documentId;
         documentId = documentId.id;
       }
       const id = String(documentId);
       const record = this._tabs.get(id);
+      const prior = this._runtimeStatuses.get(id);
+      const guarded = Object.prototype.hasOwnProperty.call(options, "expectedOperation");
+      if (guarded && (!prior || !prior.operation || prior.operation.source !== options.expectedOperation)) return false;
       const objectStatus = status && typeof status === "object" ? status : null;
       const has = (key) => Boolean(objectStatus && Object.prototype.hasOwnProperty.call(objectStatus, key));
       const hasBaseStatus = has("dirty") || has("fileStatus") || has("displayName");
@@ -10307,19 +10937,32 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         record.baseStatusText = descriptor.statusText;
         record.conflict = descriptor.statusKind === "conflict";
       }
-      const hasRuntimeStatus = typeof status === "string" || status === null
-        || has("recoveryStatus") || has("status") || has("message");
-      if (hasRuntimeStatus) {
-        const runtime = recoveryStatus(status);
-        if (runtime) this._runtimeStatuses.set(id, runtime);
-        else this._runtimeStatuses.delete(id);
+      const runtime = { recovery: null, preview: null, operation: null, ...prior };
+      if (status === null || status === "clean") {
+        runtime.recovery = runtime.preview = runtime.operation = null; // Legacy full reset.
+      } else if (typeof status === "string") {
+        if (RECOVERY_STATUS_TEXT[status]) runtime.recovery = recoveryStatus(status);
+        else runtime.operation = operationStatus(status);
+      } else {
+        if (has("recoveryStatus")) runtime.recovery = recoveryStatus(status);
+        if (has("previewStatus")) runtime.preview = operationStatus(status, "previewStatus");
+        if (!has("recoveryStatus") && !has("previewStatus") && (has("status") || has("message"))) runtime.operation = operationStatus(status);
       }
+      const changed = ["recovery", "preview", "operation"].some(key => runtime[key] !== (prior && prior[key] || null));
+      if (runtime.recovery || runtime.preview || runtime.operation) this._runtimeStatuses.set(id, runtime);
+      else this._runtimeStatuses.delete(id);
+      this.onDocumentStatus(id, status);
       if (!record) return false;
-      const runtime = this._runtimeStatuses.get(id);
+      if (!changed && !hasBaseStatus) return true;
       this._applyTabStatus(record, runtime);
-      const combinedStatus = record.status.textContent;
-      if ((hasBaseStatus || hasRuntimeStatus) && combinedStatus) {
-        this._announce(`${record.displayName}: ${combinedStatus}`);
+      const canAnnounce = options.announce !== false && (!guarded || this._announcedOperation === options.expectedOperation);
+      if ((hasBaseStatus || changed) && canAnnounce) {
+        const target = guarded && id !== this._activeDocumentId ? this._tabs.get(this._activeDocumentId) : record;
+        const targetRuntime = target && this._runtimeStatuses.get(target.tab.getAttribute("data-document-id"));
+        const combined = target && target.status.textContent;
+        this._announce(combined ? `${target.displayName}: ${combined}` : "", {
+          allowEmpty: true, operationSource: targetRuntime && targetRuntime.operation && targetRuntime.operation.source,
+        });
       }
       return true;
     }
@@ -10482,6 +11125,8 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
         record.surface.remove();
       }
       this._editors.clear();
+      this._runtimeStatuses.clear();
+      this._announcedOperation = null;
       this._clearTabDrag();
       this._restoreLegacySurfaces();
     }
@@ -10669,19 +11314,29 @@ globalThis["mermaid"] = globalThis.__esbuild_esm_mermaid_nm["mermaid"].default;
     }
 
     _applyTabStatus(record, runtime) {
-      record.status.textContent = [record.baseStatusText, runtime && runtime.message].filter(Boolean).join("; ");
+      const recovery = runtime && runtime.recovery;
+      record.status.textContent = [record.baseStatusText, recovery && recovery.message,
+        runtime && runtime.preview && runtime.preview.message, runtime && runtime.operation && runtime.operation.message].filter(Boolean).join("; ");
       record.shell.classList.toggle("is-dirty", record.dirty);
       record.shell.classList.toggle("is-conflict", record.conflict);
       for (const kind of ["pending", "writing", "failed"]) {
-        record.shell.classList.toggle(`recovery-${kind}`, Boolean(runtime && runtime.kind === kind));
+        record.shell.classList.toggle(`recovery-${kind}`, Boolean(recovery && recovery.kind === kind));
       }
-      const visibleFailure = runtime && runtime.kind === "failed";
+      const visibleFailure = recovery && recovery.kind === "failed";
       record.recovery.hidden = !visibleFailure;
-      record.recovery.textContent = visibleFailure ? runtime.message : "";
+      record.recovery.textContent = visibleFailure ? recovery.message : "";
     }
 
     _announce(message, options = {}) {
-      if (!message || !this.statusElement) return false;
+      if (!this.statusElement) return false;
+      message = message === null || message === undefined ? "" : String(message);
+      const active = this._runtimeStatuses.get(this._activeDocumentId);
+      const recovery = active && active.recovery;
+      if (recovery && recovery.kind === "failed" && !message.includes(recovery.message)) message = [message, recovery.message].filter(Boolean).join(" · ");
+      const prefix = String(this.statusPrefix() || "");
+      if (prefix && !message.includes(prefix)) message = [prefix, message].filter(Boolean).join(" · ");
+      if (!message && !options.allowEmpty) return false;
+      this._announcedOperation = options.operationSource || null;
       const token = ++this._announcementToken;
       if (this.statusElement.textContent === message) {
         if (!options.allowRepeat) return false;
@@ -11132,7 +11787,11 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       let source = options.regex ? query : query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       if (options.wholeWord) source = '(?<![\\p{L}\\p{N}_])(?:' + source + ')(?![\\p{L}\\p{N}_])';
       const pattern = new RegExp(source, options.caseSensitive ? 'gu' : 'giu');
-      const matches = [...value.matchAll(pattern)].map(match => ({start:match.index, end:match.index + match[0].length, captures:[...match], groups:match.groups}));
+      const matches = [];
+      for (const match of value.matchAll(pattern)) {
+        if (matches.length === 10000) return {matches:[], error:'Too many matches (limit 10000); refine your search', errorKind:'limit'};
+        matches.push({start:match.index, end:match.index + match[0].length, captures:[...match], groups:match.groups});
+      }
       return {matches, error:null};
     } catch (error) { return {matches:[], error:error.message}; }
   }
@@ -11150,6 +11809,220 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     });
   }
   return { formatEdit, listEdit, searchMatches, replacementText };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+
+  // Literal matching is bounded and synchronous. Untrusted regex never runs on
+  // the UI thread, even when workers are unavailable or blocked by policy.
+  function createSearchRunner({ window: win, searchMatches, timeoutMs = 500 }) {
+    let pending = null, cached = null;
+    function cancel() {
+      if (pending) pending.finish({ matches: [], error: null, canceled: true });
+    }
+    function search(value, query, options) {
+      if (!options.regex || !query) {
+        cancel(); cached = null;
+        return searchMatches(value, query, options);
+      }
+      const key = JSON.stringify([query, options]);
+      if (cached && cached.value === value && cached.key === key) return cached.result;
+      if (pending && pending.value === value && pending.key === key) return pending.promise;
+      cancel(); cached = null;
+      let resolve, worker, url, timer;
+      const promise = new Promise(done => { resolve = done; });
+      const entry = { value, key, promise, finish(result) {
+        if (pending !== entry) return;
+        pending = null;
+        win.clearTimeout(timer);
+        if (worker) worker.terminate();
+        if (url) win.URL.revokeObjectURL(url);
+        if (!result.canceled) cached = { value, key, result };
+        resolve(result);
+      } };
+      pending = entry;
+      try {
+        const source = 'const searchMatches = ' + searchMatches.toString() + ';' +
+          'onmessage = ({data}) => postMessage(searchMatches(data.value, data.query, data.options));';
+        url = win.URL.createObjectURL(new win.Blob([source], { type: 'text/javascript' }));
+        worker = new win.Worker(url);
+        worker.onmessage = event => entry.finish(event.data);
+        worker.onerror = event => {
+          event.preventDefault();
+          entry.finish({ matches: [], error: 'Search worker failed', errorKind: 'worker' });
+        };
+        timer = win.setTimeout(() => entry.finish({ matches: [], error: 'Search timed out — simplify the regular expression', errorKind: 'timeout' }), timeoutMs);
+        worker.postMessage({ value, query, options });
+      } catch (_) {
+        entry.finish({ matches: [], error: 'Regular expression search requires Web Worker support', errorKind: 'worker' });
+      }
+      return promise;
+    }
+    return { search, cancel, dispose() { cancel(); cached = null; } };
+  }
+  return { createSearchRunner };
+});
+</script>
+<script>(function(root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  if (root) root.MDEdit = Object.assign(root.MDEdit || {}, api);
+})(typeof window !== 'undefined' ? window : null, () => {
+  'use strict';
+  function createFindController({ document, activeEditor, replaceRange, onChange, setView, setStatus, isActiveEditorEvent }) {
+    const window = document.defaultView, MDEdit = window.MDEdit;
+    const $ = id => document.getElementById(id);
+    const findBar = $('find-bar'), findInput = $('find-input'), replaceInput = $('replace-input');
+    let matches = [], matchIdx = -1, findRequest = 0, actionEpoch = 0;
+    let replacements = Promise.resolve();
+    const searchRunner = MDEdit.createSearchRunner({ window, searchMatches: MDEdit.searchMatches });
+    window.addEventListener('pagehide', () => searchRunner.dispose());
+    const findOptions = () => ({ caseSensitive: $('find-case').checked, wholeWord: $('find-word').checked, regex: $('find-regex').checked });
+    for (const id of ['find-case', 'find-word', 'find-regex']) $(id).addEventListener('change', () => { actionEpoch++; runFind(false); });
+    replaceInput.addEventListener('input', () => { actionEpoch++; });
+
+    async function runFind(keepIndex) {
+      const request = ++findRequest, surface = activeEditor();
+      const query = findInput.value;
+      const value = query && surface ? surface.value : '';
+      const searching = searchRunner.search(value, query, findOptions());
+      if (searching && typeof searching.then === 'function') {
+        matches = [];
+        $('find-replace').disabled = $('find-all').disabled = true;
+      }
+      const result = searching && typeof searching.then === 'function' ? await searching : searching;
+      if (request !== findRequest || result.canceled || activeEditor() !== surface || (query && surface && surface.value !== value)) return false;
+      matches = result.matches;
+      $('find-error').textContent = result.error ? (result.errorKind ? result.error : 'Invalid regular expression: ' + result.error) : '';
+      findInput.setAttribute('aria-invalid', String(Boolean(result.error)));
+      $('find-replace').disabled = $('find-all').disabled = Boolean(result.error);
+      if (!keepIndex || matchIdx < 0 || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
+      paintCount();
+      return true;
+    }
+    function paintCount() {
+      const count = $('find-count');
+      count.textContent = findInput.value ? (matches.length ? (matchIdx + 1) + '/' + matches.length : '0/0') : '';
+      count.classList.toggle('none', !!findInput.value && !matches.length);
+    }
+    function revealMatch() {
+      const surface = activeEditor();
+      if (!surface || matchIdx < 0 || !matches.length) return;
+      const { start, end } = matches[matchIdx];
+      surface.setSelectionRange(start, end);
+      const line = surface.value.slice(0, start).split('\n').length - 1;
+      const lh = parseFloat(window.getComputedStyle(surface).lineHeight) || 20;
+      const top = line * lh;
+      if (top < surface.scrollTop || top > surface.scrollTop + surface.clientHeight - lh * 2) {
+        surface.scrollTop = Math.max(0, top - surface.clientHeight / 3);
+      }
+      paintCount();
+    }
+    function stepMatch(dir) {
+      if (!matches.length) return;
+      matchIdx = (matchIdx + dir + matches.length) % matches.length;
+      revealMatch();
+    }
+    function queueReplacement(operation) {
+      const epoch = actionEpoch, surface = activeEditor();
+      const query = findInput.value, replacement = replaceInput.value;
+      const current = () => epoch === actionEpoch && activeEditor() === surface
+        && findInput.value === query && replaceInput.value === replacement;
+      replacements = replacements.then(() => {
+        if (current()) return operation(current);
+      }).catch(error => setStatus('Replacement failed — ' + (error.message || error)));
+      return replacements;
+    }
+    async function replaceCurrent(current) {
+      const surface = activeEditor();
+      if (!surface || !await runFind(true) || !current() || matchIdx < 0 || !matches.length) return;
+      const { start, end } = matches[matchIdx], focused = document.activeElement;
+      const replacement = MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex);
+      replaceRange(surface, start, end, replacement);
+      onChange();
+      // Undo-safe insertion focuses the editor; restore immediately, before the
+      // next asynchronous search, so another Enter cannot type into the source.
+      if (findBar.contains(focused) && document.activeElement === surface) {
+        (focused.disabled ? replaceInput : focused).focus();
+      }
+      if (!await runFind(false) || !current()) return;
+      const nextStart = start + replacement.length + (start === end ? 1 : 0);
+      const nextIndex = matches.findIndex(match => match.start >= nextStart);
+      if (nextIndex >= 0) matchIdx = nextIndex;
+      revealMatch();
+    }
+    async function replaceAll(current) {
+      const surface = activeEditor();
+      if (!surface || !await runFind(true) || !current() || !matches.length) return;
+      const replacement = replaceInput.value, count = matches.length;
+      let out = '', last = 0;
+      for (const match of matches) {
+        out += surface.value.slice(last, match.start) + MDEdit.replacementText(replacement, match, findOptions().regex);
+        last = match.end;
+      }
+      out += surface.value.slice(last);
+      replaceRange(surface, 0, surface.value.length, out);
+      onChange(); runFind(false);
+      setStatus('Replaced ' + count + ' occurrence' + (count === 1 ? '' : 's'));
+    }
+    function open() {
+      actionEpoch++;
+      const surface = activeEditor(); if (!surface) return;
+      if (document.body.dataset.view === 'preview') setView('split');
+      document.body.classList.add('find-open');
+      const selected = surface.value.slice(surface.selectionStart, surface.selectionEnd);
+      if (selected && !selected.includes('\n')) findInput.value = selected;
+      findInput.focus(); findInput.select(); runFind(false);
+    }
+    function close() {
+      document.body.classList.remove('find-open');
+      searchRunner.cancel(); findRequest++; actionEpoch++;
+      activeEditor()?.focus();
+    }
+    findInput.addEventListener('input', () => {
+      actionEpoch++;
+      runFind(false).then(current => { if (current) revealMatch(); });
+    });
+    findInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); stepMatch(event.shiftKey ? -1 : 1); }
+      else if (event.key === 'Escape') { event.preventDefault(); close(); }
+    });
+    replaceInput.addEventListener('keydown', event => {
+      if (event.key === 'Enter') { event.preventDefault(); queueReplacement(replaceCurrent); }
+      else if (event.key === 'Escape') { event.preventDefault(); close(); }
+    });
+    $('find-next').addEventListener('click', () => stepMatch(1));
+    $('find-prev').addEventListener('click', () => stepMatch(-1));
+    $('find-replace').addEventListener('click', () => queueReplacement(replaceCurrent));
+    $('find-all').addEventListener('click', () => queueReplacement(replaceAll));
+    $('find-close').addEventListener('click', close);
+    $('editor-surfaces').addEventListener('keydown', event => {
+      if (isActiveEditorEvent(event) && event.key === 'Escape' && document.body.classList.contains('find-open')) close();
+    });
+    return {
+      open,
+      refresh() { return runFind(true); },
+      capture() {
+        return { open: document.body.classList.contains('find-open'), query: findInput.value, replacement: replaceInput.value, matchIndex: matchIdx, ...findOptions() };
+      },
+      apply(state = {}) {
+        actionEpoch++;
+        $('find-case').checked = Boolean(state.caseSensitive);
+        $('find-word').checked = Boolean(state.wholeWord);
+        $('find-regex').checked = Boolean(state.regex);
+        findInput.value = state.query || ''; replaceInput.value = state.replacement || '';
+        matchIdx = Number.isInteger(state.matchIndex) ? state.matchIndex : -1;
+        document.body.classList.toggle('find-open', Boolean(state.open));
+        return runFind(true);
+      },
+    };
+  }
+  return { createFindController };
 });
 </script>
 <script>(function(root, factory) {
@@ -11547,7 +12420,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   function createMarkdownLinks({ preview, nativeApp, controller, setStatus }) {
-    const links = new WeakMap();
+    const links = new WeakMap(), guarded = new WeakSet();
 
     function disable(anchor) {
       anchor.setAttribute('aria-disabled', 'true');
@@ -11559,6 +12432,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       // Disable all candidates synchronously, before the first filesystem call.
       const candidates = [...root.querySelectorAll('a[href]')].filter(anchor => isLocalMarkdownLink(anchor.getAttribute('href')));
       for (const anchor of candidates) {
+        // Cached DOM can be replaced after a click target is resolved. A
+        // detached anchor cannot bubble to the preview's delegated handlers.
+        if (!guarded.has(anchor)) {
+          for (const type of ['click', 'auxclick']) anchor.addEventListener(type, event => event.preventDefault());
+          guarded.add(anchor);
+        }
         disable(anchor);
         links.delete(anchor);
         anchor.removeAttribute('target');
@@ -11737,8 +12616,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   let resolveControllerReady;
   const controllerReady = new Promise((resolve) => { resolveControllerReady = resolve; });
   let workspaceView = null;
-  const browserFileHandles = new Map();
-  let statusTimer = null;
+  const statusTimers = new Map();
   let persistentRecoveryWarning = "";
   let nativeWindow = null;
   let pendingNativeTitle = null;
@@ -11783,7 +12661,12 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   const HAS_MATH = typeof katex !== "undefined";
   const HAS_DIAGRAMS = typeof mermaid !== "undefined";
 
-  marked.use({ gfm: true, breaks: false });
+  const markdownLibrarySource = $("marked-library").textContent;
+  const previewParser = MDEdit.createMarkdownParser({ window, librarySource: markdownLibrarySource });
+  const highlightLibrarySource = $("highlight-library").textContent;
+  const previewHighlighter = MDEdit.createSyntaxHighlighter({ window, librarySource: highlightLibrarySource });
+  // Release work when leaving, but allow a BFCache-restored page to parse again.
+  window.addEventListener("pagehide", () => { previewParser.cancel(); previewHighlighter.cancel(); });
   DOMPurify.addHook("uponSanitizeAttribute", (node, data) => {
     if (node.tagName === "A" && data.attrName === "href"
       && /^[a-z]:[/\\]/i.test(data.attrValue) && MDEdit.isLocalMarkdownLink(data.attrValue)) {
@@ -11803,130 +12686,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
 
   /* ── Footnotes ───────────────────────────────────
-     marked ships no footnote support, but [^1] references and their
-     definitions are common in specs, papers and RFC-style docs. Definition
-     bodies are rendered with a second, hook-free marked instance so this can
-     never re-enter the main parse. */
-  const markedPlain = new marked.Marked({ gfm: true });
-  let fnDefs = new Map(), fnOrder = [];
-
-  marked.use({
-    hooks: {
-      preprocess(src) {
-        fnDefs = new Map();
-        fnOrder = [];
-        // "[^label]: body", continued by indented lines
-        return src.replace(
-          /^\[\^([^\]\n]+)\]:[ \t]*([^\n]*(?:\n(?:[ \t]{2,}|\t)[^\n]*)*)/gm,
-          (_m, label, body) => {
-            fnDefs.set(label.trim(), body.replace(/\n[ \t]+/g, "\n").trim());
-            return "";
-          }
-        );
-      },
-      postprocess(html) {
-        if (!fnOrder.length) return html;
-        let out = '<section class="footnotes"><ol>';
-        fnOrder.forEach((label, i) => {
-          const n = i + 1;
-          out += '<li id="fn-' + n + '">' + markedPlain.parseInline(fnDefs.get(label) || "") +
-                 ' <a class="fn-back" href="#fnref-' + n + '" title="Back to text">↩</a></li>';
-        });
-        return html + out + '</ol></section>';
-      },
-    },
-    extensions: [{
-      name: "footnoteRef",
-      level: "inline",
-      start(src) { return src.indexOf("[^"); },
-      tokenizer(src) {
-        const m = /^\[\^([^\]\n]+)\]/.exec(src);
-        if (!m) return;
-        const label = m[1].trim();
-        if (!fnDefs.has(label)) return;   // a reference with no definition stays literal text
-        return { type: "footnoteRef", raw: m[0], label };
-      },
-      renderer(token) {
-        let i = fnOrder.indexOf(token.label);
-        if (i === -1) { fnOrder.push(token.label); i = fnOrder.length - 1; }
-        const n = i + 1;
-        return '<sup class="fn-ref" id="fnref-' + n + '"><a href="#fn-' + n + '">' + n + '</a></sup>';
-      },
-    }],
-  });
-
+     Footnote expansion and math extraction live in the worker engine.
+     Only DOM-dependent transformations run below. */
   const escapeHtml = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-
-  /* Math is pulled out BEFORE markdown parsing (marked would mangle _ and *
-     inside TeX) and re-injected into the sanitized DOM afterwards. Private-use
-     characters make placeholders that survive marked untouched. */
-  const PH = (i) => "\uE000M" + i + "\uE001";
-  function extractMath(src) {
-    const math = [];
-    const out = [];
-    let inFence = false, fenceCh = "";
-    let disp = null, dispPrefix = "";
-    for (const rawLine of src.split("\n")) {
-      let line = rawLine;
-      if (disp) {
-        const close = line.indexOf("$$");
-        if (close === -1) { disp.push(line); continue; }
-        disp.push(line.slice(0, close));
-        math.push({ tex: disp.join("\n"), display: true });
-        out.push(dispPrefix + PH(math.length - 1) + line.slice(close + 2));
-        disp = null; dispPrefix = "";
-        continue;
-      }
-      const fm = line.match(/^\s{0,3}(`{3,}|~{3,})/);
-      if (fm) {
-        if (!inFence) { inFence = true; fenceCh = fm[1][0]; }
-        else if (fm[1][0] === fenceCh) inFence = false;
-        out.push(line); continue;
-      }
-      if (inFence) { out.push(line); continue; }
-      let res = "", j = 0, opened = false;
-      while (j < line.length) {
-        const c = line[j];
-        if (c === "`") {
-          let k = j; while (line[k] === "`") k++;
-          const run = k - j;
-          let m = k, close = -1;
-          while (m < line.length) {
-            if (line[m] === "`") { let m2 = m; while (line[m2] === "`") m2++; if (m2 - m === run) { close = m2; break; } m = m2; }
-            else m++;
-          }
-          if (close !== -1) { res += line.slice(j, close); j = close; } else { res += line.slice(j, k); j = k; }
-          continue;
-        }
-        if (c === "\\" && (line[j + 1] === "(" || line[j + 1] === "[")) {
-          const closer = line[j + 1] === "(" ? "\\)" : "\\]";
-          const end = line.indexOf(closer, j + 2);
-          if (end !== -1) { math.push({ tex: line.slice(j + 2, end), display: line[j + 1] === "[" }); res += PH(math.length - 1); j = end + 2; continue; }
-          res += c; j++; continue;
-        }
-        if (c === "$") {
-          if (line[j + 1] === "$") {
-            const end = line.indexOf("$$", j + 2);
-            if (end !== -1) { math.push({ tex: line.slice(j + 2, end), display: true }); res += PH(math.length - 1); j = end + 2; continue; }
-            disp = [line.slice(j + 2)]; dispPrefix = res; opened = true; break;
-          }
-          let end = -1;
-          for (let m = j + 1; m < line.length; m++) {
-            if (line[m] === "$") { if (line[m - 1] !== "\\" && line[m - 1] !== " " && m > j + 1) end = m; break; }
-          }
-          if (end !== -1 && line[j + 1] !== " ") {
-            const tex = line.slice(j + 1, end);
-            if (!/^[\d.,]*$/.test(tex)) { math.push({ tex, display: false }); res += PH(math.length - 1); j = end + 1; continue; }
-          }
-          res += c; j++; continue;
-        }
-        res += c; j++;
-      }
-      if (!opened) out.push(res);
-    }
-    if (disp) out.push(dispPrefix + "$$" + (disp.length ? "\n" : "") + disp.join("\n"));
-    return { src: out.join("\n"), math };
-  }
 
   function injectMath(mathList, rootElement = preview) {
     if (!mathList.length) return;
@@ -11983,7 +12745,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   /* Code highlighting + mermaid diagrams */
   let mermaidSeq = 0;
-  let mermaidPending = Promise.resolve();   // awaited by the PDF export
   let previewOwner = null;
   function initMermaid() {
     if (!HAS_DIAGRAMS) return;
@@ -12016,19 +12777,28 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       }
     }
   }
-  function highlightAndDiagrams(rootElement = preview, isCurrent = () => true, interactive = true) {
-    rootElement.querySelectorAll("pre > code").forEach((code) => {
-      const lang = (code.className.match(/language-([\w-]+)/) || [])[1];
-      if (!lang || lang === "mermaid") return;
-      if (hljs.getLanguage(lang)) {
-        try {
-          code.innerHTML = hljs.highlight(code.textContent, { language: lang }).value;
-          code.classList.add("hljs");
-        } catch (e) { /* leave plain */ }
-      }
+  function highlightAndDiagrams(rootElement = preview, isCurrent = () => true, interactive = true, highlighter = previewHighlighter) {
+    const codes = [...rootElement.querySelectorAll("pre > code")].filter(code => {
+      const language = (code.className.match(/language-([\w-]+)/) || [])[1];
+      return language && language !== "mermaid";
+    });
+    const blocks = codes.map(code => ({ language: code.className.match(/language-([\w-]+)/)[1], text: code.textContent }));
+    const highlighting = highlighter.highlight(blocks).then(result => {
+      if (result.canceled || !isCurrent()) return;
+      result.results.forEach((html, index) => {
+        const code = codes[index];
+        if (typeof html !== "string" || !rootElement.contains(code)) return;
+        const selection = window.getSelection();
+        // Optional styling must not replace text a user is currently selecting.
+        if (selection && !selection.isCollapsed && selection.containsNode(code, true)) return;
+        const fragment = DOMPurify.sanitize(html, { RETURN_DOM_FRAGMENT: true, ALLOWED_TAGS: ["span"], ALLOWED_ATTR: ["class"] });
+        if (fragment.textContent !== blocks[index].text || code.textContent !== blocks[index].text) return;
+        code.replaceChildren(fragment);
+        code.classList.add("hljs");
+      });
     });
     const jobs = [];
-    if (!HAS_DIAGRAMS) return Promise.resolve();      // leave the fence as an ordinary code block
+    if (!HAS_DIAGRAMS) return highlighting; // Leave Mermaid fences as ordinary code blocks in lite.
     rootElement.querySelectorAll("pre > code.language-mermaid").forEach((code) => {
       const div = document.createElement("div");
       div.className = "mermaid-block";
@@ -12036,7 +12806,8 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       code.parentElement.replaceWith(div);
       jobs.push({ div, src });
     });
-    return jobs.length ? renderMermaidJobs(jobs, isCurrent, interactive) : Promise.resolve();
+    // Prepare Mermaid nodes synchronously, before addCodeTools wraps code fences.
+    return Promise.all([highlighting, jobs.length ? renderMermaidJobs(jobs, isCurrent, interactive) : Promise.resolve()]);
   }
 
   /* Per-block downloads: a diagram as SVG, a table as CSV. */
@@ -12155,13 +12926,20 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     tocEl.innerHTML = html;
   }
 
-  function render(content, isCurrent = () => true, rootElement = preview, interactive = true, documentPath = null, exportFormat = null) {
-    const { src, math } = HAS_MATH ? extractMath(content) : { src: content, math: [] };
-    rootElement.innerHTML = DOMPurify.sanitize(marked.parse(src));
+  async function render(content, {
+    isCurrent = () => true, rootElement = preview, interactive = true,
+    documentPath = null, exportFormat = null, parser = previewParser, highlighter = previewHighlighter, onCommit = () => {},
+  } = {}) {
+    const result = await parser.parse(content, { math: HAS_MATH });
+    if (result.canceled || !isCurrent()) return false;
+    const scrollTop = rootElement === preview ? previewPane.scrollTop : null;
+    onCommit();
+    rootElement.innerHTML = DOMPurify.sanitize(result.html);
+    const { math } = result;
     const links = interactive && markdownLinks ? markdownLinks.hydrate(rootElement, documentPath, isCurrent) : Promise.resolve();
     if (HAS_MATH) injectMath(math, rootElement);
     transformCallouts(rootElement);
-    const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive);
+    const diagrams = highlightAndDiagrams(rootElement, isCurrent, interactive, highlighter);
     // mark task-list items so CSS can drop their bullets
     rootElement.querySelectorAll('li > input[type="checkbox"]').forEach((cb) => {
       cb.closest("li").classList.add("task");
@@ -12172,15 +12950,28 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       buildToc(rootElement);
       updateStats(content);
     }
-    return Promise.all([diagrams, links]).then(() => desktopAssets && desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive, exportFormat === "html"));
+    // Sample scroll only at DOM commit, not when the worker request starts.
+    // Restore synchronously, before asynchronous diagram and asset hydration.
+    if (scrollTop !== null) previewPane.scrollTop = scrollTop;
+    await Promise.all([diagrams, links]);
+    if (desktopAssets) await desktopAssets.hydrate(rootElement, documentPath, isCurrent, !interactive, exportFormat === "html");
+    return true;
   }
 
   async function renderForExport(capture) {
     const isolated = document.createElement("article");
     const owned = () => controller.isDocumentCaptureCurrent(capture);
-    await render(capture.content, owned, isolated, false, capture.path, capture.format);
-    if (!owned()) throw new Error("the document changed before its export could be rendered");
-    return isolated.innerHTML;
+    // An export must not cancel (or be canceled by) live preview parsing.
+    const parser = MDEdit.createMarkdownParser({ window, librarySource: markdownLibrarySource });
+    const highlighter = MDEdit.createSyntaxHighlighter({ window, librarySource: highlightLibrarySource });
+    try {
+      const rendered = await render(capture.content, {
+        isCurrent: owned, rootElement: isolated, interactive: false,
+        documentPath: capture.path, exportFormat: capture.format, parser, highlighter,
+      });
+      if (!rendered || !owned()) throw new Error("the document changed before its export could be rendered");
+      return isolated.innerHTML;
+    } finally { parser.dispose(); highlighter.dispose(); }
   }
 
   function updateStats(text) {
@@ -12208,18 +12999,51 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
 
   function setStatus(msg, sticky, documentId) {
     const id = documentId || (controller && controller.activeDocument() && controller.activeDocument().id);
-    if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: sticky ? "writing" : "message", message: msg });
-    statusEl.textContent = [persistentRecoveryWarning, msg].filter(Boolean).join(" · ");
-    clearTimeout(statusTimer);
-    if (!sticky) statusTimer = setTimeout(() => { statusEl.textContent = persistentRecoveryWarning; }, 4000);
+    if (id && controller?.session && !controller.session.documents.has(id)) return;
+    const status = { status: sticky ? "writing" : "message", message: msg };
+    const fallback = [persistentRecoveryWarning, msg].filter(Boolean).join(" · ");
+    if (id && workspaceView) workspaceView.setDocumentStatus(id, status);
+    else statusEl.textContent = fallback;
+    const key = id || null;
+    clearTimeout(statusTimers.get(key));
+    statusTimers.delete(key);
+    if (!sticky) {
+      const timer = setTimeout(() => {
+        if (statusTimers.get(key) !== timer) return;
+        statusTimers.delete(key);
+        if (id && workspaceView) workspaceView.setDocumentStatus(id, { status: "clean" }, { expectedOperation: status });
+        else if (!controller?.activeDocument() && statusEl.textContent === fallback) statusEl.textContent = persistentRecoveryWarning;
+      }, 4000);
+      statusTimers.set(key, timer);
+    }
   }
 
-  function setDirty(v) {
+  function updateRecoveryAction() {
+    const documents = controller && controller.session ? controller.session.documents.values() : [];
+    $("btn-retry-recovery").hidden = ![...documents].some(document => document.recoveryStatus === "failed");
+  }
+  $("btn-retry-recovery").addEventListener("click", async () => {
+    const button = $("btn-retry-recovery"), hadFocus = document.activeElement === button;
+    button.disabled = true;
+    try {
+      await controller.retryRecovery();
+      setStatus("Recovery restored");
+    } catch (error) { setStatus("Recovery retry failed — " + error.message); }
+    finally {
+      button.disabled = false;
+      updateRecoveryAction();
+      if (hadFocus && document.activeElement === document.body) {
+        const target = button.hidden ? activeEditor() : button;
+        target?.focus({ preventScroll: true });
+      }
+    }
+  });
+
+  function afterEdit() {
     const active = controller && controller.activeDocument();
     const surface = activeEditor();
-    if (active && surface && v && active.content !== surface.value) controller.onEditorInput(active.id, surface.value);
-    if (active) active.dirty = Boolean(v);
-    dirtyDot.classList.toggle("on", v);
+    if (active && surface && active.content !== surface.value) controller.onEditorInput(active.id, surface.value);
+    syncActiveSurface();
   }
 
   /* ── File loading ───────────────────────────── */
@@ -12249,12 +13073,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       acceptedBatch.then((batch) => batch.sourceKeys),
     );
     const batch = await acceptedBatch;
-    result.results.forEach((outcome, index) => {
-      const handle = batch.sourceKeys[index];
-      if (outcome.document && !outcome.reserved && handle && handle !== outcome.file) {
-        browserFileHandles.set(outcome.id, handle);
-      }
-    });
     const acceptedByIndex = new Map(batch.acceptedIndexes.map(
       (inputIndex, index) => [inputIndex, result.results[index]],
     ));
@@ -12276,7 +13094,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const active = controller.activeDocument();
     if (active && result.opened.length) {
       setStatus("Opened " + active.displayName
-        + (browserFileHandles.has(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
+        + (controller.browserWriteHandle(active.id) ? " — Save writes back to the original file" : ""), false, active.id);
     }
     return { ...result, failed: [...result.failed, ...unsupported], results };
   }
@@ -12342,7 +13160,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   }
 
   async function browserSaveDocumentStrategy({ document, capture, saveBrowser }) {
-    const fileHandle = browserFileHandles.get(document.id);
+    const fileHandle = controller.browserWriteHandle(document.id);
     if (!fileHandle) return saveAs(capture);
     try {
       if (fileHandle.queryPermission && (await fileHandle.queryPermission({ mode: "readwrite" })) !== "granted") {
@@ -12410,7 +13228,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       try {
         const result = await controller.saveAs(capture.documentId);
         if (!result || !result.saved) return result;
-        browserFileHandles.delete(capture.documentId);
         syncActiveSurface();
         setStatus("Saved to " + document.displayName, false, document.id);
         return result;
@@ -12441,7 +13258,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
           await controller.releaseBrowserSourceReservation(source.reservation).catch(() => {});
           throw error;
         }
-        browserFileHandles.set(capture.documentId, handle);
         const contentSha256 = await hashText(capture.content);
         controller.recordCapturedSave(capture, { contentSha256, diskSha256: contentSha256 });
         syncActiveSurface();
@@ -12722,7 +13538,6 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     else if (command === "move-tab-right") controller.moveActiveDocument(1);
     else if (command === "close-tab") {
       const result = await controller.closeDocument(active.id);
-      if (result && result.closed) browserFileHandles.delete(active.id);
     }
     syncActiveSurface();
     if (command === "close-tab" && focusOptions.preserveTabFocus) {
@@ -12809,16 +13624,14 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (eMax > 0 && pMax > 0) previewPane.scrollTop = (surface.scrollTop / eMax) * pMax;
   }, true);
 
-  filenameEl.addEventListener("change", () => {
+  filenameEl.addEventListener("change", async () => {
     let name = filenameEl.value.trim() || "untitled.md";
     if (!/\.(md|markdown|mdown|mkd|txt)$/i.test(name)) name += ".md";
     filenameEl.value = name;
     const active = controller.activeDocument();
     if (!active) return;
-    active.updateMetadata({ displayName: name, path: null, canonicalPath: null });
-    controller.checkpointDocument(active.id, "rename-checkpoint");
-    browserFileHandles.delete(active.id);
-    controller.activateDocument(active.id);
+    try { await controller.renameDocument(active.id, name); }
+    catch (error) { setStatus("Could not rename document — " + error.message); }
     syncActiveSurface();
   });
   filenameEl.addEventListener("keydown", (e) => { if (e.key === "Enter") filenameEl.blur(); });
@@ -12933,7 +13746,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       setView(btn.dataset.mode);
       if (active && btn.dataset.mode !== "preview") workspaceView.applyWorkspace(active.id, active.workspace);
       if (active && btn.dataset.mode !== "edit") {
-        controller.renderDocument(active.id).catch((error) => setStatus(error.message));
+        controller.renderDocument(active.id).catch(() => {}); // Capture-owned preview status.
       }
       const surface = activeEditor();
       if (btn.dataset.mode !== "preview" && surface) surface.focus();
@@ -12984,7 +13797,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     const k = e.key.toLowerCase();
     if (k === "s") { e.preventDefault(); e.shiftKey ? saveAs() : save(); }
     else if (k === "o") { e.preventDefault(); openPicker(); }
-    else if (k === "f" && document.body.dataset.view !== "preview") { e.preventDefault(); openFind(); }
+    else if (k === "f" && document.body.dataset.view !== "preview") { e.preventDefault(); findController.open(); }
   });
 
   window.addEventListener("beforeunload", (e) => {
@@ -13138,7 +13951,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     replaceRange(surface, surface.selectionStart, surface.selectionEnd, text);   // undo-safe
     const pos = at + (caret === -1 ? text.length : caret);
     surface.setSelectionRange(pos, pos);
-    setDirty(true);
+    afterEdit();
   }
 
   if (!HAS_MATH) $("btn-eq").closest(".popover-wrap").style.display = "none";
@@ -13154,121 +13967,9 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     if (b) insertEquation(b.dataset.tex);
   });
 
-  /* ── Find & replace ─────────────────────────────
-     A textarea gives us nothing here: the browser's own find can search the
-     rendered preview but not the source, so in Edit mode there was no way to
-     locate a string at all. Replacements go through replaceRange so they land
-     on the native undo stack like every other edit. */
-  const findBar = $("find-bar"), findInput = $("find-input"), replaceInput = $("replace-input");
-  let matches = [], matchIdx = -1;
-  const findOptions = () => ({caseSensitive:$("find-case").checked, wholeWord:$("find-word").checked, regex:$("find-regex").checked});
-  for (const id of ["find-case", "find-word", "find-regex"]) $(id).addEventListener("change", () => { runFind(false); });
-
-  function runFind(keepIndex) {
-    const surface = activeEditor();
-    const q = findInput.value;
-    const result = MDEdit.searchMatches(surface ? surface.value : "", q, findOptions());
-    matches = result.matches;
-    $("find-error").textContent = result.error ? "Invalid regular expression: " + result.error : "";
-    findInput.setAttribute("aria-invalid", String(Boolean(result.error)));
-    $("find-replace").disabled = $("find-all").disabled = Boolean(result.error);
-    if (!keepIndex || matchIdx < 0 || matchIdx >= matches.length) matchIdx = matches.length ? 0 : -1;
-    paintCount();
-  }
-  function paintCount() {
-    const c = $("find-count");
-    c.textContent = findInput.value ? (matches.length ? (matchIdx + 1) + "/" + matches.length : "0/0") : "";
-    c.classList.toggle("none", !!findInput.value && !matches.length);
-  }
-  function revealMatch() {
-    const surface = activeEditor();
-    if (!surface) return;
-    if (matchIdx < 0 || !matches.length) return;
-    const { start, end } = matches[matchIdx];
-    // Selecting a match must not steal subsequent typing from the find bar.
-    surface.setSelectionRange(start, end);
-    // approximate, but enough to bring a match on screen in a wrapped textarea
-    const line = surface.value.slice(0, start).split("\n").length - 1;
-    const lh = parseFloat(getComputedStyle(surface).lineHeight) || 20;
-    const top = line * lh;
-    if (top < surface.scrollTop || top > surface.scrollTop + surface.clientHeight - lh * 2) {
-      surface.scrollTop = Math.max(0, top - surface.clientHeight / 3);
-    }
-    paintCount();
-  }
-  function stepMatch(dir) {
-    if (!matches.length) return;
-    matchIdx = (matchIdx + dir + matches.length) % matches.length;
-    revealMatch();
-  }
-  function afterEdit() { setDirty(true); }
-
-  function replaceCurrent() {
-    const surface = activeEditor();
-    if (!surface) return;
-    runFind(true);
-    if (matchIdx < 0 || !matches.length) return;
-    const { start, end } = matches[matchIdx];
-    const focused = document.activeElement;
-    const replacement = MDEdit.replacementText(replaceInput.value, matches[matchIdx], findOptions().regex);
-    replaceRange(surface, start, end, replacement);
-    afterEdit();
-    runFind(false);
-    const nextStart = start + replacement.length + (start === end ? 1 : 0);
-    const nextIndex = matches.findIndex(match => match.start >= nextStart);
-    if (nextIndex >= 0) matchIdx = nextIndex;
-    revealMatch();
-    if (findBar.contains(focused)) focused.focus();
-  }
-  function replaceAll() {
-    const surface = activeEditor();
-    if (!surface) return;
-    runFind(true);
-    if (!matches.length) return;
-    const r = replaceInput.value, n = matches.length;
-    let out = "", last = 0;
-    for (const match of matches) { out += surface.value.slice(last, match.start) + MDEdit.replacementText(r, match, findOptions().regex); last = match.end; }
-    out += surface.value.slice(last);
-    replaceRange(surface, 0, surface.value.length, out);   // one undo step for the lot
-    afterEdit();
-    runFind(false);
-    setStatus("Replaced " + n + " occurrence" + (n === 1 ? "" : "s"));
-  }
-
-  function openFind() {
-    const surface = activeEditor();
-    if (!surface) return;
-    if (document.body.dataset.view === "preview") setView("split");
-    document.body.classList.add("find-open");
-    const sel = surface.value.slice(surface.selectionStart, surface.selectionEnd);
-    if (sel && !sel.includes("\n")) findInput.value = sel;
-    findInput.focus();
-    findInput.select();
-    runFind(false);
-  }
-  function closeFind() {
-    document.body.classList.remove("find-open");
-    const surface = activeEditor();
-    if (surface) surface.focus();
-  }
-
-  findInput.addEventListener("input", () => { runFind(false); revealMatch(); });
-  findInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); stepMatch(e.shiftKey ? -1 : 1); }
-    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
-  });
-  replaceInput.addEventListener("keydown", (e) => {
-    if (e.key === "Enter") { e.preventDefault(); replaceCurrent(); }
-    else if (e.key === "Escape") { e.preventDefault(); closeFind(); }
-  });
-  $("find-next").addEventListener("click", () => stepMatch(1));
-  $("find-prev").addEventListener("click", () => stepMatch(-1));
-  $("find-replace").addEventListener("click", replaceCurrent);
-  $("find-all").addEventListener("click", replaceAll);
-  $("find-close").addEventListener("click", closeFind);
-  $("editor-surfaces").addEventListener("keydown", (e) => {
-    if (!isActiveEditorEvent(e)) return;
-    if (e.key === "Escape" && document.body.classList.contains("find-open")) closeFind();
+  /* ── Find & replace ────────────────────────── */
+  const findController = MDEdit.createFindController({
+    document, activeEditor, replaceRange, onChange: afterEdit, setView, setStatus, isActiveEditorEvent,
   });
 
   /* ── Installed-app plumbing ─────────────────── */
@@ -13316,28 +14017,15 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       previewScrollTop: previewPane.scrollTop,
       viewMode: document.body.dataset.view || "split",
       tocOpen: document.body.classList.contains("toc-open"),
-      find: {
-        open: document.body.classList.contains("find-open"),
-        query: findInput.value,
-        replacement: replaceInput.value,
-        matchIndex: matchIdx,
-        ...findOptions(),
-      },
+      find: findController.capture(),
     };
   }
 
   function applySharedWorkspace(workspace) {
     setView(workspace.viewMode || "split");
     setToc(Boolean(workspace.tocOpen));
-    $("find-case").checked = Boolean(workspace.find?.caseSensitive);
-    $("find-word").checked = Boolean(workspace.find?.wholeWord);
-    $("find-regex").checked = Boolean(workspace.find?.regex);
-    findInput.value = workspace.find && workspace.find.query || "";
-    replaceInput.value = workspace.find && workspace.find.replacement || "";
-    matchIdx = workspace.find && Number.isInteger(workspace.find.matchIndex) ? workspace.find.matchIndex : -1;
-    document.body.classList.toggle("find-open", Boolean(workspace.find && workspace.find.open));
+    findController.apply(workspace.find);
     previewPane.scrollTop = Number.isFinite(workspace.previewScrollTop) ? workspace.previewScrollTop : 0;
-    runFind(true);
   }
 
   const documentDetailsCache = new WeakMap();
@@ -13438,7 +14126,10 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     });
   }
 
-  const browserRecoveryEnvironment = nativeApp ? null : MDEdit.createBrowserRecoveryEnvironment(window);
+  const snapshotSerializer = MDEdit.createSnapshotSerializer({ window });
+  const browserRecoveryEnvironment = nativeApp ? null : MDEdit.createBrowserRecoveryEnvironment(window, {
+    snapshotParser: json => snapshotSerializer.parse(json),
+  });
   const sessionIo = nativeApp ? {
     ...nativeApp,
     listenFileOpened(handler) {
@@ -13466,16 +14157,21 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     dialogDocuments: $("dialog-documents"),
     dialogActions: $("dialog-actions"),
     statusElement: statusEl,
+    statusPrefix: () => persistentRecoveryWarning,
     isMac,
     captureSharedWorkspace,
     applySharedWorkspace,
+    renderDocument: renderWorkspaceDocument,
+    beforeReloadDocument: () => desktopAssets?.clearCache(),
+    clearPreview: clearWorkspacePreview,
+    setPreview: setWorkspacePreview,
+    onDocumentStatus: updateRecoveryAction,
     onActivate(documentId, options) {
       controller.activateDocument(documentId, options);
       syncActiveSurface();
     },
     async onClose(documentId) {
       const result = await controller.closeDocument(documentId);
-      if (result && result.closed) browserFileHandles.delete(documentId);
       syncActiveSurface();
     },
     onCommand(command, event) {
@@ -13488,24 +14184,22 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     },
     onEditorInput(documentId, content) {
       controller.onEditorInput(documentId, content);
-      if (findInput.value) runFind(true);
+      findController.refresh();
       syncActiveSurface();
     },
   });
-  workspaceView.renderDocument = () => {
+  function renderWorkspaceDocument() {
     syncActiveSurface();
-    if (findInput.value) runFind(true);
-  };
-  workspaceView.beforeReloadDocument = () => desktopAssets?.clearCache();
-  workspaceView.clearPreview = (capture) => {
-    // Keep the current document visible during the debounced edit render.
-    // Clearing it collapses the scroll range and jumps the reader to the top.
+    findController.refresh();
+  }
+  function clearWorkspacePreview(capture) {
+    // Preserve the current document and scroll range during debounced edits.
     if (previewOwner?.documentId === capture?.documentId && document.body.dataset.view !== "edit") return;
     previewOwner = null;
     preview.replaceChildren();
     tocEl.replaceChildren();
-  };
-  workspaceView.setPreview = (html, capture) => {
+  }
+  function setWorkspacePreview(html, capture) {
     previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
     preview.innerHTML = html;
     const owner = previewOwner;
@@ -13516,7 +14210,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
     wireCachedPreviewTools();
     buildToc();
     updateStats(capture.content);
-  };
+  }
 
   let recoveryScheduler;
   recoveryScheduler = new MDEdit.RecoveryScheduler({
@@ -13524,7 +14218,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
       const model = controller && controller.session && controller.session.documents.get(documentId);
       const controlledSnapshot = controller && controller.recoverySnapshotForWrite(documentId, revision);
       if (!controlledSnapshot) return controller.writeRecoveryCheckpoint(documentId, revision);
-      const snapshotJson = controlledSnapshot || JSON.stringify(model.toSnapshot());
+      const snapshotJson = await controlledSnapshot;
       await sessionIo.writeRecoveryDocument(documentId, revision, snapshotJson);
       if (controller.session.documents.get(documentId) === model && model.snapshotRevision === revision) {
         model.persistedRevision = revision;
@@ -13539,6 +14233,7 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
   controller = new MDEdit.SessionController({
     io: sessionIo,
     saveDocumentStrategy: nativeApp ? null : browserSaveDocumentStrategy,
+    snapshotSerializer,
     onRecoveryPerformance(metric) {
       const measurements = window.__MDEDIT_RECOVERY_PERFORMANCE__ || [];
       measurements.push(metric);
@@ -13574,14 +14269,13 @@ if (typeof module !== "undefined") module.exports = { makeNativeApp };
             // this work until Preview or Split is requested keeps large-tab
             // activation independent from Markdown/DOM construction.
             if (document.body.dataset.view === "edit" && !renderWhenHidden) return null;
-            const scrollTop = previewPane.scrollTop;
-            previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision };
-            mermaidPending = render(capture.content, isCurrent, preview, true, capture.path);
-            // Restore after synchronous DOM replacement, not after async diagrams,
-            // so a user's subsequent scrolling is never overwritten.
-            previewPane.scrollTop = scrollTop;
-            await mermaidPending;
-            return isCurrent() ? preview.innerHTML : null;
+            const canCommit = () => isCurrent()
+              && (renderWhenHidden || document.body.dataset.view !== "edit");
+            const rendered = await render(capture.content, {
+              isCurrent: canCommit, documentPath: capture.path,
+              onCommit() { previewOwner = { documentId: capture.documentId, editRevision: capture.editRevision }; },
+            });
+            return rendered && canCommit() ? preview.innerHTML : null;
           },
         };
       },

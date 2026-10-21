@@ -1,3 +1,4 @@
+mod blocking;
 pub mod desktop_files;
 pub mod document_io;
 pub mod recent_documents;

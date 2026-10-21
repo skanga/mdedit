@@ -77,11 +77,14 @@
       return { selectionStart: 0, selectionEnd: 0, editorScrollTop: 0 };
     }
 
-    const hasStringValue = typeof editor.value === "string";
-    const length = hasStringValue ? editor.value.length : 0;
+    const nativeLength = editor.textLength;
+    const hasNativeLength = Number.isSafeInteger(nativeLength) && nativeLength >= 0;
+    const value = hasNativeLength ? null : editor.value;
+    const hasContentLength = hasNativeLength || typeof value === "string";
+    const length = hasNativeLength ? nativeLength : (hasContentLength ? value.length : 0);
     let selectionStart = normalizedInteger(editor.selectionStart);
     let selectionEnd = Math.max(selectionStart, normalizedInteger(editor.selectionEnd));
-    if (hasStringValue) {
+    if (hasContentLength) {
       selectionStart = Math.min(length, selectionStart);
       selectionEnd = Math.min(length, Math.max(selectionStart, selectionEnd));
     }
@@ -204,11 +207,20 @@
         : { kind: "message", message: value };
     }
     if (typeof value !== "object") return null;
-    const kind = value.recoveryStatus || value.status;
+    const kind = value.recoveryStatus;
     if (kind === "clean") return null;
     const fallback = RECOVERY_STATUS_TEXT[kind] || "";
     const message = typeof value.message === "string" && value.message ? value.message : fallback;
     return message ? { kind: RECOVERY_STATUS_TEXT[kind] ? kind : "message", message } : null;
+  }
+
+  function operationStatus(value, field = "status") {
+    const kind = typeof value === "string" ? "message" : value && value[field];
+    if (kind === "clean" || value === null) return null;
+    const fallback = kind === "failed" ? (field === "previewStatus" ? "Preview failed" : "Operation failed") : "";
+    const message = typeof value === "string" ? value
+      : typeof value.message === "string" && value.message ? value.message : fallback;
+    return message ? { kind: kind || "message", message, source: value } : null;
   }
 
   class WorkspaceView {
@@ -237,8 +249,13 @@
       this.onReorder = callbackFrom(options, intents, ["onReorder", "reorder", "reorderDocument"]);
       this.onCommand = callbackFrom(options, intents, ["onCommand", "command"]);
       this.onEditorInput = callbackFrom(options, intents, ["onEditorInput", "editorInput", "editDocument"]);
+      this.onDocumentStatus = callbackFrom(options, intents, ["onDocumentStatus"]);
+      this.statusPrefix = callbackFrom(options, intents, ["statusPrefix"]);
       this.captureSharedWorkspace = callbackFrom(options, intents, ["captureSharedWorkspace"]);
       this.applySharedWorkspace = callbackFrom(options, intents, ["applySharedWorkspace"]);
+      for (const name of ["renderDocument", "beforeReloadDocument", "clearPreview", "setPreview"]) {
+        if (typeof options[name] === "function") this[name] = options[name];
+      }
 
       this._tabs = new Map();
       this._editors = new Map();
@@ -253,6 +270,7 @@
       this._dialogState = null;
       this._disposed = false;
       this._announcementToken = 0;
+      this._announcedOperation = null;
       this._scrollTimer = null;
       this._draggedDocumentId = null;
       this.isMac = Boolean(options.isMac);
@@ -365,6 +383,8 @@
         return nextOrder.length;
       }
 
+      const retainedIds = new Set(nextOrder);
+      for (const id of this._runtimeStatuses.keys()) if (!retainedIds.has(id)) this._runtimeStatuses.delete(id);
       const fragment = [];
       const tabs = new Map();
       const order = [];
@@ -585,7 +605,8 @@
       if (!editor) return false;
       const source = workspace && typeof workspace === "object" ? workspace : {};
       const state = captureEditorState({
-        value: editor.value,
+        textLength: editor.textLength,
+        value: record.content,
         selectionStart: source.selectionStart,
         selectionEnd: source.selectionEnd,
         scrollTop: source.editorScrollTop,
@@ -605,13 +626,17 @@
       return true;
     }
 
-    setDocumentStatus(documentId, status) {
+    setDocumentStatus(documentId, status, options = {}) {
+      if (this._disposed) return false;
       if (documentId && typeof documentId === "object") {
         status = documentId;
         documentId = documentId.id;
       }
       const id = String(documentId);
       const record = this._tabs.get(id);
+      const prior = this._runtimeStatuses.get(id);
+      const guarded = Object.prototype.hasOwnProperty.call(options, "expectedOperation");
+      if (guarded && (!prior || !prior.operation || prior.operation.source !== options.expectedOperation)) return false;
       const objectStatus = status && typeof status === "object" ? status : null;
       const has = (key) => Boolean(objectStatus && Object.prototype.hasOwnProperty.call(objectStatus, key));
       const hasBaseStatus = has("dirty") || has("fileStatus") || has("displayName");
@@ -627,19 +652,32 @@
         record.baseStatusText = descriptor.statusText;
         record.conflict = descriptor.statusKind === "conflict";
       }
-      const hasRuntimeStatus = typeof status === "string" || status === null
-        || has("recoveryStatus") || has("status") || has("message");
-      if (hasRuntimeStatus) {
-        const runtime = recoveryStatus(status);
-        if (runtime) this._runtimeStatuses.set(id, runtime);
-        else this._runtimeStatuses.delete(id);
+      const runtime = { recovery: null, preview: null, operation: null, ...prior };
+      if (status === null || status === "clean") {
+        runtime.recovery = runtime.preview = runtime.operation = null; // Legacy full reset.
+      } else if (typeof status === "string") {
+        if (RECOVERY_STATUS_TEXT[status]) runtime.recovery = recoveryStatus(status);
+        else runtime.operation = operationStatus(status);
+      } else {
+        if (has("recoveryStatus")) runtime.recovery = recoveryStatus(status);
+        if (has("previewStatus")) runtime.preview = operationStatus(status, "previewStatus");
+        if (!has("recoveryStatus") && !has("previewStatus") && (has("status") || has("message"))) runtime.operation = operationStatus(status);
       }
+      const changed = ["recovery", "preview", "operation"].some(key => runtime[key] !== (prior && prior[key] || null));
+      if (runtime.recovery || runtime.preview || runtime.operation) this._runtimeStatuses.set(id, runtime);
+      else this._runtimeStatuses.delete(id);
+      this.onDocumentStatus(id, status);
       if (!record) return false;
-      const runtime = this._runtimeStatuses.get(id);
+      if (!changed && !hasBaseStatus) return true;
       this._applyTabStatus(record, runtime);
-      const combinedStatus = record.status.textContent;
-      if ((hasBaseStatus || hasRuntimeStatus) && combinedStatus) {
-        this._announce(`${record.displayName}: ${combinedStatus}`);
+      const canAnnounce = options.announce !== false && (!guarded || this._announcedOperation === options.expectedOperation);
+      if ((hasBaseStatus || changed) && canAnnounce) {
+        const target = guarded && id !== this._activeDocumentId ? this._tabs.get(this._activeDocumentId) : record;
+        const targetRuntime = target && this._runtimeStatuses.get(target.tab.getAttribute("data-document-id"));
+        const combined = target && target.status.textContent;
+        this._announce(combined ? `${target.displayName}: ${combined}` : "", {
+          allowEmpty: true, operationSource: targetRuntime && targetRuntime.operation && targetRuntime.operation.source,
+        });
       }
       return true;
     }
@@ -802,6 +840,8 @@
         record.surface.remove();
       }
       this._editors.clear();
+      this._runtimeStatuses.clear();
+      this._announcedOperation = null;
       this._clearTabDrag();
       this._restoreLegacySurfaces();
     }
@@ -989,19 +1029,29 @@
     }
 
     _applyTabStatus(record, runtime) {
-      record.status.textContent = [record.baseStatusText, runtime && runtime.message].filter(Boolean).join("; ");
+      const recovery = runtime && runtime.recovery;
+      record.status.textContent = [record.baseStatusText, recovery && recovery.message,
+        runtime && runtime.preview && runtime.preview.message, runtime && runtime.operation && runtime.operation.message].filter(Boolean).join("; ");
       record.shell.classList.toggle("is-dirty", record.dirty);
       record.shell.classList.toggle("is-conflict", record.conflict);
       for (const kind of ["pending", "writing", "failed"]) {
-        record.shell.classList.toggle(`recovery-${kind}`, Boolean(runtime && runtime.kind === kind));
+        record.shell.classList.toggle(`recovery-${kind}`, Boolean(recovery && recovery.kind === kind));
       }
-      const visibleFailure = runtime && runtime.kind === "failed";
+      const visibleFailure = recovery && recovery.kind === "failed";
       record.recovery.hidden = !visibleFailure;
-      record.recovery.textContent = visibleFailure ? runtime.message : "";
+      record.recovery.textContent = visibleFailure ? recovery.message : "";
     }
 
     _announce(message, options = {}) {
-      if (!message || !this.statusElement) return false;
+      if (!this.statusElement) return false;
+      message = message === null || message === undefined ? "" : String(message);
+      const active = this._runtimeStatuses.get(this._activeDocumentId);
+      const recovery = active && active.recovery;
+      if (recovery && recovery.kind === "failed" && !message.includes(recovery.message)) message = [message, recovery.message].filter(Boolean).join(" · ");
+      const prefix = String(this.statusPrefix() || "");
+      if (prefix && !message.includes(prefix)) message = [prefix, message].filter(Boolean).join(" · ");
+      if (!message && !options.allowEmpty) return false;
+      this._announcedOperation = options.operationSource || null;
       const token = ++this._announcementToken;
       if (this.statusElement.textContent === message) {
         if (!options.allowRepeat) return false;

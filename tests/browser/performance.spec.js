@@ -179,7 +179,7 @@ test("50 recovered 5 MiB documents activate within the p95 and memory budgets", 
       over100ms: outliers.length,
       outlierSamples: sampleDetails.filter((sample) => sample.durationMs > 100),
       memory: {
-        metric: "performance.memory JS heap (renderer process only)",
+        metric: "performance.memory main-page JS heap (excludes worker isolates and native allocations)",
         peakObservedUsedBytes: peakUsedJSHeapSize,
         peakObservedTotalBytes: peakTotalJSHeapSize,
         jsHeapSizeLimitBytes: performance.memory && performance.memory.jsHeapSizeLimit,
